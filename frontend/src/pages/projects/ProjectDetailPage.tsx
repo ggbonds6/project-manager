@@ -36,6 +36,7 @@ import {
 } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
 import { useNavigate, useParams } from 'react-router-dom';
+import './flow.css';
 import { attachmentApi, attachmentUrl, paymentApi, projectApi } from '@/api/project';
 import ProjectFormModal from '@/components/ProjectFormModal';
 import PhaseEditModal from '@/components/PhaseEditModal';
@@ -55,13 +56,6 @@ import {
   ProjectDetail,
   ProjectForm,
 } from '@/types';
-
-const STATUS_DOT: Record<string, string> = {
-  NOT_STARTED: 'gray',
-  IN_PROGRESS: 'blue',
-  DONE: 'green',
-  SKIPPED: 'gray',
-};
 
 const statusMeta = (s?: string) => (s ? PROJECT_STATUS[s] : undefined);
 
@@ -263,90 +257,118 @@ export default function ProjectDetailPage() {
     );
   }
 
-  const phaseContent = (
-    <Card size="small">
-      {detail.phases.length === 0 ? (
-        <Empty description="暂无阶段" />
-      ) : (
-        <Timeline
-          items={detail.phases.map((ph) => {
-            const pAtts = attachments.filter((a) => a.bizType === 'PROJECT_PHASE' && a.bizId === ph.id);
-            return {
-              color: STATUS_DOT[ph.status] || 'gray',
-              children: (
-                <Card type="inner" size="small" key={ph.id} style={{ marginBottom: 8 }}>
-                  <Row gutter={12} align="middle">
-                    <Col flex="auto">
-                      <Space size={8} wrap>
-                        <b>
-                          {ph.sortNo}. {ph.phaseName}
-                        </b>
-                        <Tag color={PHASE_STATUS[ph.status]?.color}>{PHASE_STATUS[ph.status]?.text}</Tag>
-                        {ph.weight ? <span style={{ color: '#8c8c8c' }}>权重 {ph.weight}</span> : null}
-                        {ph.managerName ? <span style={{ color: '#8c8c8c' }}>负责人：{ph.managerName}</span> : null}
-                      </Space>
-                      <div style={{ marginTop: 4, color: '#595959', fontSize: 13 }}>
-                        <Progress percent={ph.percent} size="small" style={{ maxWidth: 220, display: 'inline-block', marginRight: 12 }} />
-                        {ph.status !== 'NOT_STARTED' && (
-                          <span style={{ marginRight: 10 }}>
-                            实际 {fmtDate(ph.actualStartDate)} ~ {fmtDate(ph.actualFinishDate)}
-                          </span>
-                        )}
-                        <span>计划 {fmtDate(ph.planStartDate)} ~ {fmtDate(ph.planFinishDate)}</span>
-                      </div>
-                      {ph.note ? (
-                        <div style={{ marginTop: 6, color: '#595959' }}>经办记录：{ph.note}</div>
-                      ) : null}
-                      {ph.resultFields && typeof ph.resultFields === 'object' && Object.keys(ph.resultFields).length > 0 ? (
-                        <div style={{ marginTop: 6 }}>
-                          {Object.entries(ph.resultFields).map(([k, v]) => (
-                            <Tag key={k} style={{ marginBottom: 4 }}>
-                              {k}：{String(v)}
-                            </Tag>
-                          ))}
-                        </div>
-                      ) : null}
-                      {pAtts.length > 0 ? (
-                        <div style={{ marginTop: 6 }}>
-                          <Space size={[4, 4]} wrap>
-                            {pAtts.map((a) => (
-                              <Tooltip key={a.id} title={`${a.fileName} · ${fmtFileSize(a.fileSize)} · ${a.uploadUserName || ''}`}>
-                                <Button size="small" icon={<PaperClipOutlined />} href={attachmentUrl(a.id)} target="_blank">
-                                  {a.fileName}
-                                </Button>
-                              </Tooltip>
-                            ))}
-                          </Space>
-                        </div>
-                      ) : null}
-                    </Col>
-                    {canEdit && (
-                      <Col>
-                        <Space direction="vertical" size={4}>
-                          <Button size="small" icon={<EditOutlined />} onClick={() => setPhaseModal({ open: true, phase: ph })}>
-                            推进/编辑
-                          </Button>
-                          <Button
-                            size="small"
-                            icon={<UploadOutlined />}
-                            onClick={() =>
-                              setUpload({ open: true, bizType: 'PROJECT_PHASE', bizId: ph.id, label: ph.phaseName })
-                            }
-                          >
-                            上传附件
-                          </Button>
-                        </Space>
-                      </Col>
-                    )}
-                  </Row>
-                </Card>
-              ),
-            };
-          })}
-        />
-      )}
-    </Card>
-  );
+  const phaseContent =
+    detail.phases.length === 0 ? (
+      <Empty description="暂无阶段" />
+    ) : (
+      <div className="pm-tl">
+        {detail.phases.map((ph, idx) => {
+          const pAtts = attachments.filter((a) => a.bizType === 'PROJECT_PHASE' && a.bizId === ph.id);
+          const today = dayjs().startOf('day');
+          const notClosed = ph.status === 'IN_PROGRESS' || ph.status === 'NOT_STARTED';
+          const overdue = notClosed && !!ph.planFinishDate && dayjs(ph.planFinishDate).isBefore(today);
+          const overdueDays = overdue ? today.diff(dayjs(ph.planFinishDate), 'day') : 0;
+          const cls =
+            ph.status === 'DONE' ? 'done' : ph.status === 'IN_PROGRESS' ? 'act' : ph.status === 'SKIPPED' ? 'skip' : 'wait';
+          const st = PHASE_STATUS[ph.status];
+          const payName = ph.payNode ? payNodes.find((n) => n.code === ph.payNode)?.name || ph.payNode : null;
+          return (
+            <div key={ph.id} className={`pm-tl-item ${cls}${overdue ? ' overdue' : ''}`}>
+              <div className="pm-phase-card">
+                <div className="pm-phase-head">
+                  <div className="pm-tt">
+                    <span className="pm-no">STEP {idx + 1} · 权重 {ph.weight}</span>
+                    <span className="pm-nm">{ph.phaseName}</span>
+                    {st ? <Tag color={st.color}>{st.text}</Tag> : null}
+                    {payName ? <Tag color="gold">{payName}</Tag> : null}
+                  </div>
+                  {canEdit && (
+                    <Space size={6} style={{ flexShrink: 0 }}>
+                      <Button size="small" icon={<EditOutlined />} onClick={() => setPhaseModal({ open: true, phase: ph })}>
+                        记录/推进
+                      </Button>
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        icon={<UploadOutlined />}
+                        onClick={() =>
+                          setUpload({ open: true, bizType: 'PROJECT_PHASE', bizId: ph.id, label: ph.phaseName })
+                        }
+                      >
+                        上传附件
+                      </Button>
+                    </Space>
+                  )}
+                </div>
+                {overdue && (
+                  <div className="pm-od">⚠ 本阶段计划完成日期 {fmtDate(ph.planFinishDate)} 已逾期 {overdueDays} 天</div>
+                )}
+                <div className="pm-meta">
+                  <span className="it">
+                    <b>计划</b>
+                    {fmtDate(ph.planStartDate)} ~ {fmtDate(ph.planFinishDate)}
+                  </span>
+                  <span className="it">
+                    <b>实际开始</b>
+                    {fmtDate(ph.actualStartDate)}
+                  </span>
+                  <span className="it">
+                    <b>实际完成</b>
+                    {fmtDate(ph.actualFinishDate)}
+                  </span>
+                  <span className="it">
+                    <b>负责人</b>
+                    {ph.managerName || '-'}
+                  </span>
+                  {ph.percent ? (
+                    <span className="it">
+                      <b>完成比例</b>
+                      {ph.percent}%
+                    </span>
+                  ) : null}
+                </div>
+                {ph.note ? <div className="pm-note">{ph.note}</div> : null}
+                {ph.resultFields && typeof ph.resultFields === 'object' && Object.keys(ph.resultFields).length > 0 ? (
+                  <div style={{ margin: '0 0 4px' }}>
+                    {Object.entries(ph.resultFields).map(([k, v]) => (
+                      <Tag key={k} style={{ marginBottom: 4 }}>
+                        {k}：{String(v)}
+                      </Tag>
+                    ))}
+                  </div>
+                ) : null}
+                {ph.status === 'IN_PROGRESS' ? (
+                  <div className="pm-progress">
+                    <Progress percent={ph.percent} size="small" />
+                  </div>
+                ) : null}
+                {pAtts.length > 0 ? (
+                  <div className="pm-chips">
+                    {pAtts.map((a) => (
+                      <Tooltip
+                        key={a.id}
+                        title={`${a.fileName} · ${fmtFileSize(a.fileSize)} · ${a.uploadUserName || '系统'} · ${fmtDateTime(a.uploadTime)}`}
+                      >
+                        <a className="pm-chip" href={attachmentUrl(a.id)} download={a.fileName}>
+                          <span className="pm-ext">{(a.fileExt || 'file').toUpperCase()}</span>
+                          <span className="pm-name">{a.fileName}</span>
+                          <span className="pm-sz">{fmtFileSize(a.fileSize)}</span>
+                        </a>
+                      </Tooltip>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="pm-muted" style={{ marginTop: 6 }}>
+                    暂无附件
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
 
   const infoContent = (
     <Card size="small">

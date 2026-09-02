@@ -1,0 +1,176 @@
+/* ===== 详情页「流程进展」瀑布流样式（参照 demo 静态原型还原） ===== */
+
+.pm-tl {
+  position: relative;
+  margin: 0 0 0 4px;
+  padding-left: 30px;
+}
+.pm-tl::before {
+  content: '';
+  position: absolute;
+  left: 9px;
+  top: 10px;
+  bottom: 10px;
+  width: 2px;
+  background: #e5e8ef;
+}
+.pm-tl-item {
+  position: relative;
+  margin-bottom: 14px;
+}
+/* 时间轴圆点 */
+.pm-tl-item::before {
+  content: '';
+  position: absolute;
+  left: -26px;
+  top: 18px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #c9cdd4;
+  box-shadow: 0 0 0 3px #f5f5f5;
+  z-index: 1;
+}
+.pm-tl-item.done::before {
+  background: #52c41a;
+  box-shadow: 0 0 0 3px #f6ffed;
+}
+.pm-tl-item.act::before {
+  background: #2f5d8a;
+  box-shadow: 0 0 0 3px #e6f4ff;
+  animation: pm-pulse 1.6s infinite;
+}
+.pm-tl-item.skip::before {
+  background: #e5e8ef;
+  box-shadow: 0 0 0 3px #fafafa;
+}
+@keyframes pm-pulse {
+  0% {
+    box-shadow: 0 0 0 3px #e6f4ff;
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(47, 93, 138, 0.18);
+  }
+  100% {
+    box-shadow: 0 0 0 3px #e6f4ff;
+  }
+}
+
+/* 阶段卡片 */
+.pm-phase-card {
+  background: #fff;
+  border: 1px solid #eef0f3;
+  border-radius: 8px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 2px rgba(0, 21, 41, 0.04);
+}
+.pm-tl-item.overdue .pm-phase-card {
+  border-color: #ffa39e;
+  background: #fffaf9;
+}
+.pm-phase-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.pm-tt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.pm-tt .pm-no {
+  color: #8c8c8c;
+  font-size: 12px;
+  font-family: Consolas, Menlo, monospace;
+}
+.pm-tt .pm-nm {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1f2329;
+}
+.pm-od {
+  background: #fff1f0;
+  color: #cf1322;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  margin: 6px 0 8px;
+}
+.pm-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: #595959;
+  margin: 6px 0 8px;
+}
+.pm-meta .it b {
+  color: #1f2329;
+  font-weight: 600;
+  margin-right: 3px;
+}
+.pm-note {
+  font-size: 13px;
+  color: #595959;
+  line-height: 1.7;
+  background: #f7f9fc;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 6px 0 8px;
+}
+.pm-progress {
+  max-width: 320px;
+  margin: 4px 0 6px;
+}
+.pm-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.pm-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #f2f3f5;
+  border: 1px solid #e5e8ef;
+  border-radius: 4px;
+  padding: 3px 9px;
+  font-size: 12px;
+  color: #1f2329;
+  text-decoration: none;
+  cursor: pointer;
+  max-width: 100%;
+}
+.pm-chip:hover {
+  color: #2f5d8a;
+  border-color: #2f5d8a;
+  background: #f0f7ff;
+}
+.pm-chip .pm-ext {
+  color: #fff;
+  background: #b0b6c0;
+  border-radius: 3px;
+  font-size: 10px;
+  padding: 0 3px;
+  line-height: 15px;
+  flex-shrink: 0;
+}
+.pm-chip .pm-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.pm-chip .pm-sz {
+  color: #8c8c8c;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.pm-muted {
+  font-size: 12px;
+  color: #bfbfbf;
+}

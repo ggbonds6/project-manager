@@ -56,7 +56,7 @@ public class AttachmentController {
 
     private static final Set<String> BIZ_TYPES = Set.of("PROJECT_PHASE", "PAYMENT", "PROJECT");
     private static final Set<String> DOWNLOADABLE_EXTS = Set.of("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-            "txt", "png", "jpg", "jpeg", "gif", "webp", "zip", "rar", "7z");
+            "txt", "csv", "png", "jpg", "jpeg", "gif", "webp", "zip", "rar", "7z");
 
     private final AttachmentMapper attachmentMapper;
     private final ProjectMapper projectMapper;
