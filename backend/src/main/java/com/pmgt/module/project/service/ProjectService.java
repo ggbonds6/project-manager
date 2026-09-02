@@ -15,8 +15,10 @@ import com.pmgt.module.project.dto.ProjectSaveRequest;
 import com.pmgt.module.project.dto.ProjectVO;
 import com.pmgt.module.project.entity.Project;
 import com.pmgt.module.project.entity.ProjectPhase;
+import com.pmgt.module.project.entity.Payment;
 import com.pmgt.module.project.mapper.ProjectMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
+import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.system.entity.PhaseTemplate;
 import com.pmgt.module.system.entity.SysDept;
 import com.pmgt.module.system.entity.SysUser;
@@ -48,6 +50,7 @@ public class ProjectService {
 
     private final ProjectMapper projectMapper;
     private final ProjectPhaseMapper phaseMapper;
+    private final PaymentMapper paymentMapper;
     private final PhaseTemplateMapper templateMapper;
     private final SysUserMapper userMapper;
     private final SysDeptMapper deptMapper;
@@ -56,6 +59,7 @@ public class ProjectService {
 
     public ProjectService(ProjectMapper projectMapper,
                           ProjectPhaseMapper phaseMapper,
+                          PaymentMapper paymentMapper,
                           PhaseTemplateMapper templateMapper,
                           SysUserMapper userMapper,
                           SysDeptMapper deptMapper,
@@ -63,6 +67,7 @@ public class ProjectService {
                           ObjectMapper objectMapper) {
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
+        this.paymentMapper = paymentMapper;
         this.templateMapper = templateMapper;
         this.userMapper = userMapper;
         this.deptMapper = deptMapper;
@@ -111,6 +116,7 @@ public class ProjectService {
         Map<Long, String> userNames = userNameMap(records.stream().map(Project::getManagerUserId).collect(Collectors.toSet()));
         Map<Long, String> deptNames = deptNameMap(records.stream().map(Project::getOwnerDeptId).collect(Collectors.toSet()));
         Map<Long, List<ProjectPhase>> phasesByProject = phasesByProjects(records.stream().map(Project::getId).toList());
+        Map<Long, BigDecimal> paidByProject = paidByProjects(records.stream().map(Project::getId).toList());
 
         List<ProjectVO> vos = records.stream().map(pj -> {
             ProjectVO vo = new ProjectVO();
@@ -134,7 +140,7 @@ public class ProjectService {
             List<ProjectPhase> phases = phasesByProject.getOrDefault(pj.getId(), List.of());
             vo.setCurrentPhaseName(currentPhaseName(phases));
             vo.setOverallProgress(overallProgress(phases));
-            vo.setPaidAmount(BigDecimal.ZERO);
+            vo.setPaidAmount(paidByProject.getOrDefault(pj.getId(), BigDecimal.ZERO));
             return vo;
         }).toList();
         voPage.setRecords(vos);
@@ -338,8 +344,8 @@ public class ProjectService {
             throw new BizException(400, "实际完成日期不能早于实际开始日期");
         }
         phaseMapper.updateById(ph);
-        operationLogService.log("PHASE", phaseId, "UPDATE_PHASE",
-                "项目「" + pj.getName() + "」阶段「" + ph.getPhaseName() + "」更新为 " + ph.getStatus() + " (进度 " + ph.getPercent() + "%)");
+        operationLogService.log("PROJECT", projectId, "UPDATE_PHASE",
+                "阶段「" + ph.getPhaseName() + "」更新为 " + ph.getStatus() + " (进度 " + ph.getPercent() + "%)");
     }
 
     // ==================== 内部工具 ====================
@@ -437,6 +443,20 @@ public class ProjectService {
                         .orderByAsc(ProjectPhase::getSortNo))
                 .stream()
                 .collect(Collectors.groupingBy(ProjectPhase::getProjectId));
+    }
+
+    private Map<Long, BigDecimal> paidByProjects(List<Long> projectIds) {
+        if (projectIds.isEmpty()) {
+            return Map.of();
+        }
+        List<Payment> payments = paymentMapper.selectList(new LambdaQueryWrapper<Payment>()
+                .in(Payment::getProjectId, projectIds));
+        Map<Long, BigDecimal> map = new HashMap<>();
+        for (Payment pay : payments) {
+            BigDecimal paid = pay.getPaidAmount() == null ? BigDecimal.ZERO : pay.getPaidAmount();
+            map.merge(pay.getProjectId(), paid, BigDecimal::add);
+        }
+        return map;
     }
 
     private Set<Long> ids(Long... values) {

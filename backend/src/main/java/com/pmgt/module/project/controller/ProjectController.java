@@ -10,6 +10,8 @@ import com.pmgt.module.project.dto.ProjectQuery;
 import com.pmgt.module.project.dto.ProjectSaveRequest;
 import com.pmgt.module.project.dto.ProjectVO;
 import com.pmgt.module.project.service.ProjectService;
+import com.pmgt.module.log.entity.OperateLog;
+import com.pmgt.module.log.service.OperationLogService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -20,14 +22,18 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.List;
+
 @RestController
 @RequestMapping("/api/projects")
 public class ProjectController {
 
     private final ProjectService projectService;
+    private final OperationLogService operationLogService;
 
-    public ProjectController(ProjectService projectService) {
+    public ProjectController(ProjectService projectService, OperationLogService operationLogService) {
         this.projectService = projectService;
+        this.operationLogService = operationLogService;
     }
 
     @GetMapping
@@ -38,6 +44,12 @@ public class ProjectController {
     @GetMapping("/{id}")
     public R<ProjectDetailVO> detail(@PathVariable Long id) {
         return R.ok(projectService.detail(id));
+    }
+
+    /** 项目操作日志（审计留痕） */
+    @GetMapping("/{id}/logs")
+    public R<List<OperateLog>> logs(@PathVariable Long id) {
+        return R.ok(operationLogService.listByProject(id));
     }
 
     @RequireRole({Role.ADMIN, Role.MANAGER})

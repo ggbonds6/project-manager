@@ -46,13 +46,20 @@ public class AuthFilter extends OncePerRequestFilter {
                 chain.doFilter(request, response);
                 return;
             }
+            String token = null;
             String header = request.getHeader("Authorization");
-            if (header == null || !header.startsWith("Bearer ")) {
+            if (header != null && header.startsWith("Bearer ")) {
+                token = header.substring(7);
+            } else if (request.getParameter("token") != null) {
+                // 供 <a href> / <img> 等无法携带 Header 的下载/预览场景使用
+                token = request.getParameter("token");
+            }
+            if (token == null || token.isBlank()) {
                 write401(response, "未登录或缺少令牌");
                 return;
             }
             try {
-                AuthContext.Current current = jwtUtil.parse(header.substring(7));
+                AuthContext.Current current = jwtUtil.parse(token);
                 AuthContext.set(current);
             } catch (Exception e) {
                 write401(response, "登录已过期或令牌无效");
