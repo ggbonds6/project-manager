@@ -47,6 +47,14 @@
    npm run dev                  # http://localhost:5173（/api 代理到 8080）
    ```
 
+4. （可选）灌入演示数据（10 个项目 + 阶段推进 + 付款 + 附件，走真实 API）：
+
+   ```bash
+   node scripts/seed-demo.mjs
+   ```
+
+预置登录账号（密码均 `123456`）：`admin`（管理员）/ `jingban01`（经办人）/ `lingdao01`（领导，只读）。
+
 ## 接口约定
 
 统一响应 `{ code, message, data }`，`code=0` 成功；写操作以 `POST/PUT/DELETE` + `/api/...` 前缀；附件经 `/uploads/**` 静态访问。

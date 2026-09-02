@@ -402,8 +402,9 @@ public class ProjectService {
     private String nextCode(String type) {
         String prefix = "SW".equals(type) ? "RJ" : "YJ";
         int year = LocalDate.now().getYear();
-        String like = prefix + "-" + year + "-%";
-        Long count = projectMapper.selectCount(new LambdaQueryWrapper<Project>().likeRight(Project::getCode, like));
+        String like = prefix + "-" + year + "-";
+        // 物理计数（含逻辑删除行），避免与已删除记录的唯一编号冲突
+        Long count = projectMapper.countAllByCodeLike(like);
         for (int i = 1; i <= 100; i++) {
             String code = String.format("%s-%d-%03d", prefix, year, count + i);
             if (projectMapper.selectCount(new LambdaQueryWrapper<Project>().eq(Project::getCode, code)) == 0) {
