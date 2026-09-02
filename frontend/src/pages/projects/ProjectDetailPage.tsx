@@ -120,6 +120,33 @@ export default function ProjectDetailPage() {
 
   const attachTypeName = (code?: string | null) => dictName(attachTypes, code);
 
+  // 附件中心分组（按阶段/项目/付款凭证）
+  const grouped = useMemo(() => {
+    const groups: { title: string; items: AttachmentItem[] }[] = [];
+    const byPhase = new Map<string, AttachmentItem[]>();
+    for (const a of attachments) {
+      const key =
+        a.bizType === 'PROJECT_PHASE'
+          ? `阶段：${a.phaseName || '未知阶段'}`
+          : a.bizType === 'PAYMENT'
+            ? '付款凭证'
+            : '项目附件';
+      if (!byPhase.has(key)) byPhase.set(key, []);
+      byPhase.get(key)!.push(a);
+    }
+    for (const [title, items] of byPhase.entries()) {
+      groups.push({ title, items });
+    }
+    return groups.sort((a, b) => a.title.localeCompare(b.title, 'zh'));
+  }, [attachments]);
+
+  // 附件中心“上传到”目标
+  const [uploadScope, setUploadScope] = useState<{ bizType: string; bizId: number; label: string }>({
+    bizType: 'PROJECT',
+    bizId: Number(id),
+    label: '项目级附件',
+  });
+
   const onProjectSaved = async (values: ProjectForm) => {
     if (!detail) return;
     setSubmitting(true);
@@ -448,31 +475,6 @@ export default function ProjectDetailPage() {
       </Card>
     </div>
   );
-
-  const grouped = useMemo(() => {
-    const groups: { title: string; items: AttachmentItem[] }[] = [];
-    const byPhase = new Map<string, AttachmentItem[]>();
-    for (const a of attachments) {
-      const key =
-        a.bizType === 'PROJECT_PHASE'
-          ? `阶段：${a.phaseName || '未知阶段'}`
-          : a.bizType === 'PAYMENT'
-            ? '付款凭证'
-            : '项目附件';
-      if (!byPhase.has(key)) byPhase.set(key, []);
-      byPhase.get(key)!.push(a);
-    }
-    for (const [title, items] of byPhase.entries()) {
-      groups.push({ title, items });
-    }
-    return groups.sort((a, b) => a.title.localeCompare(b.title, 'zh'));
-  }, [attachments]);
-
-  const [uploadScope, setUploadScope] = useState<{ bizType: string; bizId: number; label: string }>({
-    bizType: 'PROJECT',
-    bizId: Number(id),
-    label: '项目级附件',
-  });
 
   const attachContent = (
     <Card size="small">
