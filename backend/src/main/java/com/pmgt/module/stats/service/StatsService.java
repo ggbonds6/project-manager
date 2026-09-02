@@ -7,8 +7,6 @@ import com.pmgt.module.project.entity.ProjectPhase;
 import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.project.mapper.ProjectMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
-import com.pmgt.module.system.entity.SysDept;
-import com.pmgt.module.system.mapper.SysDeptMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -22,6 +20,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -34,16 +33,13 @@ public class StatsService {
     private final ProjectMapper projectMapper;
     private final ProjectPhaseMapper phaseMapper;
     private final PaymentMapper paymentMapper;
-    private final SysDeptMapper deptMapper;
 
     public StatsService(ProjectMapper projectMapper,
                         ProjectPhaseMapper phaseMapper,
-                        PaymentMapper paymentMapper,
-                        SysDeptMapper deptMapper) {
+                        PaymentMapper paymentMapper) {
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
         this.paymentMapper = paymentMapper;
-        this.deptMapper = deptMapper;
     }
 
     // ==================== 对外聚合 ====================
@@ -131,33 +127,6 @@ public class StatsService {
         return m;
     }
 
-    /** 承接部门资金排名（按合同总额 Top） */
-    public Map<String, Object> deptRanking(StatsQuery q) {
-        List<Project> projects = loadProjects(q);
-        Common c = commonOf(projects);
-        Map<String, BigDecimal[]> acc = new LinkedHashMap<>();
-        for (Project p : projects) {
-            String deptName = p.getOwnerDeptId() == null ? "未分部门" : c.deptNames().getOrDefault(p.getOwnerDeptId(), "未知部门");
-            BigDecimal[] v = acc.computeIfAbsent(deptName, k -> new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO});
-            v[0] = v[0].add(BigDecimal.ONE);
-            v[1] = v[1].add(zero(p.getContractAmount()));
-        }
-        List<Map<String, Object>> rows = acc.entrySet().stream()
-                .sorted(Map.Entry.<String, BigDecimal[]>comparingByValue((a, b) -> b[1].compareTo(a[1])))
-                .limit(10)
-                .map(e -> {
-                    Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("name", e.getKey());
-                    row.put("count", e.getValue()[0]);
-                    row.put("contract", e.getValue()[1]);
-                    return row;
-                })
-                .toList();
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("rows", rows);
-        return m;
-    }
-
     // ==================== 工作台 ====================
 
     public Map<String, Object> dashboard(Long userId) {
@@ -167,7 +136,6 @@ public class StatsService {
         LocalDate soon = today.plusDays(60);
 
         Map<String, Object> cards = summary(null);
-        // 我的待办：进行中且指派给我的阶段（按计划日期临近排序）
         List<ProjectPhase> myPhases = phaseMapper.selectList(new LambdaQueryWrapper<ProjectPhase>()
                 .eq(ProjectPhase::getManagerUserId, userId)
                 .eq(ProjectPhase::getStatus, "IN_PROGRESS")
@@ -184,7 +152,6 @@ public class StatsService {
             return row;
         }).toList();
 
-        // 近期计划初验/终验（60 天内）
         List<Map<String, Object>> upcoming = new ArrayList<>();
         for (Project p : projects) {
             List<ProjectPhase> phases = c.phasesByProject().getOrDefault(p.getId(), List.of());
@@ -206,7 +173,6 @@ public class StatsService {
         }
         upcoming.sort(Comparator.comparing(r -> (LocalDate) r.get("planDate")));
 
-        // 逾期预警（进行中/未开始的阶段已过计划完成日）
         List<Map<String, Object>> overdueList = new ArrayList<>();
         for (Map.Entry<Long, List<ProjectPhase>> e : c.phasesByProject().entrySet()) {
             Project pj = projects.stream().filter(p -> p.getId().equals(e.getKey())).findFirst().orElse(null);
@@ -227,7 +193,6 @@ public class StatsService {
         }
         overdueList.sort(Comparator.comparing(r -> (Integer) r.get("days"), Comparator.reverseOrder()));
 
-        // 最近更新（按 updateTime 前 6）
         List<Map<String, Object>> recent = projects.stream()
                 .sorted(Comparator.comparing(Project::getUpdateTime, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(6)
@@ -256,8 +221,7 @@ public class StatsService {
 
     private record Common(Map<Long, List<ProjectPhase>> phasesByProject,
                            Map<Long, BigDecimal> paidMap,
-                           Map<Long, String> deptNames,
-                           java.util.Set<Long> overdueProjectIds) {
+                           Set<Long> overdueProjectIds) {
     }
 
     private List<Project> loadProjects(StatsQuery q) {
@@ -277,7 +241,7 @@ public class StatsService {
     private Common commonOf(List<Project> projects) {
         List<Long> ids = projects.stream().map(Project::getId).toList();
         Map<Long, List<ProjectPhase>> byProject = new HashMap<>();
-        java.util.Set<Long> overdueProjects = new java.util.HashSet<>();
+        Set<Long> overdueProjects = new java.util.HashSet<>();
         LocalDate today = LocalDate.now();
         if (!ids.isEmpty()) {
             List<ProjectPhase> phases = phaseMapper.selectList(new LambdaQueryWrapper<ProjectPhase>()
@@ -294,10 +258,7 @@ public class StatsService {
             }
         }
         Map<Long, BigDecimal> paidMap = paidByProjects(ids);
-        java.util.Set<Long> deptIds = projects.stream().map(Project::getOwnerDeptId).filter(java.util.Objects::nonNull).collect(Collectors.toSet());
-        Map<Long, String> deptNames = deptIds.isEmpty() ? Map.of()
-                : deptMapper.selectBatchIds(deptIds).stream().collect(Collectors.toMap(SysDept::getId, SysDept::getName));
-        return new Common(byProject, paidMap, deptNames, overdueProjects);
+        return new Common(byProject, paidMap, overdueProjects);
     }
 
     private Map<Long, BigDecimal> paidByProjects(List<Long> projectIds) {
@@ -337,7 +298,6 @@ public class StatsService {
         return v instanceof BigDecimal b ? b : BigDecimal.ZERO;
     }
 
-    /** 当前阶段名（与 ProjectService 口径一致） */
     private static String currentPhaseName(List<ProjectPhase> phases) {
         for (ProjectPhase p : phases) {
             if ("NOT_STARTED".equals(p.getStatus()) || "IN_PROGRESS".equals(p.getStatus())) {

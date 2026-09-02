@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react';
-import { dictApi, deptApi, userApi } from '@/api/project';
-import { DeptItem, DictItem, UserOption } from '@/types';
+import { dictApi, userApi } from '@/api/project';
+import { DictItem, UserOption } from '@/types';
 
 const dictCache = new Map<string, Promise<DictItem[]>>();
 const userPromise = userApi.list();
-const deptPromise = deptApi.list();
 
 /** 字典选项（带模块级缓存） */
 export function useDict(type: string): { options: DictItem[]; reload: () => void } {
@@ -44,18 +43,4 @@ export function useUsers(): UserOption[] {
     };
   }, []);
   return users;
-}
-
-export function useDepts(): DeptItem[] {
-  const [depts, setDepts] = useState<DeptItem[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    deptPromise.then((list) => {
-      if (!cancelled) setDepts(list);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  return depts;
 }

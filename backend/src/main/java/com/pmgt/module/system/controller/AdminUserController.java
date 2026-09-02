@@ -12,9 +12,7 @@ import com.pmgt.module.system.dto.AdminUserVO;
 import com.pmgt.module.system.dto.UserCreateRequest;
 import com.pmgt.module.system.dto.UserPasswordRequest;
 import com.pmgt.module.system.dto.UserUpdateRequest;
-import com.pmgt.module.system.entity.SysDept;
 import com.pmgt.module.system.entity.SysUser;
-import com.pmgt.module.system.mapper.SysDeptMapper;
 import com.pmgt.module.system.mapper.SysUserMapper;
 import jakarta.validation.Valid;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -29,26 +27,19 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-
 @RequireRole({Role.ADMIN})
 @RestController
 @RequestMapping("/api/admin/users")
 public class AdminUserController {
 
     private final SysUserMapper userMapper;
-    private final SysDeptMapper deptMapper;
     private final PasswordEncoder passwordEncoder;
     private final OperationLogService operationLogService;
 
     public AdminUserController(SysUserMapper userMapper,
-                               SysDeptMapper deptMapper,
                                PasswordEncoder passwordEncoder,
                                OperationLogService operationLogService) {
         this.userMapper = userMapper;
-        this.deptMapper = deptMapper;
         this.passwordEncoder = passwordEncoder;
         this.operationLogService = operationLogService;
     }
@@ -76,12 +67,7 @@ public class AdminUserController {
         }
         Page<SysUser> p = userMapper.selectPage(new Page<>(page, Math.min(size, 100)), qw);
         Page<AdminUserVO> vo = new Page<>(p.getCurrent(), p.getSize(), p.getTotal());
-        Set<Long> deptIds = p.getRecords().stream().map(SysUser::getDeptId).filter(java.util.Objects::nonNull).collect(Collectors.toSet());
-        Map<Long, String> deptNames = deptIds.isEmpty() ? Map.of()
-                : deptMapper.selectBatchIds(deptIds).stream().collect(Collectors.toMap(SysDept::getId, SysDept::getName));
-        vo.setRecords(p.getRecords().stream()
-                .map(u -> AdminUserVO.from(u, u.getDeptId() == null ? null : deptNames.get(u.getDeptId())))
-                .toList());
+        vo.setRecords(p.getRecords().stream().map(AdminUserVO::from).toList());
         return R.ok(vo);
     }
 
@@ -96,7 +82,6 @@ public class AdminUserController {
         SysUser u = new SysUser();
         u.setAccount(req.getAccount());
         u.setName(req.getName());
-        u.setDeptId(req.getDeptId());
         u.setRole(req.getRole());
         u.setPassword(passwordEncoder.encode(req.getPassword()));
         u.setStatus(1);
@@ -115,7 +100,6 @@ public class AdminUserController {
             throw new BizException(400, "请选择角色");
         }
         exist.setName(req.getName());
-        exist.setDeptId(req.getDeptId());
         exist.setRole(req.getRole());
         if (req.getStatus() != null) {
             if (req.getStatus() == 0 && AuthContext.userId().map(id::equals).orElse(false)) {

@@ -48,6 +48,7 @@ import AttachmentPreviewModal from '@/components/AttachmentPreviewModal';
 import { useAuth } from '@/store/auth';
 import { useDict } from '@/hooks/useOptions';
 import { fmtDate, fmtDateTime, fmtFileSize, fmtMoney } from '@/utils/format';
+import { payNodeTag, payStatusTag } from '@/config/tagDict';
 import {
   AttachmentItem,
   LogItem,
@@ -83,7 +84,7 @@ export default function ProjectDetailPage() {
     label: string;
     fixedAttachType?: string;
   } | null>(null);
-  const [payModal, setPayModal] = useState<{ open: boolean; item: PaymentItem | null }>({ open: false, item: null });
+  const [payModal, setPayModal] = useState<{ open: boolean; item: PaymentItem | null; nodeCode?: string }>({ open: false, item: null });
   const [submitting, setSubmitting] = useState(false);
 
   const { options: fundSources } = useDict('FUND_SOURCE');
@@ -93,6 +94,8 @@ export default function ProjectDetailPage() {
   const { options: payNodes } = useDict('PAY_NODE');
 
   const canEdit = user?.role === 'ADMIN' || user?.role === 'MANAGER';
+  // 付款金额按合同由管理员录入
+  const canManagePay = user?.role === 'ADMIN';
 
   const reload = useCallback(async () => {
     if (!id) return;
@@ -146,10 +149,16 @@ export default function ProjectDetailPage() {
         title = `阶段：${a.phaseName || '未知阶段'}`;
         phaseName = a.phaseName || undefined;
       } else if (a.bizType === 'PAYMENT') {
-        key = 'PAYMENT';
+        const pay = payments.find((pr) => pr.id === a.bizId);
+        key = `PAYMENT:${a.bizId}`;
         kind = 'PAYMENT';
-        bizId = 0;
-        title = '付款凭证';
+        bizId = a.bizId;
+        const node = pay ? payNodeTag(pay.nodeCode) : null;
+        title = pay
+          ? `${pay.nodeName || node?.text || '款项'}${
+              pay.planAmount ? `（计划 ${fmtMoney(pay.planAmount)} 元）` : ''
+            }`
+          : '付款凭证';
       } else {
         key = 'PROJECT';
         kind = 'PROJECT';
@@ -174,7 +183,7 @@ export default function ProjectDetailPage() {
       return rank[a.kind] - rank[b.kind];
     });
     return groups;
-  }, [attachments, detail, id]);
+  }, [attachments, detail, id, payments]);
 
   // 附件中心筛选（类别 / 归属）
   const [attachTypeFilter, setAttachTypeFilter] = useState<string | undefined>();
@@ -343,6 +352,54 @@ export default function ProjectDetailPage() {
                     </span>
                   ) : null}
                 </div>
+                {ph.payNode
+                  ? (() => {
+                      const pay = payments.find((p) => p.nodeCode === ph.payNode);
+                      const node = payNodeTag(ph.payNode);
+                      return (
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                            gap: 10,
+                            background: '#fffdf3',
+                            border: '1px solid #ffe7a3',
+                            borderRadius: 8,
+                            padding: '6px 12px',
+                            margin: '6px 0 8px',
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <Space size={8} wrap>
+                            <span style={{ fontWeight: 600 }}>💰 付款节点</span>
+                            <Tag color={node.color}>{node.text}</Tag>
+                            {pay ? (
+                              <>
+                                <span style={{ fontSize: 13 }}>
+                                  计划 <b>{fmtMoney(pay.planAmount)}</b> 元 · 已付 <b style={{ color: '#1677ff' }}>{fmtMoney(pay.paidAmount)}</b> 元
+                                </span>
+                                {(() => {
+                                  const st = payStatusTag(pay.status);
+                                  return <Tag color={st.color}>{st.text}</Tag>;
+                                })()}
+                              </>
+                            ) : (
+                              <span style={{ color: '#ad6800' }}>尚未按合同登记付款金额</span>
+                            )}
+                          </Space>
+                          {canManagePay && (
+                            <Button
+                              size="small"
+                              onClick={() => setPayModal({ open: true, item: pay || null, nodeCode: ph.payNode || undefined })}
+                            >
+                              {pay ? '编辑登记' : '登记付款'}
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })()
+                  : null}
                 {ph.note ? <div className="pm-note">{ph.note}</div> : null}
                 {ph.resultFields && typeof ph.resultFields === 'object' && Object.keys(ph.resultFields).length > 0 ? (
                   <div style={{ margin: '0 0 4px' }}>
@@ -363,13 +420,13 @@ export default function ProjectDetailPage() {
                     {pAtts.map((a) => (
                       <Tooltip
                         key={a.id}
-                        title={`${a.fileName} · ${fmtFileSize(a.fileSize)} · ${a.uploadUserName || '系统'} · ${fmtDateTime(a.uploadTime)}`}
+                        title={`${a.fileName} · ${fmtFileSize(a.fileSize)} · ${a.uploadUserName || '系统'} · 点击预览`}
                       >
-                        <a className="pm-chip" href={attachmentUrl(a.id)} download={a.fileName}>
+                        <span className="pm-chip" style={{ cursor: 'pointer' }} onClick={() => setPreviewAtt(a)}>
                           <span className="pm-ext">{(a.fileExt || 'file').toUpperCase()}</span>
                           <span className="pm-name">{a.fileName}</span>
                           <span className="pm-sz">{fmtFileSize(a.fileSize)}</span>
-                        </a>
+                        </span>
                       </Tooltip>
                     ))}
                   </div>
@@ -509,11 +566,13 @@ export default function ProjectDetailPage() {
       key: 'op',
       width: 200,
       render: (_, row) =>
-        canEdit ? (
+        canManagePay || canEdit ? (
           <Space size={4}>
-            <Button size="small" type="link" onClick={() => setPayModal({ open: true, item: row })}>
-              编辑
-            </Button>
+            {canManagePay && (
+              <Button size="small" type="link" onClick={() => setPayModal({ open: true, item: row })}>
+                编辑
+              </Button>
+            )}
             <Button
               size="small"
               type="link"
@@ -531,24 +590,26 @@ export default function ProjectDetailPage() {
             >
               凭证
             </Button>
-            <Button
-              size="small"
-              type="link"
-              danger
-              onClick={() => {
-                Modal.confirm({
-                  title: '删除付款记录',
-                  content: `确定删除「${row.nodeName}」这条付款记录吗？`,
-                  okButtonProps: { danger: true },
-                  onOk: async () => {
-                    await paymentApi.remove(row.id!);
-                    reload();
-                  },
-                });
-              }}
-            >
-              删除
-            </Button>
+            {canManagePay && (
+              <Button
+                size="small"
+                type="link"
+                danger
+                onClick={() => {
+                  Modal.confirm({
+                    title: '删除付款记录',
+                    content: `确定删除「${row.nodeName}」这条付款记录吗？`,
+                    okButtonProps: { danger: true },
+                    onOk: async () => {
+                      await paymentApi.remove(row.id!);
+                      reload();
+                    },
+                  });
+                }}
+              >
+                删除
+              </Button>
+            )}
           </Space>
         ) : null,
     },
@@ -558,11 +619,16 @@ export default function ProjectDetailPage() {
     <div>
       {fundSummary}
       <Card size="small" styles={{ body: { padding: 0 } }}>
-        {canEdit && (
+        {canManagePay && (
           <div style={{ padding: 12 }}>
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setPayModal({ open: true, item: null })}>
-              新增付款记录
+              新增付款记录（按合同）
             </Button>
+          </div>
+        )}
+        {!canManagePay && (
+          <div style={{ padding: '8px 12px', fontSize: 12, color: '#8c8c8c' }}>
+            付款金额由管理员按合同录入；你可查看与上传/预览凭证。
           </div>
         )}
         <Table<PaymentItem>
@@ -833,6 +899,7 @@ export default function ProjectDetailPage() {
           open={payModal.open}
           projectId={detail.id}
           item={payModal.item}
+          initialNodeCode={payModal.nodeCode}
           nodeOptions={payNodes}
           onCancel={() => setPayModal({ open: false, item: null })}
           onDone={reload}
@@ -849,6 +916,8 @@ interface PaymentModalProps {
   open: boolean;
   projectId: number;
   item: PaymentItem | null;
+  /** 从“流程进展”付款节点带入的节点编码（新增场景） */
+  initialNodeCode?: string;
   nodeOptions: { code: string; name: string }[];
   onCancel: () => void;
   onDone: () => void;
@@ -866,7 +935,7 @@ interface PaymentFormValues {
   remark?: string;
 }
 
-function PaymentModal({ open, projectId, item, nodeOptions, onCancel, onDone }: PaymentModalProps) {
+function PaymentModal({ open, projectId, item, initialNodeCode, nodeOptions, onCancel, onDone }: PaymentModalProps) {
   const [form] = Form.useForm<PaymentFormValues>();
   const [saving, setSaving] = useState(false);
   const nodeCode = Form.useWatch('nodeCode', form);
@@ -887,9 +956,9 @@ function PaymentModal({ open, projectId, item, nodeOptions, onCancel, onDone }: 
       });
     } else {
       form.resetFields();
-      form.setFieldsValue({ status: 'UNPAID', paidAmount: 0 });
+      form.setFieldsValue({ status: 'UNPAID', paidAmount: 0, nodeCode: initialNodeCode });
     }
-  }, [open, item, form]);
+  }, [open, item, initialNodeCode, form]);
 
   const submit = () => {
     form.validateFields().then(async (values) => {
@@ -937,6 +1006,20 @@ function PaymentModal({ open, projectId, item, nodeOptions, onCancel, onDone }: 
         </Button>,
       ]}
     >
+      {!item && initialNodeCode && (
+        <div
+          style={{
+            marginBottom: 12,
+            background: '#e6f4ff',
+            border: '1px solid #91caff',
+            borderRadius: 6,
+            padding: '6px 10px',
+            fontSize: 13,
+          }}
+        >
+          请按合同录入「{nodeOptions.find((n) => n.code === initialNodeCode)?.name || initialNodeCode}」的计划金额与实际支付情况。
+        </div>
+      )}
       <Form<PaymentFormValues> form={form} labelCol={{ span: 6 }} wrapperCol={{ span: 16 }}>
         <Form.Item label="付款节点" name="nodeCode" rules={[{ required: true, message: '请选择付款节点' }]}>
           <Select options={nodeOptions.map((n) => ({ value: n.code, label: n.name }))} />

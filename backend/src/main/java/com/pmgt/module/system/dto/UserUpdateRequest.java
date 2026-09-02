@@ -13,8 +13,6 @@ public class UserUpdateRequest {
     @NotBlank(message = "姓名不能为空")
     private String name;
 
-    private Long deptId;
-
     private Role role;
 
     private Integer status;

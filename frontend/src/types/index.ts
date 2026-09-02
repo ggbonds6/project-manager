@@ -5,7 +5,6 @@ export interface CurrentUser {
   account: string;
   name: string;
   role: Role;
-  deptId?: number | null;
 }
 
 export interface LoginParams {
@@ -39,19 +38,11 @@ export interface DictItem {
   sortNo?: number;
 }
 
-export interface DeptItem {
-  id: number;
-  parentId: number;
-  name: string;
-  orderNo?: number;
-}
-
 export interface UserOption {
   id: number;
   account: string;
   name: string;
   role: Role;
-  deptId?: number | null;
   status?: number;
 }
 
@@ -102,6 +93,15 @@ export interface ProjectForm {
   remark?: string;
 }
 
+export interface PaymentBrief {
+  nodeCode: string;
+  nodeName: string;
+  status: string;
+  planAmount?: number | null;
+  paidAmount?: number;
+  paidDate?: string | null;
+}
+
 export interface ProjectListItem {
   id: number;
   code: string;
@@ -109,8 +109,6 @@ export interface ProjectListItem {
   type: 'HW' | 'SW';
   status: string;
   ownerUnit?: string | null;
-  ownerDeptId?: number | null;
-  ownerDeptName?: string | null;
   managerUserId?: number | null;
   managerName?: string | null;
   vendorName?: string | null;
@@ -122,6 +120,7 @@ export interface ProjectListItem {
   actualFinishDate?: string | null;
   currentPhaseName?: string | null;
   overallProgress?: number;
+  payments?: PaymentBrief[];
   updateTime?: string | null;
 }
 

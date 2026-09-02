@@ -24,7 +24,6 @@ public class ProjectSaveRequest {
     private String status;
 
     private String ownerUnit;
-    private Long ownerDeptId;
     private Long managerUserId;
     private List<Long> memberIds;
     private String vendorName;

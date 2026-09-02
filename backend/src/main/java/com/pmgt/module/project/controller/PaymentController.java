@@ -49,7 +49,7 @@ public class PaymentController {
                 .stream().map(PaymentVO::from).toList());
     }
 
-    @RequireRole({Role.ADMIN, Role.MANAGER})
+    @RequireRole({Role.ADMIN})
     @PostMapping("/payments")
     public R<Long> create(@Valid @RequestBody PaymentSaveRequest req) {
         Project pj = projectMapper.selectById(req.getProjectId());
@@ -64,7 +64,7 @@ public class PaymentController {
         return R.ok(p.getId());
     }
 
-    @RequireRole({Role.ADMIN, Role.MANAGER})
+    @RequireRole({Role.ADMIN})
     @PutMapping("/payments/{id}")
     public R<Void> update(@PathVariable Long id, @Valid @RequestBody PaymentSaveRequest req) {
         Payment exist = paymentMapper.selectById(id);
@@ -81,7 +81,7 @@ public class PaymentController {
         return R.ok();
     }
 
-    @RequireRole({Role.ADMIN, Role.MANAGER})
+    @RequireRole({Role.ADMIN})
     @DeleteMapping("/payments/{id}")
     public R<Void> delete(@PathVariable Long id) {
         Payment exist = paymentMapper.selectById(id);

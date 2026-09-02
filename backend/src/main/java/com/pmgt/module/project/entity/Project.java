@@ -7,7 +7,6 @@ import lombok.EqualsAndHashCode;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-
 @Data
 @EqualsAndHashCode(callSuper = true)
 @TableName("project")
@@ -18,7 +17,6 @@ public class Project extends BaseEntity {
     private String type;
     private String status;
     private String ownerUnit;
-    private Long ownerDeptId;
     private Long managerUserId;
     private String memberIds;
     private String vendorName;

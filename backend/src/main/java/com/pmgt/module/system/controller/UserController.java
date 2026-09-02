@@ -32,7 +32,6 @@ public class UserController {
                                 @RequestParam(required = false) String role) {
         LambdaQueryWrapper<SysUser> qw = new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getStatus, 1)
-                .orderByAsc(SysUser::getDeptId)
                 .orderByAsc(SysUser::getId);
         if (StringUtils.hasText(keyword)) {
             qw.and(w -> w.like(SysUser::getName, keyword).or().like(SysUser::getAccount, keyword));

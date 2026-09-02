@@ -36,9 +36,4 @@ public class StatsController {
     public R<Map<String, Object>> yearMoney(StatsQuery q) {
         return R.ok(statsService.yearMoney(q));
     }
-
-    @GetMapping("/dept-ranking")
-    public R<Map<String, Object>> deptRanking(StatsQuery q) {
-        return R.ok(statsService.deptRanking(q));
-    }
 }

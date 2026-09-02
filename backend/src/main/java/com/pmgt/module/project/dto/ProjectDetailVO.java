@@ -19,8 +19,6 @@ public class ProjectDetailVO {
     private String type;
     private String status;
     private String ownerUnit;
-    private Long ownerDeptId;
-    private String ownerDeptName;
     private Long managerUserId;
     private String managerName;
     private List<Long> memberIds;

@@ -1,6 +1,7 @@
 package com.pmgt.module.project.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -20,10 +21,8 @@ import com.pmgt.module.project.mapper.ProjectMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
 import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.system.entity.PhaseTemplate;
-import com.pmgt.module.system.entity.SysDept;
 import com.pmgt.module.system.entity.SysUser;
 import com.pmgt.module.system.mapper.PhaseTemplateMapper;
-import com.pmgt.module.system.mapper.SysDeptMapper;
 import com.pmgt.module.system.mapper.SysUserMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -35,10 +34,10 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -53,7 +52,6 @@ public class ProjectService {
     private final PaymentMapper paymentMapper;
     private final PhaseTemplateMapper templateMapper;
     private final SysUserMapper userMapper;
-    private final SysDeptMapper deptMapper;
     private final OperationLogService operationLogService;
     private final ObjectMapper objectMapper;
 
@@ -62,7 +60,6 @@ public class ProjectService {
                           PaymentMapper paymentMapper,
                           PhaseTemplateMapper templateMapper,
                           SysUserMapper userMapper,
-                          SysDeptMapper deptMapper,
                           OperationLogService operationLogService,
                           ObjectMapper objectMapper) {
         this.projectMapper = projectMapper;
@@ -70,7 +67,6 @@ public class ProjectService {
         this.paymentMapper = paymentMapper;
         this.templateMapper = templateMapper;
         this.userMapper = userMapper;
-        this.deptMapper = deptMapper;
         this.operationLogService = operationLogService;
         this.objectMapper = objectMapper;
     }
@@ -113,10 +109,10 @@ public class ProjectService {
             voPage.setRecords(List.of());
             return voPage;
         }
-        Map<Long, String> userNames = userNameMap(records.stream().map(Project::getManagerUserId).collect(Collectors.toSet()));
-        Map<Long, String> deptNames = deptNameMap(records.stream().map(Project::getOwnerDeptId).collect(Collectors.toSet()));
-        Map<Long, List<ProjectPhase>> phasesByProject = phasesByProjects(records.stream().map(Project::getId).toList());
-        Map<Long, BigDecimal> paidByProject = paidByProjects(records.stream().map(Project::getId).toList());
+        List<Long> projectIds = records.stream().map(Project::getId).toList();
+        Map<Long, String> userNames = userNameMap(ids(records.stream().map(Project::getManagerUserId).toArray(Long[]::new)));
+        Map<Long, List<ProjectPhase>> phasesByProject = phasesByProjects(projectIds);
+        Map<Long, List<Payment>> paymentsByProject = paymentsByProjects(projectIds);
 
         List<ProjectVO> vos = records.stream().map(pj -> {
             ProjectVO vo = new ProjectVO();
@@ -126,8 +122,6 @@ public class ProjectService {
             vo.setType(pj.getType());
             vo.setStatus(pj.getStatus());
             vo.setOwnerUnit(pj.getOwnerUnit());
-            vo.setOwnerDeptId(pj.getOwnerDeptId());
-            vo.setOwnerDeptName(optionalName(deptNames, pj.getOwnerDeptId()));
             vo.setManagerUserId(pj.getManagerUserId());
             vo.setManagerName(optionalName(userNames, pj.getManagerUserId()));
             vo.setVendorName(pj.getVendorName());
@@ -140,7 +134,10 @@ public class ProjectService {
             List<ProjectPhase> phases = phasesByProject.getOrDefault(pj.getId(), List.of());
             vo.setCurrentPhaseName(currentPhaseName(phases));
             vo.setOverallProgress(overallProgress(phases));
-            vo.setPaidAmount(paidByProject.getOrDefault(pj.getId(), BigDecimal.ZERO));
+
+            List<Payment> pays = paymentsByProject.getOrDefault(pj.getId(), List.of());
+            vo.setPaidAmount(pays.stream().map(pr -> zero(pr.getPaidAmount())).reduce(BigDecimal.ZERO, BigDecimal::add));
+            vo.setPayments(pays.stream().map(this::paymentBrief).toList());
             return vo;
         }).toList();
         voPage.setRecords(vos);
@@ -159,7 +156,6 @@ public class ProjectService {
         vo.setType(pj.getType());
         vo.setStatus(pj.getStatus());
         vo.setOwnerUnit(pj.getOwnerUnit());
-        vo.setOwnerDeptId(pj.getOwnerDeptId());
         vo.setManagerUserId(pj.getManagerUserId());
         vo.setVendorName(pj.getVendorName());
         vo.setVendorContact(pj.getVendorContact());
@@ -184,8 +180,6 @@ public class ProjectService {
 
         Map<Long, String> userNames = userNameMap(ids(pj.getManagerUserId()));
         vo.setManagerName(optionalName(userNames, pj.getManagerUserId()));
-        Map<Long, String> deptNames = deptNameMap(ids(pj.getOwnerDeptId()));
-        vo.setOwnerDeptName(optionalName(deptNames, pj.getOwnerDeptId()));
 
         List<Long> memberIds = parseMemberIds(pj.getMemberIds());
         vo.setMemberIds(memberIds);
@@ -250,7 +244,6 @@ public class ProjectService {
             throw new BizException(404, "项目不存在");
         }
         validateSave(req, id);
-        // code 不允许通过更新接口修改（保持稳定），如传入且与现有一致则忽略
         applySave(exist, req);
         if (StringUtils.hasText(req.getStatus())) {
             exist.setStatus(req.getStatus());
@@ -265,7 +258,6 @@ public class ProjectService {
         if (exist == null) {
             throw new BizException(404, "项目不存在");
         }
-        // 逻辑删除项目及其阶段（附件/付款由各自逻辑保留，便于审计追溯）
         projectMapper.deleteById(id);
         phaseMapper.delete(new LambdaQueryWrapper<ProjectPhase>().eq(ProjectPhase::getProjectId, id));
         operationLogService.log("PROJECT", id, "DELETE", "删除项目「" + exist.getName() + "」(" + exist.getCode() + ")");
@@ -357,7 +349,7 @@ public class ProjectService {
         phaseMapper.updateById(ph);
         if (clearPayNode) {
             // updateById 忽略 null 字段，需显式置 NULL
-            phaseMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<ProjectPhase>()
+            phaseMapper.update(null, new LambdaUpdateWrapper<ProjectPhase>()
                     .eq(ProjectPhase::getId, phaseId)
                     .set(ProjectPhase::getPayNode, null));
         }
@@ -394,7 +386,6 @@ public class ProjectService {
         pj.setName(req.getName());
         pj.setType(req.getType());
         pj.setOwnerUnit(req.getOwnerUnit());
-        pj.setOwnerDeptId(req.getOwnerDeptId());
         pj.setManagerUserId(req.getManagerUserId());
         pj.setMemberIds(req.getMemberIds() == null ? null
                 : req.getMemberIds().stream().map(String::valueOf).collect(Collectors.joining(",")));
@@ -437,6 +428,17 @@ public class ProjectService {
         return base.add(change);
     }
 
+    private Map<String, Object> paymentBrief(Payment pay) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("nodeCode", pay.getNodeCode());
+        row.put("nodeName", pay.getNodeName());
+        row.put("status", pay.getStatus());
+        row.put("planAmount", zero(pay.getPlanAmount()));
+        row.put("paidAmount", zero(pay.getPaidAmount()));
+        row.put("paidDate", pay.getPaidDate());
+        return row;
+    }
+
     private List<Long> parseMemberIds(String memberIds) {
         if (!StringUtils.hasText(memberIds)) {
             return List.of();
@@ -463,18 +465,15 @@ public class ProjectService {
                 .collect(Collectors.groupingBy(ProjectPhase::getProjectId));
     }
 
-    private Map<Long, BigDecimal> paidByProjects(List<Long> projectIds) {
+    private Map<Long, List<Payment>> paymentsByProjects(List<Long> projectIds) {
         if (projectIds.isEmpty()) {
             return Map.of();
         }
-        List<Payment> payments = paymentMapper.selectList(new LambdaQueryWrapper<Payment>()
-                .in(Payment::getProjectId, projectIds));
-        Map<Long, BigDecimal> map = new HashMap<>();
-        for (Payment pay : payments) {
-            BigDecimal paid = pay.getPaidAmount() == null ? BigDecimal.ZERO : pay.getPaidAmount();
-            map.merge(pay.getProjectId(), paid, BigDecimal::add);
-        }
-        return map;
+        return paymentMapper.selectList(new LambdaQueryWrapper<Payment>()
+                        .in(Payment::getProjectId, projectIds)
+                        .orderByAsc(Payment::getId))
+                .stream()
+                .collect(Collectors.groupingBy(Payment::getProjectId));
     }
 
     private Set<Long> ids(Long... values) {
@@ -494,15 +493,6 @@ public class ProjectService {
         }
         return userMapper.selectBatchIds(ids).stream()
                 .collect(Collectors.toMap(SysUser::getId, SysUser::getName));
-    }
-
-    private Map<Long, String> deptNameMap(Set<Long> rawIds) {
-        Set<Long> ids = ids(rawIds == null ? null : rawIds.toArray(new Long[0]));
-        if (ids.isEmpty()) {
-            return Map.of();
-        }
-        return deptMapper.selectBatchIds(ids).stream()
-                .collect(Collectors.toMap(SysDept::getId, SysDept::getName));
     }
 
     private String optionalName(Map<Long, String> map, Long id) {
@@ -572,5 +562,9 @@ public class ProjectService {
             }
         }
         return vo;
+    }
+
+    private static BigDecimal zero(BigDecimal v) {
+        return v == null ? BigDecimal.ZERO : v;
     }
 }

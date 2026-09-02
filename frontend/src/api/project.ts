@@ -2,7 +2,6 @@ import { api } from './http';
 import {
   AttachmentItem,
   DictItem,
-  DeptItem,
   LogItem,
   PageResult,
   PaymentItem,
@@ -51,12 +50,6 @@ export const projectApi = {
 export const dictApi = {
   list(type: string): Promise<DictItem[]> {
     return api.get<DictItem[]>('/dicts', { type });
-  },
-};
-
-export const deptApi = {
-  list(): Promise<DeptItem[]> {
-    return api.get<DeptItem[]>('/depts');
   },
 };
 
