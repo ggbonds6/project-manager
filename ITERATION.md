@@ -28,6 +28,8 @@
 
 ---
 
+| v0.6 | 2026-09-02 | 瀑布流 UI 还原 + 全阶段附件 Mock | 详情页"流程进展"还原 demo 瀑布流样式（时间轴状态圆点/脉冲、阶段卡片、计划/实际/负责人/比例元信息、附件 chips、逾期标红提示）；`scripts/seed-attachments.mjs` 为所有演示项目**每个阶段**补齐典型文档附件（共 255 个 txt/pdf/csv，PDF 可在线预览）；附件扩展名白名单支持 csv | `4fcf1fb` |
+
 ## 各迭代明细
 
 ### v0.1 — 需求与设计（评审稿 + 静态 Demo）
@@ -76,7 +78,7 @@
 | 阶段推进 + 整体进度自动计算 | ✅ | 权重口径见设计稿 §9 |
 | 项目详情五页签（流程/信息/资金/附件/日志） | ✅ | 附件按阶段展示与直达上传 |
 | 付款记录 CRUD + 资金汇总 | ✅ | 含凭证附件 |
-| 附件上传/下载/预览/逻辑删除 | ✅ | 本地盘存储 |
+| 附件上传/下载/预览/逻辑删除 | ✅ | 本地盘存储；阶段附件瀑布流 chips 直达 |
 | 工作台 / 项目统计（图表） | ⏳ 待办 | M5：计划后续迭代 |
 | 系统管理（用户/部门/模板/字典维护） | ⏳ 待办 | M6：计划后续迭代 |
 | 演示数据脚本 | ✅ | `node scripts/seed-demo.mjs` |
@@ -87,7 +89,8 @@
 # MySQL（若未启动）：E:\work\env\mysql\start-mysql.cmd
 cd backend  && mvn spring-boot:run      # :8080（Flyway 自动迁移）
 cd frontend && npm install && npm run dev  # :5173
-node scripts/seed-demo.mjs              # 可选：重置演示数据
+node scripts/seed-demo.mjs              # 可选：重置演示项目数据
+node scripts/seed-attachments.mjs       # 可选：为各阶段补齐典型附件（每个阶段都有）
 ```
 
 ## 后续待办（Backlog）
