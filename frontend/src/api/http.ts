@@ -1,4 +1,4 @@
-import axios, { AxiosError } from 'axios';
+import axios, { AxiosError, AxiosResponse } from 'axios';
 import { message } from 'antd';
 import { R } from '@/types';
 
@@ -39,7 +39,7 @@ http.interceptors.request.use((config) => {
 });
 
 http.interceptors.response.use(
-  (resp) => {
+  ((resp: AxiosResponse) => {
     const body = resp.data as R<unknown>;
     if (body && typeof body === 'object' && 'code' in body) {
       if (body.code === 0) {
@@ -54,7 +54,7 @@ http.interceptors.response.use(
       return Promise.reject(new Error(body.message || '请求失败'));
     }
     return body;
-  },
+  }) as unknown as (resp: AxiosResponse) => AxiosResponse | Promise<AxiosResponse>,
   (err: AxiosError<{ message?: string }>) => {
     const status = err.response?.status;
     const msg = err.response?.data?.message || err.message || '网络错误';
