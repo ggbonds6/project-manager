@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button, Col, DatePicker, Form, Input, InputNumber, Modal, Radio, Row, Select, Space } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
-import { useUsers } from '@/hooks/useOptions';
+import { useDict, useUsers } from '@/hooks/useOptions';
 import { PHASE_STATUS, PhaseItem } from '@/types';
 
 interface FormValues {
@@ -12,6 +12,7 @@ interface FormValues {
   actualStartDate?: Dayjs | null;
   actualFinishDate?: Dayjs | null;
   managerUserId?: number | null;
+  payNode?: string;
   note?: string;
   resultJson?: string;
 }
@@ -27,6 +28,7 @@ interface Props {
 export default function PhaseEditModal({ open, phase, submitting, onOk, onCancel }: Props) {
   const [form] = Form.useForm<FormValues>();
   const users = useUsers();
+  const { options: payNodes } = useDict('PAY_NODE');
 
   useEffect(() => {
     if (!open || !phase) return;
@@ -38,6 +40,7 @@ export default function PhaseEditModal({ open, phase, submitting, onOk, onCancel
       actualStartDate: phase.actualStartDate ? dayjs(phase.actualStartDate) : null,
       actualFinishDate: phase.actualFinishDate ? dayjs(phase.actualFinishDate) : null,
       managerUserId: phase.managerUserId ?? null,
+      payNode: phase.payNode ?? undefined,
       note: phase.note ?? undefined,
       resultJson:
         phase.resultFields && typeof phase.resultFields === 'object'
@@ -80,6 +83,7 @@ export default function PhaseEditModal({ open, phase, submitting, onOk, onCancel
         actualStartDate: values.actualStartDate ? values.actualStartDate.format('YYYY-MM-DD') : null,
         actualFinishDate: values.actualFinishDate ? values.actualFinishDate.format('YYYY-MM-DD') : null,
         managerUserId: values.managerUserId ?? null,
+        payNode: values.payNode ?? '',
         note: values.note || null,
         resultFields,
       });
@@ -158,6 +162,9 @@ export default function PhaseEditModal({ open, phase, submitting, onOk, onCancel
             optionFilterProp="label"
             options={users.map((u) => ({ value: u.id, label: `${u.name}（${u.account}）` }))}
           />
+        </Form.Item>
+        <Form.Item label="付款节点" name="payNode" tooltip="该阶段完成是否对应一笔里程碑付款（预付/到货/初验/终验/质保），可在资金情况中登记金额">
+          <Select allowClear placeholder="无里程碑付款则留空" options={payNodes.map((p) => ({ value: p.code, label: p.name }))} />
         </Form.Item>
         <Form.Item label="经办记录" name="note">
           <Input.TextArea rows={3} placeholder="本阶段做了什么、结论如何" />

@@ -11,6 +11,8 @@ interface Props {
   bizType: string;
   bizId: number;
   scopeLabel?: string;
+  /** 固定附件类别：设置后不再让用户选择文档类别（如付款凭证上传） */
+  fixedAttachType?: string;
   onCancel: () => void;
   onDone: () => void;
 }
@@ -21,17 +23,24 @@ export default function AttachmentUploadModal({
   bizType,
   bizId,
   scopeLabel,
+  fixedAttachType,
   onCancel,
   onDone,
 }: Props) {
   const { options: attachTypes } = useDict('ATTACH_TYPE');
-  const [attachType, setAttachType] = useState<string | undefined>();
+  const [attachType, setAttachType] = useState<string | undefined>(fixedAttachType);
   const [uploading, setUploading] = useState(false);
 
   const doUpload = async (file: File) => {
     setUploading(true);
     try {
-      const res = await attachmentApi.upload({ projectId, bizType, bizId, attachType, file });
+      const res = await attachmentApi.upload({
+        projectId,
+        bizType,
+        bizId,
+        attachType: fixedAttachType ?? attachType,
+        file,
+      });
       message.success(`上传成功：${res.fileName}`);
       onDone();
       onCancel();
@@ -57,22 +66,29 @@ export default function AttachmentUploadModal({
       width={480}
     >
       <Space direction="vertical" style={{ width: '100%' }}>
-        <div>
-          <Typography.Text type="secondary">文档类别：</Typography.Text>
-          <Select
-            style={{ width: 260 }}
-            allowClear
-            placeholder="选择文档类别"
-            value={attachType}
-            onChange={setAttachType}
-            options={attachTypes.map((d) => ({ value: d.code, label: d.name }))}
-          />
-        </div>
-        <Upload accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.png,.jpg,.jpeg,.gif,.webp,.zip,.rar,.7z" beforeUpload={beforeUpload} showUploadList={false}>
+        {!fixedAttachType && (
+          <div>
+            <Typography.Text type="secondary">文档类别：</Typography.Text>
+            <Select
+              style={{ width: 260 }}
+              allowClear
+              placeholder="选择文档类别"
+              value={attachType}
+              onChange={setAttachType}
+              options={attachTypes.map((d) => ({ value: d.code, label: d.name }))}
+            />
+          </div>
+        )}
+        <Upload accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.png,.jpg,.jpeg,.gif,.webp,.zip,.rar,.7z" beforeUpload={beforeUpload} showUploadList={false}>
           <Button type="primary" icon={<UploadOutlined />} loading={uploading}>
             选择文件并上传
           </Button>
         </Upload>
+        {fixedAttachType && (
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            将按“{attachTypes.find((d) => d.code === fixedAttachType)?.name || fixedAttachType}”类别上传
+          </Typography.Text>
+        )}
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           支持 pdf/word/excel/图片/压缩包，单文件 ≤ 100MB
         </Typography.Text>

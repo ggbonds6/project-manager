@@ -19,6 +19,8 @@ public class PhaseUpdateRequest {
     private LocalDate actualStartDate;
     private LocalDate actualFinishDate;
     private Long managerUserId;
+    /** 付款节点编码（PREPAY/ARRIVAL/FIRST_ACCEPT/FINAL_ACCEPT/WARRANTY；空串表示清除） */
+    private String payNode;
     /** 阶段关键结果字段，整体替换保存 */
     private Map<String, Object> resultFields;
 }

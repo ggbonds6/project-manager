@@ -329,6 +329,17 @@ public class ProjectService {
         if (req.getManagerUserId() != null) {
             ph.setManagerUserId(req.getManagerUserId());
         }
+        boolean clearPayNode = false;
+        if (req.getPayNode() != null) {
+            // 空串视为清除付款节点
+            String node = req.getPayNode().trim();
+            if (node.isEmpty()) {
+                clearPayNode = true;
+                ph.setPayNode(null);
+            } else {
+                ph.setPayNode(node);
+            }
+        }
         if (req.getNote() != null) {
             ph.setNote(req.getNote());
         }
@@ -344,6 +355,12 @@ public class ProjectService {
             throw new BizException(400, "实际完成日期不能早于实际开始日期");
         }
         phaseMapper.updateById(ph);
+        if (clearPayNode) {
+            // updateById 忽略 null 字段，需显式置 NULL
+            phaseMapper.update(null, new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<ProjectPhase>()
+                    .eq(ProjectPhase::getId, phaseId)
+                    .set(ProjectPhase::getPayNode, null));
+        }
         operationLogService.log("PROJECT", projectId, "UPDATE_PHASE",
                 "阶段「" + ph.getPhaseName() + "」更新为 " + ph.getStatus() + " (进度 " + ph.getPercent() + "%)");
     }

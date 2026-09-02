@@ -3,6 +3,7 @@ import {
   Button,
   Card,
   Col,
+  Collapse,
   DatePicker,
   Descriptions,
   Empty,
@@ -11,6 +12,7 @@ import {
   InputNumber,
   List,
   Modal,
+  Pagination,
   Progress,
   Row,
   Select,
@@ -20,14 +22,15 @@ import {
   Tag,
   Timeline,
   Tooltip,
+  Avatar,
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
   ArrowLeftOutlined,
-  CheckCircleOutlined,
   DownloadOutlined,
   EditOutlined,
+  EyeOutlined,
   FileTextOutlined,
   PaperClipOutlined,
   PlusOutlined,
@@ -41,6 +44,7 @@ import { attachmentApi, attachmentUrl, paymentApi, projectApi } from '@/api/proj
 import ProjectFormModal from '@/components/ProjectFormModal';
 import PhaseEditModal from '@/components/PhaseEditModal';
 import AttachmentUploadModal from '@/components/AttachmentUploadModal';
+import AttachmentPreviewModal from '@/components/AttachmentPreviewModal';
 import { useAuth } from '@/store/auth';
 import { useDict } from '@/hooks/useOptions';
 import { fmtDate, fmtDateTime, fmtFileSize, fmtMoney } from '@/utils/format';
@@ -72,7 +76,13 @@ export default function ProjectDetailPage() {
   // 弹窗状态
   const [editOpen, setEditOpen] = useState(false);
   const [phaseModal, setPhaseModal] = useState<{ open: boolean; phase: PhaseItem | null }>({ open: false, phase: null });
-  const [upload, setUpload] = useState<{ open: boolean; bizType: string; bizId: number; label: string } | null>(null);
+  const [upload, setUpload] = useState<{
+    open: boolean;
+    bizType: string;
+    bizId: number;
+    label: string;
+    fixedAttachType?: string;
+  } | null>(null);
   const [payModal, setPayModal] = useState<{ open: boolean; item: PaymentItem | null }>({ open: false, item: null });
   const [submitting, setSubmitting] = useState(false);
 
@@ -170,6 +180,11 @@ export default function ProjectDetailPage() {
   const [attachTypeFilter, setAttachTypeFilter] = useState<string | undefined>();
   const [groupFilter, setGroupFilter] = useState<string | undefined>();
 
+  // 附件在线预览 / 操作日志分页
+  const [previewAtt, setPreviewAtt] = useState<AttachmentItem | null>(null);
+  const [logPage, setLogPage] = useState(1);
+  const [logSize, setLogSize] = useState(8);
+
   const onProjectSaved = async (values: ProjectForm) => {
     if (!detail) return;
     setSubmitting(true);
@@ -236,7 +251,7 @@ export default function ProjectDetailPage() {
             <Progress percent={detail.overallProgress || 0} size="small" style={{ width: 140, display: 'inline-block', marginLeft: 6 }} />
           </Col>
           <Col xs={24} md={6}>
-            项目经理：{detail.managerName || '-'}（{detail.ownerDeptName || '未分部门'}）
+            项目经理：{detail.managerName || '-'}
           </Col>
           <Col xs={24} md={6}>
             合同总额：<b>{fmtMoney(detail.contractTotal)}</b> 元
@@ -277,7 +292,7 @@ export default function ProjectDetailPage() {
               <div className="pm-phase-card">
                 <div className="pm-phase-head">
                   <div className="pm-tt">
-                    <span className="pm-no">STEP {idx + 1} · 权重 {ph.weight}</span>
+                    <span className="pm-no">STEP {idx + 1}</span>
                     <span className="pm-nm">{ph.phaseName}</span>
                     {st ? <Tag color={st.color}>{st.text}</Tag> : null}
                     {payName ? <Tag color="gold">{payName}</Tag> : null}
@@ -380,7 +395,6 @@ export default function ProjectDetailPage() {
           {statusMeta(detail.status)?.text || detail.status || '-'}
         </Descriptions.Item>
         <Descriptions.Item label="甲方单位">{detail.ownerUnit || '-'}</Descriptions.Item>
-        <Descriptions.Item label="承接部门">{detail.ownerDeptName || '-'}</Descriptions.Item>
         <Descriptions.Item label="项目经理">{detail.managerName || '-'}</Descriptions.Item>
         <Descriptions.Item label="参与人员">{(detail.memberNames || []).join('、') || '-'}</Descriptions.Item>
         <Descriptions.Item label="供应商">{detail.vendorName || '-'}</Descriptions.Item>
@@ -465,6 +479,32 @@ export default function ProjectDetailPage() {
     },
     { title: '实付日期', dataIndex: 'paidDate', width: 120, render: fmtDate },
     {
+      title: '凭证附件',
+      key: 'att',
+      width: 250,
+      render: (_, row) => {
+        const atts = attachments.filter((a) => a.bizType === 'PAYMENT' && a.bizId === row.id);
+        if (!atts.length) return <span style={{ color: '#bfbfbf' }}>—</span>;
+        return (
+          <Space size={[4, 4]} wrap>
+            {atts.map((a) => (
+              <Tooltip key={a.id} title={a.fileName}>
+                <Button
+                  size="small"
+                  type="link"
+                  icon={<FileTextOutlined />}
+                  onClick={() => setPreviewAtt(a)}
+                  style={{ paddingLeft: 0 }}
+                >
+                  {a.fileName.length > 14 ? a.fileName.slice(0, 14) + '…' : a.fileName}
+                </Button>
+              </Tooltip>
+            ))}
+          </Space>
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'op',
       width: 200,
@@ -478,7 +518,16 @@ export default function ProjectDetailPage() {
               size="small"
               type="link"
               icon={<PaperClipOutlined />}
-              onClick={() => row.id && setUpload({ open: true, bizType: 'PAYMENT', bizId: row.id, label: `付款凭证：${row.nodeName}` })}
+              onClick={() =>
+                row.id &&
+                setUpload({
+                  open: true,
+                  bizType: 'PAYMENT',
+                  bizId: row.id,
+                  label: `付款凭证：${row.nodeName}`,
+                  fixedAttachType: 'PAY_VOUCHER',
+                })
+              }
             >
               凭证
             </Button>
@@ -570,129 +619,180 @@ export default function ProjectDetailPage() {
         ) : visible.length === 0 ? (
           <Empty description="没有符合当前过滤条件的附件" />
         ) : (
-          visible.map((g) => (
-            <div key={g.title} style={{ marginBottom: 16 }}>
-              <div
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  borderBottom: '1px solid #f0f0f0',
-                  paddingBottom: 6,
-                  marginBottom: 4,
-                }}
-              >
+          <Collapse
+            key={visible.map((g) => g.title).join('|')}
+            defaultActiveKey={visible.map((g) => g.title)}
+            items={visible.map((g) => ({
+              key: g.title,
+              label: (
                 <Space size={8}>
                   <b style={{ fontSize: 14 }}>{g.title}</b>
                   <span style={{ color: '#8c8c8c', fontSize: 12 }}>{g.items.length} 个文件</span>
-                  {g.kind === 'PAYMENT' && <Tag>凭证在“资金情况”页签上传/关联</Tag>}
+                  {g.kind === 'PAYMENT' ? (
+                    <Tag>凭证在“资金情况”页签上传/查看</Tag>
+                  ) : null}
+                  {canEdit && g.kind !== 'PAYMENT' ? (
+                    <Button
+                      size="small"
+                      type="primary"
+                      ghost
+                      icon={<UploadOutlined />}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setUpload({
+                          open: true,
+                          bizType: g.bizType,
+                          bizId: g.bizId,
+                          label: g.kind === 'PHASE' ? (g.phaseName || '阶段') : '项目级附件',
+                        });
+                      }}
+                    >
+                      上传到此{ g.kind === 'PHASE' ? '阶段' : '' }
+                    </Button>
+                  ) : null}
                 </Space>
-                {canEdit && g.kind !== 'PAYMENT' && (
-                  <Button
-                    size="small"
-                    type="link"
-                    icon={<UploadOutlined />}
-                    onClick={() =>
-                      setUpload({
-                        open: true,
-                        bizType: g.bizType,
-                        bizId: g.bizId,
-                        label: g.kind === 'PHASE' ? (g.phaseName || '阶段') : '项目级附件',
-                      })
-                    }
-                  >
-                    上传到此{ g.kind === 'PHASE' ? '阶段' : '' }
-                  </Button>
-                )}
-              </div>
-              <List
-                size="small"
-                dataSource={g.items}
-                renderItem={(a) => (
-                  <List.Item
-                    actions={[
-                      <Tooltip key="dl" title="下载">
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<DownloadOutlined />}
-                          href={attachmentUrl(a.id)}
-                          download={a.fileName}
-                        >
-                          下载
-                        </Button>
-                      </Tooltip>,
-                      <Tooltip key="pv" title="预览(pdf/图片)">
-                        <Button type="link" size="small" href={attachmentUrl(a.id, 'inline')} target="_blank">
-                          预览
-                        </Button>
-                      </Tooltip>,
-                      ...(canEdit
-                        ? [
-                            <Button
-                              key="del"
-                              type="link"
-                              size="small"
-                              danger
-                              onClick={() => {
-                                Modal.confirm({
-                                  title: '删除附件',
-                                  content: `确定删除「${a.fileName}」吗？将做逻辑删除保留文件。`,
-                                  okButtonProps: { danger: true },
-                                  onOk: async () => {
-                                    await attachmentApi.remove(a.id);
-                                    reload();
-                                  },
-                                });
-                              }}
-                            >
-                              删除
-                            </Button>,
-                          ]
-                        : []),
-                    ]}
-                  >
-                    <Space>
-                      <FileTextOutlined />
-                      <span>{a.fileName}</span>
-                      {a.attachType ? <Tag>{attachTypeName(a.attachType)}</Tag> : null}
-                      <span style={{ color: '#8c8c8c', fontSize: 12 }}>{fmtFileSize(a.fileSize)}</span>
-                      <span style={{ color: '#8c8c8c', fontSize: 12 }}>
-                        {a.uploadUserName || '-'} · {fmtDateTime(a.uploadTime)}
-                      </span>
-                    </Space>
-                  </List.Item>
-                )}
-              />
-            </div>
-          ))
+              ),
+              children: (
+                <List
+                  size="small"
+                  dataSource={g.items}
+                  renderItem={(a) => (
+                    <List.Item
+                      actions={[
+                        <Tooltip key="pv" title="在线预览">
+                          <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => setPreviewAtt(a)}>
+                            预览
+                          </Button>
+                        </Tooltip>,
+                        <Tooltip key="dl" title="下载">
+                          <Button
+                            size="small"
+                            type="link"
+                            icon={<DownloadOutlined />}
+                            href={attachmentUrl(a.id)}
+                            download={a.fileName}
+                          >
+                            下载
+                          </Button>
+                        </Tooltip>,
+                        ...(canEdit
+                          ? [
+                              <Button
+                                key="del"
+                                size="small"
+                                type="link"
+                                danger
+                                onClick={() => {
+                                  Modal.confirm({
+                                    title: '删除附件',
+                                    content: `确定删除「${a.fileName}」吗？将做逻辑删除保留文件。`,
+                                    okButtonProps: { danger: true },
+                                    onOk: async () => {
+                                      await attachmentApi.remove(a.id);
+                                      reload();
+                                    },
+                                  });
+                                }}
+                              >
+                                删除
+                              </Button>,
+                            ]
+                          : []),
+                      ]}
+                    >
+                      <Space wrap>
+                        <FileTextOutlined />
+                        <span>{a.fileName}</span>
+                        {a.attachType ? <Tag>{attachTypeName(a.attachType)}</Tag> : null}
+                        <span style={{ color: '#8c8c8c', fontSize: 12 }}>{fmtFileSize(a.fileSize)}</span>
+                        <span style={{ color: '#8c8c8c', fontSize: 12 }}>
+                          {a.uploadUserName || '-'} · {fmtDateTime(a.uploadTime)}
+                        </span>
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              ),
+            }))}
+          />
         )}
       </Card>
     );
   })();
 
-  const logContent = (
-    <Card size="small">
-      {logs.length === 0 ? (
-        <Empty description="暂无操作日志" />
-      ) : (
-        <Timeline
-          items={logs.map((l) => ({
-            color: l.action === 'DELETE' || l.action === 'ATTACH_DELETE' ? 'red' : 'blue',
-            children: (
-              <div>
-                <div>
-                  <b>{l.userName || '系统'}</b> · {fmtDateTime(l.createTime)}
-                  <Tag style={{ marginLeft: 8 }}>{l.action}</Tag>
-                </div>
-                <div style={{ color: '#595959' }}>{l.detail}</div>
+  const logContent = (() => {
+    const totalPages = Math.max(1, Math.ceil(logs.length / logSize));
+    const cur = Math.min(logPage, totalPages);
+    const slice = logs.slice((cur - 1) * logSize, cur * logSize);
+    const actionColor = (act?: string) =>
+      !act ? 'default' : act.includes('DELETE') ? 'red' : act.includes('UPLOAD') ? 'green' : act === 'LOGIN' ? 'default' : 'blue';
+    return (
+      <Card size="small">
+        <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 10 }}>
+          共 {logs.length} 条操作记录（按时间倒序），实时记录本项目的创建、编辑、阶段推进、附件与付款操作。
+        </div>
+        {logs.length === 0 ? (
+          <Empty description="暂无操作日志" />
+        ) : (
+          <>
+            <List
+              size="small"
+              dataSource={slice}
+              renderItem={(l) => (
+                <List.Item style={{ padding: '10px 0', alignItems: 'flex-start' }}>
+                  <Space align="start" size={10} style={{ width: '100%' }}>
+                    <Avatar
+                      size={32}
+                      style={{ background: '#2f5d8a', flexShrink: 0, marginTop: 2 }}
+                    >
+                      {(l.userName || '系')[0]}
+                    </Avatar>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <Space size={8} wrap>
+                        <b style={{ fontSize: 13 }}>{l.userName || '系统'}</b>
+                        <span style={{ color: '#bfbfbf', fontSize: 12 }}>{fmtDateTime(l.createTime)}</span>
+                        <Tag color={actionColor(l.action)}>{l.action}</Tag>
+                      </Space>
+                      <div
+                        style={{
+                          marginTop: 4,
+                          background: '#f7f9fc',
+                          borderRadius: 8,
+                          padding: '8px 12px',
+                          fontSize: 13,
+                          color: '#404040',
+                          lineHeight: 1.7,
+                        }}
+                      >
+                        {l.detail}
+                      </div>
+                    </div>
+                  </Space>
+                </List.Item>
+              )}
+            />
+            {totalPages > 1 && (
+              <div style={{ textAlign: 'center', marginTop: 8 }}>
+                <Pagination
+                  size="small"
+                  current={cur}
+                  pageSize={logSize}
+                  total={logs.length}
+                  showSizeChanger
+                  pageSizeOptions={[5, 8, 15, 30]}
+                  onChange={(p, s) => {
+                    setLogPage(p);
+                    setLogSize(s);
+                  }}
+                  showTotal={(t) => `共 ${t} 条`}
+                />
               </div>
-            ),
-          }))}
-        />
-      )}
-    </Card>
-  );
+            )}
+          </>
+        )}
+      </Card>
+    );
+  })();
 
   return (
     <div>
@@ -723,6 +823,7 @@ export default function ProjectDetailPage() {
           bizType={upload.bizType}
           bizId={upload.bizId}
           scopeLabel={upload.label}
+          fixedAttachType={upload.fixedAttachType}
           onDone={reload}
           onCancel={() => setUpload(null)}
         />
@@ -737,6 +838,7 @@ export default function ProjectDetailPage() {
           onDone={reload}
         />
       )}
+      {previewAtt && <AttachmentPreviewModal item={previewAtt} onClose={() => setPreviewAtt(null)} />}
     </div>
   );
 }

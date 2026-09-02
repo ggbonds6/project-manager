@@ -7,7 +7,7 @@ import EChart from '@/components/EChart';
 import { statsApi } from '@/api/stats';
 import { useDict } from '@/hooks/useOptions';
 import { fmtWan } from '@/utils/format';
-import { DeptRankRow, NameValue, StatsFilter } from '@/types/stats';
+import { NameValue, StatsFilter } from '@/types/stats';
 import { PROJECT_STATUS, PROJECT_TYPES } from '@/types';
 
 const YEARS = [2024, 2025, 2026];
@@ -31,21 +31,18 @@ export default function StatsPage() {
   const [summary, setSummary] = useState<Record<string, number> | null>(null);
   const [dist, setDist] = useState<{ status: NameValue[]; type: NameValue[]; funnel: NameValue[] } | null>(null);
   const [yearMoney, setYearMoney] = useState<{ year: number; budget: number; contract: number; paid: number }[]>([]);
-  const [deptRank, setDeptRank] = useState<DeptRankRow[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [s, d, ym, dr] = await Promise.all([
+      const [s, d, ym] = await Promise.all([
         statsApi.summary(filter),
         statsApi.distributions(filter),
         statsApi.yearMoney(filter),
-        statsApi.deptRanking(filter),
       ]);
       setSummary(s as unknown as Record<string, number>);
       setDist(d);
       setYearMoney(ym.rows);
-      setDeptRank(dr.rows);
     } finally {
       setLoading(false);
     }
@@ -130,26 +127,6 @@ export default function StatsPage() {
     };
   }, [yearMoney]);
 
-  const deptOption: EChartsOption = useMemo(
-    () => ({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { left: 8, right: 60, top: 16, bottom: 8, containLabel: true },
-      xAxis: { type: 'value', name: '万元' },
-      yAxis: { type: 'category', inverse: true, data: deptRank.map((d) => d.name) },
-      series: [
-        {
-          name: '合同总额',
-          type: 'bar',
-          barWidth: 16,
-          itemStyle: { color: '#61daa9', borderRadius: [0, 4, 4, 0] },
-          label: { show: true, position: 'right', formatter: '{c}万' },
-          data: deptRank.map((d) => Number((d.contract / 10000).toFixed(2))),
-        },
-      ],
-    }),
-    [deptRank],
-  );
-
   const moneyCards = [
     { t: '项目总数', v: summary?.projectTotal ?? 0 },
     { t: '进行中', v: summary?.running ?? 0 },
@@ -157,13 +134,6 @@ export default function StatsPage() {
     { t: '累计合同(万)', v: fmtWan(summary?.contractTotal) },
     { t: '累计实付(万)', v: fmtWan(summary?.paidTotal) },
     { t: '资金执行率', v: `${summary?.execRate ?? 0}%` },
-  ];
-
-  const rankColumns: ColumnsType<DeptRankRow> = [
-    { title: '排名', width: 60, render: (_, __, i) => i + 1 },
-    { title: '承接部门', dataIndex: 'name' },
-    { title: '项目数', dataIndex: 'count', width: 90, align: 'right' },
-    { title: '合同总额(元)', dataIndex: 'contract', width: 140, align: 'right', render: (v: number) => Number(v).toLocaleString('zh-CN') },
   ];
 
   return (
@@ -253,28 +223,12 @@ export default function StatsPage() {
         </Row>
 
         <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
-          <Col xs={24} lg={14}>
+          <Col span={24}>
             <Card size="small" title="按立项年度：预算 vs 合同 vs 实付（万元）">
-              <EChart option={yearOption} height={320} />
-            </Card>
-          </Col>
-          <Col xs={24} lg={10}>
-            <Card size="small" title="承接部门资金排名">
-              <EChart option={deptOption} height={320} />
+              <EChart option={yearOption} height={340} />
             </Card>
           </Col>
         </Row>
-
-        <Card size="small" style={{ marginTop: 12 }} title="部门资金排名明细">
-          <Table<DeptRankRow>
-            rowKey="name"
-            size="small"
-            columns={rankColumns}
-            dataSource={deptRank}
-            pagination={false}
-            locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-          />
-        </Card>
       </Spin>
     </div>
   );

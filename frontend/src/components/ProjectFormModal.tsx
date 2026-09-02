@@ -11,7 +11,7 @@ import {
   Select,
 } from 'antd';
 import dayjs, { Dayjs } from 'dayjs';
-import { useDict, useDepts, useUsers } from '@/hooks/useOptions';
+import { useDict, useUsers } from '@/hooks/useOptions';
 import { ProjectForm } from '@/types';
 
 export interface ProjectFormValues extends Omit<ProjectForm, 'approveDate' | 'planStartDate' | 'planFinishDate'> {
@@ -40,7 +40,6 @@ export default function ProjectFormModal({ open, initial, submitting, onOk, onCa
   const { options: bidTypes } = useDict('BID_TYPE');
   const { options: sources } = useDict('PROJECT_SOURCE');
   const users = useUsers();
-  const depts = useDepts();
 
   useEffect(() => {
     if (!open) return;
@@ -128,11 +127,6 @@ export default function ProjectFormModal({ open, initial, submitting, onOk, onCa
           <Col span={12}>
             <Form.Item label="甲方单位" name="ownerUnit">
               <Select allowClear showSearch options={units.map((d) => ({ value: d.name, label: d.name }))} />
-            </Form.Item>
-          </Col>
-          <Col span={12}>
-            <Form.Item label="承接部门" name="ownerDeptId">
-              <Select allowClear options={depts.map((d) => ({ value: d.id, label: d.name }))} />
             </Form.Item>
           </Col>
           <Col span={12}>

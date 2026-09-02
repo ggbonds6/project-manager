@@ -23,6 +23,7 @@ import {
   EyeOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SearchOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { projectApi } from '@/api/project';
@@ -50,6 +51,7 @@ export default function ProjectsPage() {
 
   const [mode, setMode] = useState<ViewMode>('table');
   const [filters, setFilters] = useState<Filters>({});
+  const [kw, setKw] = useState('');
   const [page, setPage] = useState(1);
   const [size, setSize] = useState(10);
   const [year, setYear] = useState<number | undefined>();
@@ -202,18 +204,25 @@ export default function ProjectsPage() {
     },
   ];
 
+  const applySearch = () => {
+    setFilters((f) => ({ ...f, keyword: kw.trim() || undefined }));
+    setPage(1);
+  };
+
   const filterBar = (
     <Card size="small" style={{ marginBottom: 12 }}>
       <Space wrap>
-        <Input.Search
+        <Input
           placeholder="项目名称 / 编号 / 供应商"
           allowClear
-          style={{ width: 240 }}
-          onSearch={(v) => {
-            setFilters((f) => ({ ...f, keyword: v || undefined }));
-            setPage(1);
-          }}
+          style={{ width: 220 }}
+          value={kw}
+          onChange={(e) => setKw(e.target.value)}
+          onPressEnter={applySearch}
         />
+        <Button type="primary" icon={<SearchOutlined />} onClick={applySearch}>
+          搜 索
+        </Button>
         <Select
           placeholder="类型"
           allowClear
@@ -263,6 +272,7 @@ export default function ProjectsPage() {
           icon={<ReloadOutlined />}
           onClick={() => {
             setFilters({});
+            setKw('');
             setYear(undefined);
             setPage(1);
           }}
