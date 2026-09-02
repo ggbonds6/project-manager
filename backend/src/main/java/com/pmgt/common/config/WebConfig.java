@@ -1,9 +1,11 @@
 package com.pmgt.common.config;
 
+import com.pmgt.common.security.RoleInterceptor;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.servlet.config.annotation.CorsRegistry;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -18,6 +20,12 @@ public class WebConfig implements WebMvcConfigurer {
     private String uploadDir;
 
     private Path uploadPath;
+
+    private final RoleInterceptor roleInterceptor;
+
+    public WebConfig(RoleInterceptor roleInterceptor) {
+        this.roleInterceptor = roleInterceptor;
+    }
 
     @PostConstruct
     public void init() {
@@ -49,5 +57,10 @@ public class WebConfig implements WebMvcConfigurer {
         // 附件通过 /uploads/** 直接访问（文件名使用随机存储名，防止路径穿越）
         String location = uploadPath.toUri().toString();
         registry.addResourceHandler("/uploads/**").addResourceLocations(location);
+    }
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(roleInterceptor).addPathPatterns("/api/**");
     }
 }
