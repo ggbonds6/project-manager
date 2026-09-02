@@ -1,0 +1,38 @@
+# ===== DSH / 本地会话记录（不入库） =====
+session.jsonl
+*.session.jsonl
+
+# ===== Node =====
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# ===== Java / Maven =====
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+hs_err_pid*
+
+# ===== 附件存储（运行时生成，本机磁盘） =====
+backend/uploads/
+uploads/
+
+# ===== IDE =====
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== 日志 =====
+*.log
+logs/
