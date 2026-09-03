@@ -24,7 +24,11 @@
 
 ## 本地运行
 
-前置：JDK 17+、Node 18+、MySQL 8。
+前置：JDK 17+、Node 18+、MySQL 8（本机开发已配置便携版 `E:\work\env\mysql`）。
+
+**一键启动（推荐）**：双击根目录 `start-dev.cmd`（自动启动 MySQL→后端→前端并打开浏览器）；停止用 `stop-dev.cmd`（MySQL 单独用 `E:\work\env\mysql\stop-mysql.cmd`）。
+
+或分步启动：
 
 1. 建库（Flyway 会自动建表与种子数据）：
 
@@ -47,10 +51,11 @@
    npm run dev                  # http://localhost:5173（/api 代理到 8080）
    ```
 
-4. （可选）灌入演示数据（10 个项目 + 阶段推进 + 付款 + 附件，走真实 API）：
+4. （可选）灌入演示数据（走真实 API，会先清空现有演示项目）：
 
    ```bash
-   node scripts/seed-demo.mjs
+   node scripts/seed-demo.mjs         # 总项目/子项目 + 独立/部分共享/全部共享合同
+   node scripts/seed-attachments.mjs  # 为各核算单元阶段补齐典型附件
    ```
 
 预置登录账号（密码均 `123456`）：`admin`（管理员）/ `jingban01`（经办人）/ `lingdao01`（领导，只读）。
