@@ -100,6 +100,12 @@ public class ProjectService {
         if (q.getYear() != null) {
             qw.apply("YEAR(approve_date) = {0}", q.getYear());
         }
+        if (q.getParentId() != null) {
+            qw.eq(Project::getParentId, q.getParentId());
+        } else {
+            // 列表默认只展示顶层项目（子项目经父项目展开查看）
+            qw.isNull(Project::getParentId);
+        }
 
         Page<Project> p = projectMapper.selectPage(new Page<>(page, size), qw);
         Page<ProjectVO> voPage = new Page<>(p.getCurrent(), p.getSize(), p.getTotal());
@@ -122,6 +128,7 @@ public class ProjectService {
             vo.setType(pj.getType());
             vo.setStatus(pj.getStatus());
             vo.setOwnerUnit(pj.getOwnerUnit());
+            vo.setParentId(pj.getParentId());
             vo.setManagerUserId(pj.getManagerUserId());
             vo.setManagerName(optionalName(userNames, pj.getManagerUserId()));
             vo.setVendorName(pj.getVendorName());
@@ -177,6 +184,12 @@ public class ProjectService {
         vo.setRemark(pj.getRemark());
         vo.setCreateTime(pj.getCreateTime());
         vo.setUpdateTime(pj.getUpdateTime());
+
+        vo.setParentId(pj.getParentId());
+        if (pj.getParentId() != null) {
+            Project parent = projectMapper.selectById(pj.getParentId());
+            vo.setParentName(parent == null ? null : parent.getName());
+        }
 
         Map<Long, String> userNames = userNameMap(ids(pj.getManagerUserId()));
         vo.setManagerName(optionalName(userNames, pj.getManagerUserId()));
@@ -379,6 +392,18 @@ public class ProjectService {
                 && req.getPlanFinishDate().isBefore(req.getPlanStartDate())) {
             throw new BizException(400, "计划完成日期不能早于计划开始日期");
         }
+        if (req.getParentId() != null) {
+            if (selfId != null && req.getParentId().equals(selfId)) {
+                throw new BizException(400, "不能将项目自身设为父项目");
+            }
+            Project parent = projectMapper.selectById(req.getParentId());
+            if (parent == null) {
+                throw new BizException(400, "所属父项目不存在");
+            }
+            if (parent.getParentId() != null) {
+                throw new BizException(400, "父项目必须是顶层项目（不支持三级及以上层级）");
+            }
+        }
     }
 
     private void applySave(Project pj, ProjectSaveRequest req) {
@@ -405,6 +430,7 @@ public class ProjectService {
         pj.setContentSummary(req.getContentSummary());
         pj.setProjectSource(req.getProjectSource());
         pj.setRemark(req.getRemark());
+        pj.setParentId(req.getParentId());
     }
 
     private String nextCode(String type) {

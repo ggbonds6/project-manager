@@ -15,6 +15,7 @@ public class PaymentVO {
 
     private Long id;
     private Long projectId;
+    private Long contractId;
     private String nodeCode;
     private String nodeName;
     private String conditionDesc;
@@ -30,6 +31,7 @@ public class PaymentVO {
         PaymentVO vo = new PaymentVO();
         vo.setId(p.getId());
         vo.setProjectId(p.getProjectId());
+        vo.setContractId(p.getContractId());
         vo.setNodeCode(p.getNodeCode());
         vo.setNodeName(p.getNodeName());
         vo.setConditionDesc(p.getConditionDesc());

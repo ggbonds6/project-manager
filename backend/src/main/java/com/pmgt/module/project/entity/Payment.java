@@ -14,6 +14,8 @@ import java.time.LocalDate;
 public class Payment extends BaseEntity {
 
     private Long projectId;
+    /** 归属合同 id（共享合同时多个项目共享同一合同） */
+    private Long contractId;
     private String nodeCode;
     private String nodeName;
     private String conditionDesc;

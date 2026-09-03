@@ -13,6 +13,9 @@ public class PaymentSaveRequest {
     @NotNull(message = "所属项目不能为空")
     private Long projectId;
 
+    /** 归属合同 id；为空时后端取该(子)项目及其父级共享合同 */
+    private Long contractId;
+
     @NotBlank(message = "付款节点不能为空")
     private String nodeCode;
 

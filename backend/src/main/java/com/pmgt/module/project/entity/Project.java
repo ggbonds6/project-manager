@@ -37,4 +37,10 @@ public class Project extends BaseEntity {
     private String projectSource;
     private String remark;
     private Long createBy;
+
+    // ===== v1.2：父子项目与合同关联 =====
+    /** 父(总)项目 id，null 表示顶层项目 */
+    private Long parentId;
+    /** 所属合同 id（多个子项目可共享同一合同） */
+    private Long contractId;
 }

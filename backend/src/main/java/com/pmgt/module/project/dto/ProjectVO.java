@@ -20,6 +20,8 @@ public class ProjectVO {
     private String type;
     private String status;
     private String ownerUnit;
+    /** 父(总)项目 id，null=顶层 */
+    private Long parentId;
     private Long managerUserId;
     private String managerName;
     private String vendorName;

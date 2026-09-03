@@ -42,4 +42,7 @@ public class ProjectSaveRequest {
     private String contentSummary;
     private String projectSource;
     private String remark;
+
+    /** 父(总)项目 id；为空表示顶层项目 */
+    private Long parentId;
 }

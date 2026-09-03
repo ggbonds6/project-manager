@@ -19,4 +19,7 @@ public class ProjectQuery {
     private Long managerUserId;
     /** 立项年份（approveDate 或创建年度，取 approveDate.year） */
     private Integer year;
+
+    /** 指定父项目 id 时返回其子项目；不传则只返回顶层项目 */
+    private Long parentId;
 }

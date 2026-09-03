@@ -22,14 +22,16 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api")
 public class PaymentController {
 
-    private static final java.util.Set<String> NODES = java.util.Set.of("PREPAY", "ARRIVAL", "FIRST_ACCEPT", "FINAL_ACCEPT", "WARRANTY");
-    private static final java.util.Set<String> STATUS = java.util.Set.of("UNPAID", "PART", "PAID");
+    private static final Set<String> NODES = Set.of("PREPAY", "ARRIVAL", "FIRST_ACCEPT", "FINAL_ACCEPT", "WARRANTY");
+    private static final Set<String> STATUS = Set.of("UNPAID", "PART", "PAID");
 
     private final PaymentMapper paymentMapper;
     private final ProjectMapper projectMapper;
@@ -41,12 +43,26 @@ public class PaymentController {
         this.operationLogService = operationLogService;
     }
 
+    /**
+     * 项目(子项目)付款列表：= 该项目自身登记付款 + 其合同链（含父项目共享合同）上的付款，
+     * 保证“子项目各自合同 / 父级共享合同”两种口径都能看到对应里程碑。
+     */
     @GetMapping("/projects/{projectId}/payments")
     public R<List<PaymentVO>> listByProject(@PathVariable Long projectId) {
-        return R.ok(paymentMapper.selectList(new LambdaQueryWrapper<Payment>()
-                        .eq(Payment::getProjectId, projectId)
-                        .orderByAsc(Payment::getId))
-                .stream().map(PaymentVO::from).toList());
+        Project pj = projectMapper.selectById(projectId);
+        if (pj == null) {
+            throw new BizException(404, "项目不存在");
+        }
+        Set<Long> contractIds = collectContractIds(pj);
+        LambdaQueryWrapper<Payment> qw = new LambdaQueryWrapper<>();
+        if (contractIds.isEmpty()) {
+            qw.eq(Payment::getProjectId, projectId);
+        } else {
+            qw.and(w -> w.eq(Payment::getProjectId, projectId)
+                    .or(o -> o.in(Payment::getContractId, contractIds)));
+        }
+        qw.orderByAsc(Payment::getId);
+        return R.ok(paymentMapper.selectList(qw).stream().map(PaymentVO::from).toList());
     }
 
     @RequireRole({Role.ADMIN})
@@ -56,11 +72,13 @@ public class PaymentController {
         if (pj == null) {
             throw new BizException(404, "项目不存在");
         }
+        Long contractId = resolveContractId(req, pj);
         Payment p = new Payment();
         apply(p, req);
+        p.setContractId(contractId);
         paymentMapper.insert(p);
         operationLogService.log("PROJECT", pj.getId(), "PAYMENT_ADD",
-                "新增付款记录「" + p.getNodeName() + "」计划 " + p.getPlanAmount() + " 元");
+                "新增付款记录「" + p.getNodeName() + "」计划 " + p.getPlanAmount() + " 元（合同 #" + contractId + "）");
         return R.ok(p.getId());
     }
 
@@ -73,6 +91,10 @@ public class PaymentController {
         }
         if (!exist.getProjectId().equals(req.getProjectId())) {
             throw new BizException(400, "付款记录归属项目不匹配");
+        }
+        if (req.getContractId() != null && exist.getContractId() != null
+                && !exist.getContractId().equals(req.getContractId())) {
+            throw new BizException(400, "付款记录归属合同不允许变更，请删除后重建");
         }
         apply(exist, req);
         paymentMapper.updateById(exist);
@@ -92,6 +114,35 @@ public class PaymentController {
         operationLogService.log("PROJECT", exist.getProjectId(), "PAYMENT_DELETE",
                 "删除付款记录「" + exist.getNodeName() + "」");
         return R.ok();
+    }
+
+    /** 解析合同：请求指定 > 项目自身 contract_id > 父项目共享合同；否则报错 */
+    private Long resolveContractId(PaymentSaveRequest req, Project pj) {
+        if (req.getContractId() != null) {
+            return req.getContractId();
+        }
+        Project cur = pj;
+        while (cur != null) {
+            if (cur.getContractId() != null) {
+                return cur.getContractId();
+            }
+            cur = cur.getParentId() == null ? null : projectMapper.selectById(cur.getParentId());
+        }
+        throw new BizException(400, "该项目尚未登记/关联合同，请先创建合同并关联后再登记付款");
+    }
+
+    /** 沿项目向上收集合同链（自身+父级共享合同） */
+    private Set<Long> collectContractIds(Project pj) {
+        Set<Long> ids = new LinkedHashSet<>();
+        Project cur = pj;
+        int depth = 0;
+        while (cur != null && depth++ < 8) {
+            if (cur.getContractId() != null) {
+                ids.add(cur.getContractId());
+            }
+            cur = cur.getParentId() == null ? null : projectMapper.selectById(cur.getParentId());
+        }
+        return ids;
     }
 
     private void apply(Payment p, PaymentSaveRequest req) {
