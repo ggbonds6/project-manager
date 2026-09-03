@@ -17,9 +17,11 @@ import com.pmgt.module.project.dto.ProjectVO;
 import com.pmgt.module.project.entity.Project;
 import com.pmgt.module.project.entity.ProjectPhase;
 import com.pmgt.module.project.entity.Payment;
+import com.pmgt.module.project.entity.Contract;
 import com.pmgt.module.project.mapper.ProjectMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
 import com.pmgt.module.project.mapper.PaymentMapper;
+import com.pmgt.module.project.mapper.ContractMapper;
 import com.pmgt.module.system.entity.PhaseTemplate;
 import com.pmgt.module.system.entity.SysUser;
 import com.pmgt.module.system.mapper.PhaseTemplateMapper;
@@ -50,6 +52,7 @@ public class ProjectService {
     private final ProjectMapper projectMapper;
     private final ProjectPhaseMapper phaseMapper;
     private final PaymentMapper paymentMapper;
+    private final ContractMapper contractMapper;
     private final PhaseTemplateMapper templateMapper;
     private final SysUserMapper userMapper;
     private final OperationLogService operationLogService;
@@ -58,6 +61,7 @@ public class ProjectService {
     public ProjectService(ProjectMapper projectMapper,
                           ProjectPhaseMapper phaseMapper,
                           PaymentMapper paymentMapper,
+                          ContractMapper contractMapper,
                           PhaseTemplateMapper templateMapper,
                           SysUserMapper userMapper,
                           OperationLogService operationLogService,
@@ -65,6 +69,7 @@ public class ProjectService {
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
         this.paymentMapper = paymentMapper;
+        this.contractMapper = contractMapper;
         this.templateMapper = templateMapper;
         this.userMapper = userMapper;
         this.operationLogService = operationLogService;
@@ -271,9 +276,39 @@ public class ProjectService {
         if (exist == null) {
             throw new BizException(404, "项目不存在");
         }
-        projectMapper.deleteById(id);
-        phaseMapper.delete(new LambdaQueryWrapper<ProjectPhase>().eq(ProjectPhase::getProjectId, id));
-        operationLogService.log("PROJECT", id, "DELETE", "删除项目「" + exist.getName() + "」(" + exist.getCode() + ")");
+        deleteCascade(exist);
+        // 清理不再被任何在库项目引用的孤儿合同（逻辑删除合同，付款同步被逻辑删）
+        cleanupOrphanContracts();
+    }
+
+    /** 递归删除：子项目 → 本项目 的阶段/付款后逻辑删除项目本身 */
+    private void deleteCascade(Project pj) {
+        List<Project> children = projectMapper.selectList(new LambdaQueryWrapper<Project>()
+                .eq(Project::getParentId, pj.getId()));
+        for (Project ch : children) {
+            deleteCascade(ch);
+        }
+        phaseMapper.delete(new LambdaQueryWrapper<ProjectPhase>().eq(ProjectPhase::getProjectId, pj.getId()));
+        paymentMapper.delete(new LambdaQueryWrapper<Payment>().eq(Payment::getProjectId, pj.getId()));
+        projectMapper.deleteById(pj.getId());
+        operationLogService.log("PROJECT", pj.getId(), "DELETE",
+                "删除项目「" + pj.getName() + "」(" + pj.getCode() + ")" + (pj.getParentId() != null ? "（子项目）" : ""));
+    }
+
+    private void cleanupOrphanContracts() {
+        Set<Long> covered = projectMapper.selectList(new LambdaQueryWrapper<Project>()
+                        .eq(Project::getDeleted, 0))
+                .stream().map(Project::getContractId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        List<Contract> all = contractMapper.selectList(null);
+        for (Contract c : all) {
+            if (!covered.contains(c.getId())) {
+                contractMapper.deleteById(c.getId());
+                paymentMapper.delete(new LambdaQueryWrapper<Payment>().eq(Payment::getContractId, c.getId()));
+                operationLogService.log("CONTRACT", c.getId(), "CONTRACT_DELETE", "清理无项目引用的孤儿合同「" + c.getName() + "」");
+            }
+        }
     }
 
     @Transactional

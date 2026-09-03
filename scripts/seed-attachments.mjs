@@ -228,9 +228,18 @@ async function main() {
   const start = Date.now();
   const login = await api('POST', '/api/auth/login', { account: 'admin', password: '123456' });
   const token = login.token;
-  const list = await api('GET', '/api/projects?page=1&size=100', undefined, token);
-  const projects = list.records;
-  console.log(`共 ${projects.length} 个项目，开始补齐阶段附件...`);
+  const list = await api('GET', '/api/projects?page=1&size=200', undefined, token);
+  // 核算单元 = 子项目；无子项目的顶层项目本身作为核算单元
+  const projects = [];
+  for (const t of list.records) {
+    const kids = (await api('GET', `/api/projects?page=1&size=300&parentId=${t.id}`, undefined, token)).records;
+    if (kids.length) {
+      projects.push(...kids);
+    } else {
+      projects.push(t);
+    }
+  }
+  console.log(`共 ${projects.length} 个核算单元(子项目/独立项目)，开始补齐阶段附件...`);
 
   let totalFiles = 0;
   let wiped = 0;
@@ -262,9 +271,15 @@ async function main() {
     }
   }
 
-  const finalList = await api('GET', '/api/projects?page=1&size=100', undefined, token);
+  const finalList = await api('GET', '/api/projects?page=1&size=200', undefined, token);
+  const units = [];
+  for (const t of finalList.records) {
+    const kids = (await api('GET', `/api/projects?page=1&size=300&parentId=${t.id}`, undefined, token)).records;
+    if (kids.length) units.push(...kids);
+    else units.push(t);
+  }
   let allAtts = 0;
-  for (const p of finalList.records) {
+  for (const p of units) {
     const atts = await api('GET', `/api/projects/${p.id}/attachments`, undefined, token);
     allAtts += atts.length;
   }
