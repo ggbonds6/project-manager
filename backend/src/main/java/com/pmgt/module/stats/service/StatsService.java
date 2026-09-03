@@ -1,9 +1,11 @@
 package com.pmgt.module.stats.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.pmgt.module.project.entity.Contract;
 import com.pmgt.module.project.entity.Payment;
 import com.pmgt.module.project.entity.Project;
 import com.pmgt.module.project.entity.ProjectPhase;
+import com.pmgt.module.project.mapper.ContractMapper;
 import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.project.mapper.ProjectMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
@@ -20,12 +22,16 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * 工作台 / 项目统计 聚合服务。
- * 数据规模为内部管理系统量级（百~千级），直接在内存聚合，避免复杂 SQL。
+ * 工作台 / 项目统计聚合服务（父子项目口径 v1.2）：
+ * - “核算单元” = 叶子项目（子项目，或无子项目的顶层项目）；有子的顶层仅作容器，不计入计数/漏斗；
+ * - 金额按合同(contract)口径：合同总额=各合同去重求和（含变更）；已付=付款去重求和；预算=核算单元预算合计；
+ * - 年度资金：预算按核算单元立项年归集；合同金额/已付按合同覆盖的首个子项目立项年归集一次（不重复）。
  */
 @Service
 public class StatsService {
@@ -33,138 +39,163 @@ public class StatsService {
     private final ProjectMapper projectMapper;
     private final ProjectPhaseMapper phaseMapper;
     private final PaymentMapper paymentMapper;
+    private final ContractMapper contractMapper;
 
     public StatsService(ProjectMapper projectMapper,
                         ProjectPhaseMapper phaseMapper,
-                        PaymentMapper paymentMapper) {
+                        PaymentMapper paymentMapper,
+                        ContractMapper contractMapper) {
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
         this.paymentMapper = paymentMapper;
+        this.contractMapper = contractMapper;
     }
 
-    // ==================== 对外聚合 ====================
+    // ==================== 概览卡 ====================
 
-    /** 概览卡：项目数与资金口径 */
     public Map<String, Object> summary(StatsQuery q) {
         List<Project> projects = loadProjects(q);
-        Common c = commonOf(projects);
-        Map<String, Object> m = new LinkedHashMap<>();
+        List<Project> leaves = leaves(projects);
+        Common c = commonOf(projects, leaves);
         int nowYear = LocalDate.now().getYear();
-        m.put("projectTotal", projects.size());
-        m.put("running", countBy(projects, "RUN"));
-        m.put("done", countBy(projects, "DONE"));
-        m.put("pause", countBy(projects, "PAUSE"));
-        m.put("stop", countBy(projects, "STOP"));
-        m.put("newThisYear", (int) projects.stream().filter(p -> {
+
+        BigDecimal contractTotal = c.contracts().stream()
+                .map(x -> zero(x.getContractAmount()).add(zero(x.getChangeAmount())))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("projectTotal", leaves.size());
+        m.put("running", countBy(leaves, "RUN"));
+        m.put("done", countBy(leaves, "DONE"));
+        m.put("pause", countBy(leaves, "PAUSE"));
+        m.put("stop", countBy(leaves, "STOP"));
+        m.put("newThisYear", (int) leaves.stream().filter(p -> {
             if (p.getApproveDate() != null) return p.getApproveDate().getYear() == nowYear;
             return p.getCreateTime() != null && p.getCreateTime().getYear() == nowYear;
         }).count());
         m.put("overdueCount", c.overdueProjectIds().size());
-        m.put("budgetTotal", sum(p -> p.getBudgetAmount(), projects));
-        m.put("contractTotal", sum(p -> p.getContractAmount(), projects));
-        BigDecimal paid = c.paidMap().values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-        m.put("paidTotal", paid);
-        BigDecimal contract = asZero(m.get("contractTotal"));
-        m.put("execRate", contract.signum() == 0 ? 0 : paid.multiply(BigDecimal.valueOf(100)).divide(contract, 1, RoundingMode.HALF_UP));
+        m.put("budgetTotal", sum(p -> p.getBudgetAmount(), leaves));
+        m.put("contractTotal", contractTotal);
+        m.put("paidTotal", c.paidTotal());
+        m.put("execRate", contractTotal.signum() == 0 ? 0
+                : c.paidTotal().multiply(BigDecimal.valueOf(100)).divide(contractTotal, 1, RoundingMode.HALF_UP));
         return m;
     }
 
-    /** 构成分布：状态 / 类型 / 流程阶段漏斗 */
+    /** 构成分布：状态 / 类型 / 流程阶段漏斗（均以核算单元计） */
     public Map<String, Object> distributions(StatsQuery q) {
         List<Project> projects = loadProjects(q);
-        Common c = commonOf(projects);
+        List<Project> leaves = leaves(projects);
+        Common c = commonOf(projects, leaves);
+
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("status", countGroup(projects, Project::getStatus,
-                List.of("RUN", "DONE", "PAUSE", "STOP")));
-        m.put("type", countGroup(projects, Project::getType, List.of("HW", "SW")));
-        // 流程漏斗：每项目仅计入当前阶段一次
+        m.put("status", countGroup(leaves, Project::getStatus, List.of("RUN", "DONE", "PAUSE", "STOP")));
+        m.put("type", countGroup(leaves, Project::getType, List.of("HW", "SW")));
+
         Map<String, Long> funnel = new LinkedHashMap<>();
-        for (Project p : projects) {
-            List<ProjectPhase> phases = c.phasesByProject().getOrDefault(p.getId(), List.of());
-            String cur = currentPhaseName(phases);
-            String label = cur == null ? "已完结" : cur;
-            funnel.merge(label, 1L, Long::sum);
+        for (Project p : leaves) {
+            String cur = currentPhaseName(c.phasesByProject().getOrDefault(p.getId(), List.of()));
+            funnel.merge(cur == null ? "已完结" : cur, 1L, Long::sum);
         }
-        List<Map<String, Object>> funnelList = funnel.entrySet().stream()
+        m.put("funnel", funnel.entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                 .map(e -> {
-                    Map<String, Object> item = new LinkedHashMap<>();
-                    item.put("name", e.getKey());
-                    item.put("value", e.getValue());
-                    return item;
-                })
-                .toList();
-        m.put("funnel", funnelList);
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("name", e.getKey());
+                    row.put("value", e.getValue());
+                    return row;
+                }).toList());
         m.put("overdueProjects", c.overdueProjectIds().size());
         return m;
     }
 
-    /** 年度资金对比：按立项(批复)年度 预算 vs 合同 vs 实付 */
     public Map<String, Object> yearMoney(StatsQuery q) {
         List<Project> projects = loadProjects(q);
-        Common c = commonOf(projects);
+        List<Project> leaves = leaves(projects);
         Map<Integer, BigDecimal[]> acc = new LinkedHashMap<>();
-        for (Project p : projects) {
+        Function<Integer, BigDecimal[]> bucket = k -> new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO};
+
+        // 预算按核算单元立项年
+        for (Project p : leaves) {
             int y = p.getApproveDate() != null ? p.getApproveDate().getYear() : Year.now().getValue();
-            BigDecimal[] v = acc.computeIfAbsent(y, k -> new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
-            v[0] = v[0].add(zero(p.getBudgetAmount()));
-            v[1] = v[1].add(zero(p.getContractAmount()));
-            v[2] = v[2].add(zero(c.paidMap().get(p.getId())));
+            acc.computeIfAbsent(y, bucket)[0] = acc.get(y)[0].add(zero(p.getBudgetAmount()));
         }
-        List<Integer> years = acc.keySet().stream().sorted().toList();
-        List<Map<String, Object>> rows = new ArrayList<>();
-        for (int y : years) {
-            BigDecimal[] v = acc.get(y);
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("year", y);
-            row.put("budget", v[0]);
-            row.put("contract", v[1]);
-            row.put("paid", v[2]);
-            rows.add(row);
+        // 合同金额/已付：按合同覆盖的首个子项目立项年归集一次
+        List<Contract> contracts = contractMapper.selectList(new LambdaQueryWrapper<Contract>()
+                .orderByAsc(Contract::getId));
+        for (Contract c : contracts) {
+            Integer year = leaves.stream()
+                    .filter(p -> p.getContractId() != null && p.getContractId().equals(c.getId()))
+                    .filter(p -> p.getApproveDate() != null)
+                    .map(p -> p.getApproveDate().getYear())
+                    .min(Integer::compareTo)
+                    .orElseGet(() -> c.getCreateTime() != null ? c.getCreateTime().getYear() : Year.now().getValue());
+            BigDecimal[] v = acc.computeIfAbsent(year, bucket);
+            v[1] = v[1].add(zero(c.getContractAmount()).add(zero(c.getChangeAmount())));
+            BigDecimal paid = paymentMapper.selectList(new LambdaQueryWrapper<Payment>()
+                            .eq(Payment::getContractId, c.getId()))
+                    .stream().map(pr -> zero(pr.getPaidAmount())).reduce(BigDecimal.ZERO, BigDecimal::add);
+            v[2] = v[2].add(paid);
         }
-        Map<String, Object> m = new LinkedHashMap<>();
-        m.put("rows", rows);
-        return m;
+
+        List<Map<String, Object>> rows = acc.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(e -> {
+                    BigDecimal[] v = e.getValue();
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("year", e.getKey());
+                    row.put("budget", v[0]);
+                    row.put("contract", v[1]);
+                    row.put("paid", v[2]);
+                    return row;
+                }).toList();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("rows", rows);
+        return out;
     }
 
     // ==================== 工作台 ====================
 
     public Map<String, Object> dashboard(Long userId) {
         List<Project> projects = loadProjects(null);
-        Common c = commonOf(projects);
+        List<Project> leaves = leaves(projects);
+        Common c = commonOf(projects, leaves);
         LocalDate today = LocalDate.now();
         LocalDate soon = today.plusDays(60);
 
         Map<String, Object> cards = summary(null);
-        List<ProjectPhase> myPhases = phaseMapper.selectList(new LambdaQueryWrapper<ProjectPhase>()
-                .eq(ProjectPhase::getManagerUserId, userId)
-                .eq(ProjectPhase::getStatus, "IN_PROGRESS")
-                .orderByAsc(ProjectPhase::getPlanFinishDate));
-        List<Map<String, Object>> myTodos = myPhases.stream().map(ph -> {
-            Project pj = projects.stream().filter(p -> p.getId().equals(ph.getProjectId())).findFirst().orElse(null);
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("projectId", ph.getProjectId());
-            row.put("projectName", pj == null ? "项目已删除" : pj.getName());
-            row.put("phaseName", ph.getPhaseName());
-            row.put("percent", ph.getPercent());
-            row.put("planFinishDate", ph.getPlanFinishDate());
-            row.put("overdue", ph.getPlanFinishDate() != null && ph.getPlanFinishDate().isBefore(today));
-            return row;
-        }).toList();
+        Set<Long> leafIds = leaves.stream().map(Project::getId).collect(Collectors.toSet());
+        Map<Long, String> nameOf = projects.stream().collect(Collectors.toMap(Project::getId, Project::getName, (a, b) -> a));
+
+        // 我的待办（进行中且指派给我，仅核算单元）
+        List<Map<String, Object>> myTodos = phaseMapper.selectList(new LambdaQueryWrapper<ProjectPhase>()
+                        .eq(ProjectPhase::getManagerUserId, userId)
+                        .in(ProjectPhase::getProjectId, leafIds)
+                        .eq(ProjectPhase::getStatus, "IN_PROGRESS")
+                        .orderByAsc(ProjectPhase::getPlanFinishDate))
+                .stream()
+                .map(ph -> {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("projectId", ph.getProjectId());
+                    row.put("projectName", nameOf.getOrDefault(ph.getProjectId(), "项目已删除"));
+                    row.put("phaseName", ph.getPhaseName());
+                    row.put("percent", ph.getPercent());
+                    row.put("planFinishDate", ph.getPlanFinishDate());
+                    row.put("overdue", ph.getPlanFinishDate() != null && ph.getPlanFinishDate().isBefore(today));
+                    return row;
+                }).toList();
 
         List<Map<String, Object>> upcoming = new ArrayList<>();
-        for (Project p : projects) {
-            List<ProjectPhase> phases = c.phasesByProject().getOrDefault(p.getId(), List.of());
-            for (ProjectPhase ph : phases) {
+        for (Project p : leaves) {
+            for (ProjectPhase ph : c.phasesByProject().getOrDefault(p.getId(), List.of())) {
                 if (ph.getPlanFinishDate() == null) continue;
-                String nm = ph.getPhaseName();
-                boolean acceptance = nm.contains("初验") || nm.contains("终验");
+                boolean acceptance = ph.getPhaseName().contains("初验") || ph.getPhaseName().contains("终验");
                 boolean within = !ph.getPlanFinishDate().isBefore(today) && !ph.getPlanFinishDate().isAfter(soon);
                 if (acceptance && within) {
                     Map<String, Object> row = new LinkedHashMap<>();
                     row.put("projectId", p.getId());
                     row.put("projectName", p.getName());
-                    row.put("phaseName", nm);
+                    row.put("phaseName", ph.getPhaseName());
                     row.put("planDate", ph.getPlanFinishDate());
                     row.put("status", ph.getStatus());
                     upcoming.add(row);
@@ -174,16 +205,15 @@ public class StatsService {
         upcoming.sort(Comparator.comparing(r -> (LocalDate) r.get("planDate")));
 
         List<Map<String, Object>> overdueList = new ArrayList<>();
-        for (Map.Entry<Long, List<ProjectPhase>> e : c.phasesByProject().entrySet()) {
-            Project pj = projects.stream().filter(p -> p.getId().equals(e.getKey())).findFirst().orElse(null);
-            if (pj == null) continue;
-            for (ProjectPhase ph : e.getValue()) {
+        for (Long pid : c.overdueProjectIds()) {
+            String name = nameOf.getOrDefault(pid, "项目已删除");
+            for (ProjectPhase ph : c.phasesByProject().getOrDefault(pid, List.of())) {
                 if (ph.getPlanFinishDate() == null) continue;
                 boolean open = ph.getStatus().equals("IN_PROGRESS") || ph.getStatus().equals("NOT_STARTED");
                 if (open && ph.getPlanFinishDate().isBefore(today)) {
                     Map<String, Object> row = new LinkedHashMap<>();
-                    row.put("projectId", pj.getId());
-                    row.put("projectName", pj.getName());
+                    row.put("projectId", pid);
+                    row.put("projectName", name);
                     row.put("phaseName", ph.getPhaseName());
                     row.put("planDate", ph.getPlanFinishDate());
                     row.put("days", (int) (today.toEpochDay() - ph.getPlanFinishDate().toEpochDay()));
@@ -193,7 +223,7 @@ public class StatsService {
         }
         overdueList.sort(Comparator.comparing(r -> (Integer) r.get("days"), Comparator.reverseOrder()));
 
-        List<Map<String, Object>> recent = projects.stream()
+        List<Map<String, Object>> recent = leaves.stream()
                 .sorted(Comparator.comparing(Project::getUpdateTime, Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(6)
                 .map(p -> {
@@ -220,7 +250,8 @@ public class StatsService {
     // ==================== 内部实现 ====================
 
     private record Common(Map<Long, List<ProjectPhase>> phasesByProject,
-                           Map<Long, BigDecimal> paidMap,
+                           BigDecimal paidTotal,
+                           List<Contract> contracts,
                            Set<Long> overdueProjectIds) {
     }
 
@@ -238,14 +269,20 @@ public class StatsService {
         return projectMapper.selectList(qw.orderByAsc(Project::getId));
     }
 
-    private Common commonOf(List<Project> projects) {
-        List<Long> ids = projects.stream().map(Project::getId).toList();
+    /** 核算单元：子项目 或 无子项目的顶层项目 */
+    private List<Project> leaves(List<Project> all) {
+        return all.stream().filter(p -> p.getParentId() != null
+                || all.stream().noneMatch(o -> p.getId().equals(o.getParentId()))).toList();
+    }
+
+    private Common commonOf(List<Project> projects, List<Project> leaves) {
+        List<Long> leafIds = leaves.stream().map(Project::getId).toList();
         Map<Long, List<ProjectPhase>> byProject = new HashMap<>();
         Set<Long> overdueProjects = new java.util.HashSet<>();
         LocalDate today = LocalDate.now();
-        if (!ids.isEmpty()) {
+        if (!leafIds.isEmpty()) {
             List<ProjectPhase> phases = phaseMapper.selectList(new LambdaQueryWrapper<ProjectPhase>()
-                    .in(ProjectPhase::getProjectId, ids)
+                    .in(ProjectPhase::getProjectId, leafIds)
                     .orderByAsc(ProjectPhase::getSortNo));
             byProject = phases.stream().collect(Collectors.groupingBy(ProjectPhase::getProjectId));
             for (Map.Entry<Long, List<ProjectPhase>> e : byProject.entrySet()) {
@@ -257,17 +294,21 @@ public class StatsService {
                 }
             }
         }
-        Map<Long, BigDecimal> paidMap = paidByProjects(ids);
-        return new Common(byProject, paidMap, overdueProjects);
-    }
 
-    private Map<Long, BigDecimal> paidByProjects(List<Long> projectIds) {
-        if (projectIds.isEmpty()) return Map.of();
-        Map<Long, BigDecimal> map = new HashMap<>();
-        for (Payment pay : paymentMapper.selectList(new LambdaQueryWrapper<Payment>().in(Payment::getProjectId, projectIds))) {
-            map.merge(pay.getProjectId(), zero(pay.getPaidAmount()), BigDecimal::add);
+        BigDecimal paidTotal = BigDecimal.ZERO;
+        if (!leafIds.isEmpty()) {
+            List<Long> contractIds = projects.stream().map(Project::getContractId).filter(Objects::nonNull).distinct().toList();
+            LambdaQueryWrapper<Payment> qw = new LambdaQueryWrapper<>();
+            qw.and(w -> {
+                w.in(Payment::getProjectId, leafIds);
+                if (!contractIds.isEmpty()) w.or(o -> o.in(Payment::getContractId, contractIds));
+            });
+            paidTotal = paymentMapper.selectList(qw).stream()
+                    .map(pay -> zero(pay.getPaidAmount()))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
         }
-        return map;
+        List<Contract> contracts = contractMapper.selectList(new LambdaQueryWrapper<Contract>().orderByAsc(Contract::getId));
+        return new Common(byProject, paidTotal, contracts, overdueProjects);
     }
 
     private static long countBy(List<Project> projects, String status) {
@@ -275,7 +316,7 @@ public class StatsService {
     }
 
     private static List<Map<String, Object>> countGroup(List<Project> projects,
-                                                        java.util.function.Function<Project, String> getter,
+                                                        Function<Project, String> getter,
                                                         List<String> order) {
         Map<String, Long> raw = projects.stream().collect(Collectors.groupingBy(getter, Collectors.counting()));
         return order.stream().filter(raw::containsKey).map(k -> {
@@ -286,16 +327,12 @@ public class StatsService {
         }).toList();
     }
 
-    private static BigDecimal sum(java.util.function.Function<Project, BigDecimal> getter, List<Project> projects) {
+    private static BigDecimal sum(Function<Project, BigDecimal> getter, List<Project> projects) {
         return projects.stream().map(p -> zero(getter.apply(p))).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private static BigDecimal zero(BigDecimal v) {
         return v == null ? BigDecimal.ZERO : v;
-    }
-
-    private static BigDecimal asZero(Object v) {
-        return v instanceof BigDecimal b ? b : BigDecimal.ZERO;
     }
 
     private static String currentPhaseName(List<ProjectPhase> phases) {
