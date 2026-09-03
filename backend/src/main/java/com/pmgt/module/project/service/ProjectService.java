@@ -124,6 +124,12 @@ public class ProjectService {
         Map<Long, String> userNames = userNameMap(ids(records.stream().map(Project::getManagerUserId).toArray(Long[]::new)));
         Map<Long, List<ProjectPhase>> phasesByProject = phasesByProjects(projectIds);
         Map<Long, List<Payment>> paymentsByProject = paymentsByProjects(projectIds);
+        // 子项目数量（>0 视为总项目容器）
+        Map<Long, Integer> childCounts = new HashMap<>();
+        if (!projectIds.isEmpty()) {
+            projectMapper.selectList(new LambdaQueryWrapper<Project>().in(Project::getParentId, projectIds))
+                    .forEach(k -> childCounts.merge(k.getParentId(), 1, Integer::sum));
+        }
 
         List<ProjectVO> vos = records.stream().map(pj -> {
             ProjectVO vo = new ProjectVO();
@@ -134,6 +140,7 @@ public class ProjectService {
             vo.setStatus(pj.getStatus());
             vo.setOwnerUnit(pj.getOwnerUnit());
             vo.setParentId(pj.getParentId());
+            vo.setChildCount(childCounts.getOrDefault(pj.getId(), 0));
             vo.setManagerUserId(pj.getManagerUserId());
             vo.setManagerName(optionalName(userNames, pj.getManagerUserId()));
             vo.setVendorName(pj.getVendorName());
@@ -214,6 +221,8 @@ public class ProjectService {
         vo.setPhases(phases.stream().map(this::toPhaseVO).toList());
         vo.setCurrentPhaseName(currentPhaseName(phases));
         vo.setOverallProgress(overallProgress(phases));
+        long childCount = projectMapper.selectCount(new LambdaQueryWrapper<Project>().eq(Project::getParentId, id));
+        vo.setChildCount((int) childCount);
         return vo;
     }
 
@@ -249,6 +258,11 @@ public class ProjectService {
             ph.setPercent(0);
             ph.setManagerUserId(pj.getManagerUserId());
             phaseMapper.insert(ph);
+        }
+        // 若本项目挂到某总项目下：父项目退化为纯汇总容器，不再保留自身阶段流程
+        if (pj.getParentId() != null) {
+            phaseMapper.delete(new LambdaQueryWrapper<ProjectPhase>()
+                    .eq(ProjectPhase::getProjectId, pj.getParentId()));
         }
         operationLogService.log("PROJECT", pj.getId(), "CREATE",
                 "新建项目「" + pj.getName() + "」(" + pj.getCode() + ")，按" + pj.getType() + "模板生成" + templates.size() + "个阶段");

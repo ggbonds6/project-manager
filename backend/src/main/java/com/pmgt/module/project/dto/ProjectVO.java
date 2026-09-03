@@ -22,6 +22,8 @@ public class ProjectVO {
     private String ownerUnit;
     /** 父(总)项目 id，null=顶层 */
     private Long parentId;
+    /** 子项目数量（>0 表示是“总项目容器”，无自身流程） */
+    private Integer childCount;
     private Long managerUserId;
     private String managerName;
     private String vendorName;

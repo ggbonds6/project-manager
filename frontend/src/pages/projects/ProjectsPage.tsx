@@ -222,7 +222,16 @@ export default function ProjectsPage() {
       title: '项目名称',
       dataIndex: 'name',
       ellipsis: true,
-      render: (v: string, row) => <a onClick={() => navigate(`/projects/${row.id}`)}>{v}</a>,
+      render: (v: string, row) => (
+        <a onClick={() => navigate(`/projects/${row.id}`)}>
+          {v}
+          {row.childCount ? (
+            <Tag style={{ marginLeft: 6 }} color="gold">
+              总项目·{row.childCount}
+            </Tag>
+          ) : null}
+        </a>
+      ),
     },
     {
       title: '类型',
@@ -246,7 +255,8 @@ export default function ProjectsPage() {
       title: '当前阶段',
       dataIndex: 'currentPhaseName',
       width: 150,
-      render: (v?: string | null) => {
+      render: (v: string | null | undefined, row: ProjectListItem) => {
+        if (row.childCount) return <Tag color="gold">子项目汇总</Tag>;
         const p = phaseNameTag(v);
         return v ? <Tag color={p.color}>{p.text}</Tag> : '-';
       },
@@ -255,13 +265,19 @@ export default function ProjectsPage() {
       title: '整体进度',
       dataIndex: 'overallProgress',
       width: 120,
-      render: (v?: number) => <Progress percent={v || 0} size="small" />,
+      render: (v: number | undefined, row: ProjectListItem) =>
+        row.childCount ? <span style={{ color: '#bfbfbf' }}>—</span> : <Progress percent={v || 0} size="small" />,
     },
     {
       title: '付款节点及金额(元)',
       dataIndex: 'payments',
       width: 250,
-      render: (_, row) => renderPayments(row.payments),
+      render: (_, row) =>
+        row.childCount ? (
+          <span style={{ color: '#8c8c8c', fontSize: 12 }}>由子项目分别登记</span>
+        ) : (
+          renderPayments(row.payments)
+        ),
     },
     {
       title: '合同金额(元)',
@@ -400,22 +416,69 @@ export default function ProjectsPage() {
             scroll={{ x: 1500 }}
             expandable={{
               rowExpandable: (row) => (childrenMap[row.id]?.length || 0) > 0,
-              expandedRowRender: (row) => (
-                <div style={{ margin: '0 -16px -16px' }}>
-                  <Table<ProjectListItem>
-                    rowKey="id"
-                    size="small"
-                    pagination={false}
-                    dataSource={childrenMap[row.id] || []}
-                    columns={columns}
-                    title={() => (
-                      <span style={{ fontSize: 12, color: '#8c8c8c' }}>
-                        🔽 子项目明细（{childrenMap[row.id]?.length || 0}）
-                      </span>
-                    )}
-                  />
-                </div>
-              ),
+              expandedRowRender: (row) => {
+                const kids = childrenMap[row.id] || [];
+                return (
+                  <div style={{ margin: '0 -16px -16px', background: '#fafbfc', padding: '10px 16px 12px' }}>
+                    <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 8 }}>
+                      {row.name} · 子项目明细（{kids.length}），每个子项目独立签订合同
+                    </div>
+                    {kids.map((ch) => {
+                      const st = projectStatusTag(ch.status);
+                      const ty = projectTypeTag(ch.type);
+                      const ph = phaseNameTag(ch.currentPhaseName);
+                      return (
+                        <div
+                          key={ch.id}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 12,
+                            background: '#fff',
+                            border: '1px solid #eef0f3',
+                            borderRadius: 8,
+                            padding: '8px 12px',
+                            marginBottom: 8,
+                            flexWrap: 'wrap',
+                          }}
+                        >
+                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#5b8ff9', flexShrink: 0 }} />
+                          <Space size={8} wrap style={{ flex: 'auto', minWidth: 0 }}>
+                            <a onClick={() => navigate(`/projects/${ch.id}`)} style={{ fontWeight: 600 }}>
+                              {ch.name}
+                            </a>
+                            <span style={{ fontFamily: 'Consolas,monospace', color: '#8c8c8c' }}>{ch.code}</span>
+                            <Tag color={st.color}>{st.text}</Tag>
+                            <Tag color={ty.color} style={{ marginRight: 0 }}>
+                              {ty.text}
+                            </Tag>
+                            {ch.currentPhaseName ? <Tag color={ph.color}>{ph.text}</Tag> : null}
+                            <div style={{ minWidth: 140 }}>
+                              <Progress percent={ch.overallProgress || 0} size="small" />
+                            </div>
+                            <span style={{ fontSize: 12, color: '#595959' }}>{renderPayments(ch.payments)}</span>
+                          </Space>
+                          <Space size={4}>
+                            <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => navigate(`/projects/${ch.id}`)}>
+                              详情
+                            </Button>
+                            {canEdit && (
+                              <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(ch)}>
+                                编辑
+                              </Button>
+                            )}
+                            {canDelete && (
+                              <Button size="small" type="link" danger icon={<DeleteOutlined />} onClick={() => doDelete(ch)}>
+                                删除
+                              </Button>
+                            )}
+                          </Space>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              },
             }}
             pagination={{
               current: page,

@@ -96,9 +96,21 @@ public class ContractController {
         return R.ok(rows);
     }
 
+    /** 业务规则（v1.4）：分子项目后每个（子）项目单独签订合同（同一供应商也各自合同）；
+     *  合同仅与单个项目关联。 */
+    private void requireSingleProject(List<Long> projectIds) {
+        if (projectIds == null || projectIds.isEmpty()) {
+            throw new BizException(400, "合同必须关联一个项目");
+        }
+        if (projectIds.size() > 1) {
+            throw new BizException(400, "合同仅关联单个（子）项目：子项目独立签订合同，请分别登记");
+        }
+    }
+
     @RequireRole({Role.ADMIN})
     @PostMapping("/contracts")
     public R<Long> create(@Valid @RequestBody ContractSaveRequest req) {
+        requireSingleProject(req.getProjectIds());
         Contract c = new Contract();
         apply(c, req);
         contractMapper.insert(c);
@@ -115,10 +127,11 @@ public class ContractController {
         if (exist == null) {
             throw new BizException(404, "合同不存在");
         }
+        requireSingleProject(req.getProjectIds());
         apply(exist, req);
         contractMapper.updateById(exist);
         assignProjects(id, req.getProjectIds(), null);
-        operationLogService.log("CONTRACT", id, "CONTRACT_UPDATE", "更新合同「" + exist.getName() + "」及覆盖项目");
+        operationLogService.log("CONTRACT", id, "CONTRACT_UPDATE", "更新合同「" + exist.getName() + "」");
         return R.ok();
     }
 

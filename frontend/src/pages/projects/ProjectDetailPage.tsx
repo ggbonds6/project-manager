@@ -49,7 +49,7 @@ import ContractPanel from '@/components/ContractPanel';
 import { useAuth } from '@/store/auth';
 import { useDict } from '@/hooks/useOptions';
 import { fmtDate, fmtDateTime, fmtFileSize, fmtMoney } from '@/utils/format';
-import { payNodeTag, payStatusTag } from '@/config/tagDict';
+import { payNodeTag, payStatusTag, phaseNameTag, projectStatusTag, projectTypeTag } from '@/config/tagDict';
 import {
   AttachmentItem,
   LogItem,
@@ -61,6 +61,7 @@ import {
   PROJECT_TYPES,
   ProjectDetail,
   ProjectForm,
+  ProjectListItem,
 } from '@/types';
 
 const statusMeta = (s?: string) => (s ? PROJECT_STATUS[s] : undefined);
@@ -97,6 +98,8 @@ export default function ProjectDetailPage() {
   const canEdit = user?.role === 'ADMIN' || user?.role === 'MANAGER';
   // 付款金额按合同由管理员录入
   const canManagePay = user?.role === 'ADMIN';
+  // 总项目容器（有子项目）：无自身阶段流程，仅汇总/公用附件
+  const isContainer = (detail?.childCount ?? 0) > 0;
 
   const reload = useCallback(async () => {
     if (!id) return;
@@ -121,6 +124,15 @@ export default function ProjectDetailPage() {
     reload();
   }, [reload]);
 
+  // 总项目容器：拉取其子项目供“子项目”页签展示
+  useEffect(() => {
+    if (!detail?.childCount || !id) return;
+    projectApi
+      .page({ page: 1, size: 200, parentId: Number(id) })
+      .then((res) => setChildren(res.records))
+      .catch(() => setChildren([]));
+  }, [id, detail?.childCount]);
+
   const dictName = (options: { code: string; name: string }[], code?: string | null) =>
     code ? options.find((o) => o.code === code)?.name || code : '-';
 
@@ -130,7 +142,7 @@ export default function ProjectDetailPage() {
   const grouped = useMemo(() => {
     interface Group {
       title: string;
-      kind: 'PHASE' | 'PROJECT' | 'PAYMENT';
+      kind: 'PHASE' | 'PROJECT' | 'PARENT' | 'PAYMENT';
       bizType: string;
       bizId: number;
       phaseName?: string;
@@ -160,11 +172,17 @@ export default function ProjectDetailPage() {
               pay.planAmount ? `（计划 ${fmtMoney(pay.planAmount)} 元）` : ''
             }`
           : '付款凭证';
+      } else if (a.bizType === 'PROJECT' && a.phaseName === '总项目公用附件') {
+        // 父级总项目公用附件（子项目共用查看）
+        key = `PARENT:${a.bizId}`;
+        kind = 'PARENT';
+        bizId = a.bizId;
+        title = '总项目公用附件';
       } else {
         key = 'PROJECT';
         kind = 'PROJECT';
         bizId = Number(id);
-        title = '项目附件';
+        title = isContainer ? '总项目公用附件' : '项目附件';
       }
       let g = map.get(key);
       if (!g) {
@@ -174,7 +192,7 @@ export default function ProjectDetailPage() {
       g.items.push(a);
     }
     const groups = [...map.values()];
-    const rank = { PHASE: 0, PROJECT: 1, PAYMENT: 2 } as const;
+    const rank = { PHASE: 0, PROJECT: 1, PARENT: 2, PAYMENT: 3 } as const;
     groups.sort((a, b) => {
       if (a.kind === 'PHASE' && b.kind === 'PHASE') {
         const ai = detail?.phases.findIndex((p) => p.id === a.bizId);
@@ -184,7 +202,7 @@ export default function ProjectDetailPage() {
       return rank[a.kind] - rank[b.kind];
     });
     return groups;
-  }, [attachments, detail, id, payments]);
+  }, [attachments, detail, id, payments, isContainer]);
 
   // 附件中心筛选（类别 / 归属）
   const [attachTypeFilter, setAttachTypeFilter] = useState<string | undefined>();
@@ -194,6 +212,8 @@ export default function ProjectDetailPage() {
   const [previewAtt, setPreviewAtt] = useState<AttachmentItem | null>(null);
   const [logPage, setLogPage] = useState(1);
   const [logSize, setLogSize] = useState(8);
+  // 子项目（总项目容器视图）
+  const [children, setChildren] = useState<ProjectListItem[]>([]);
   // 新建子项目时预设父项目
   const [presetParent, setPresetParent] = useState<number | null>(null);
   const [editingChild, setEditingChild] = useState(false);
@@ -283,17 +303,37 @@ export default function ProjectDetailPage() {
         </Row>
         <Row gutter={16} style={{ marginTop: 12 }}>
           <Col xs={24} md={6}>
-            当前阶段：<b>{detail.currentPhaseName || '-'}</b>
+            {isContainer ? (
+              <>定位：<b>总项目（汇总容器）</b></>
+            ) : (
+              <>
+                当前阶段：<b>{detail.currentPhaseName || '-'}</b>
+              </>
+            )}
           </Col>
           <Col xs={24} md={6}>
-            整体进度：
-            <Progress percent={detail.overallProgress || 0} size="small" style={{ width: 140, display: 'inline-block', marginLeft: 6 }} />
+            {isContainer ? (
+              <>阶段流程：由各子项目独立推进</>
+            ) : (
+              <>
+                整体进度：
+                <Progress percent={detail.overallProgress || 0} size="small" style={{ width: 140, display: 'inline-block', marginLeft: 6 }} />
+              </>
+            )}
           </Col>
           <Col xs={24} md={6}>
             项目经理：{detail.managerName || '-'}
           </Col>
           <Col xs={24} md={6}>
-            合同总额：<b>{fmtMoney(detail.contractTotal)}</b> 元
+            {isContainer ? (
+              <>
+                子项目：<b>{detail.childCount} 个</b>（合同按子项目分别签订）
+              </>
+            ) : (
+              <>
+                合同总额：<b>{fmtMoney(detail.contractTotal)}</b> 元
+              </>
+            )}
           </Col>
         </Row>
       </Card>
@@ -647,7 +687,7 @@ export default function ProjectDetailPage() {
 
   const fundContent = (
     <div>
-      <ContractPanel projectId={detail.id} parentId={detail.parentId} canManage={canManagePay} />
+      <ContractPanel projectId={detail.id} canManage={canManagePay} />
       {fundSummary}
       <Card size="small" styles={{ body: { padding: 0 } }}>
         {canManagePay && (
@@ -688,7 +728,7 @@ export default function ProjectDetailPage() {
               type="primary"
               icon={<UploadOutlined />}
               onClick={() =>
-                setUpload({ open: true, bizType: 'PROJECT', bizId: Number(id), label: '项目级附件' })
+                setUpload({ open: true, bizType: 'PROJECT', bizId: Number(id), label: isContainer ? '总项目公用附件' : '项目级附件' })
               }
             >
               上传附件（项目级）
@@ -728,7 +768,7 @@ export default function ProjectDetailPage() {
                   {g.kind === 'PAYMENT' ? (
                     <Tag>凭证在“资金情况”页签上传/查看</Tag>
                   ) : null}
-                  {canEdit && g.kind !== 'PAYMENT' ? (
+                  {canEdit && g.kind !== 'PAYMENT' && g.kind !== 'PARENT' ? (
                     <Button
                       size="small"
                       type="primary"
@@ -740,7 +780,7 @@ export default function ProjectDetailPage() {
                           open: true,
                           bizType: g.bizType,
                           bizId: g.bizId,
-                          label: g.kind === 'PHASE' ? (g.phaseName || '阶段') : '项目级附件',
+                          label: g.kind === 'PHASE' ? (g.phaseName || '阶段') : g.kind === 'PARENT' ? '总项目公用附件' : isContainer ? '总项目公用附件' : '项目级附件',
                         });
                       }}
                     >
@@ -891,15 +931,72 @@ export default function ProjectDetailPage() {
     );
   })();
 
+  // 总项目容器：子项目页签（主项目不跑自身流程，仅汇总视图）
+  const childrenTabContent = (
+    <Card size="small" title={`子项目（${children.length}）——每个子项目独立推进并单独签订合同`}>
+      {children.length === 0 ? (
+        <Empty description="暂无子项目，点击右上角“新增子项目”" />
+      ) : (
+        children.map((ch) => {
+          const st = projectStatusTag(ch.status);
+          const ty = projectTypeTag(ch.type);
+          const ph = phaseNameTag(ch.currentPhaseName);
+          return (
+            <div
+              key={ch.id}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 12,
+                padding: '10px 12px',
+                marginBottom: 8,
+                background: '#fafafa',
+                border: '1px solid #f0f0f0',
+                borderRadius: 8,
+                flexWrap: 'wrap',
+              }}
+            >
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#5b8ff9', flexShrink: 0 }} />
+              <Space size={8} wrap style={{ flex: 'auto', minWidth: 0 }}>
+                <a style={{ fontWeight: 600 }} onClick={() => navigate(`/projects/${ch.id}`)}>
+                  {ch.name}
+                </a>
+                <span style={{ fontFamily: 'Consolas,monospace', color: '#8c8c8c' }}>{ch.code}</span>
+                <Tag color={st.color}>{st.text}</Tag>
+                <Tag color={ty.color}>{ty.text}</Tag>
+                {ch.currentPhaseName ? <Tag color={ph.color}>{ph.text}</Tag> : null}
+              </Space>
+              <div style={{ minWidth: 140 }}>
+                <Progress percent={ch.overallProgress || 0} size="small" />
+              </div>
+              <Space>
+                <Button size="small" type="primary" ghost onClick={() => navigate(`/projects/${ch.id}`)}>
+                  查看子项目
+                </Button>
+              </Space>
+            </div>
+          );
+        })
+      )}
+    </Card>
+  );
+
   return (
     <div>
       {header}
       <Tabs
-        defaultActiveKey="phases"
+        defaultActiveKey={isContainer ? 'info' : 'phases'}
         items={[
-          { key: 'phases', label: '流程进展', children: phaseContent },
+          ...(isContainer
+            ? []
+            : [{ key: 'phases', label: '流程进展', children: phaseContent }]),
           { key: 'info', label: '项目信息', children: infoContent },
-          { key: 'fund', label: '资金情况', children: fundContent },
+          ...(isContainer
+            ? [{ key: 'children', label: `子项目（${children.length}）`, children: childrenTabContent }]
+            : []),
+          ...(isContainer
+            ? []
+            : [{ key: 'fund', label: '资金情况', children: fundContent }]),
           { key: 'attach', label: '附件中心', children: attachContent },
           { key: 'log', label: '操作日志', children: logContent },
         ]}

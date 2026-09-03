@@ -1,12 +1,10 @@
 /**
- * Demo 数据种子脚本 v2（父子项目 + 合同模型）
- * 生成演示数据覆盖三种合同形态：
- *   1) 子项目各自独立合同
- *   2) 若干子项目共享同一个合同
- *   3) 全部子项目共享一个合同
- * 以及若干顶层独立项目（无子项目，行为兼容旧单项目）。
+ * Demo 数据种子脚本 v3（父子项目 + 子项目独立合同）
+ * 业务口径（v1.4）：分了子项目后，每个子项目独立签订合同——
+ * 即使承包商相同，也按子项目分别登记合同；总项目仅作汇总容器，
+ * 提供公用附件/信息，不再有自身阶段流程。顶层独立项目（无子项目）仍按单项目处理。
  *
- * 走真实后端 REST API；会先清空现有项目（含其子项目）再重建。
+ * 走真实后端 REST API；会先清空现有项目（含子项目）再重建。
  * 用法：node scripts/seed-demo.mjs [baseUrl]   （默认 http://127.0.0.1:8080，admin/123456）
  */
 const BASE = process.argv[2] || 'http://127.0.0.1:8080';
@@ -131,30 +129,32 @@ async function main() {
   await advanceProject(token, b, 3, { name: '到货验收', percent: 20 }, '2025-04-01');
   await advanceProject(token, c, 2, { name: '招标采购', percent: 40 }, '2025-04-15');
 
-  const cA = await createContract(token, '云资源池扩容独立合同', 'HT-2025-ROOT1-A', 3000000, [a], '浪潮云服务');
+  // 每个子项目独立签订合同（同一供应商也可分开登记）
+  const cA = await createContract(token, '云资源池扩容合同', 'HT-2025-ROOT1-A', 3000000, [a], '浪潮云服务');
   await addPayment(token, cA, a, 'PREPAY', 900000);
-  const cBC = await createContract(token, '灾备与等保共享合同', 'HT-2025-ROOT1-BC', 2600000, [b, c], '华信系统集成');
-  await addPayment(token, cBC, b, 'PREPAY', 780000);
+  const cB = await createContract(token, '灾备中心建设合同', 'HT-2025-ROOT1-B', 1400000, [b], '华信系统集成');
+  await addPayment(token, cB, b, 'PREPAY', 420000);
+  const cC = await createContract(token, '安全等保改造合同', 'HT-2025-ROOT1-C', 1200000, [c], '华信系统集成');
+  await addPayment(token, cC, c, 'PREPAY', 360000);
 
-  // ============ 总项目二：5 个子项目全部共享一个合同 ============
+  // ============ 总项目二：5 个子项目各自独立合同（同供应商也分开签订） ============
   const root2 = await mkProject('智慧园区一体化建设（总项目）', 'HW', '市政务服务中心', null, '2025-09-01', 9800000);
   const names2 = ['楼宇自控与BA', '综合布线', '视频监控', '一卡通门禁', '信息发布与导视'];
   const types2 = ['HW', 'HW', 'HW', 'SW', 'SW'];
   const kids2 = [];
-  names2.forEach((n, i) => {
-    kids2.push(null); // placeholder
-  });
   for (let i = 0; i < names2.length; i++) {
-    const id = await mkProject(names2[i], types2[i], '市政务服务中心', root2, addDays('2025-09-05', (i + 1) * 12), 1900000);
-    kids2[i] = id;
+    kids2[i] = await mkProject(names2[i], types2[i], '市政务服务中心', root2, addDays('2025-09-05', (i + 1) * 12), 1900000);
   }
   for (let i = 0; i < kids2.length; i++) {
     await advanceProject(token, kids2[i], Math.min(3, 1 + i), i === 0 ? { name: '招标采购', percent: 30 } : { name: '需求调研与规格', percent: 30 }, addDays('2025-09-05', (i + 1) * 12));
   }
-  const cAll = await createContract(token, '智慧园区总包合同', 'HT-2025-ROOT2-ALL', 9200000, kids2, '太极计算机股份');
-  await addPayment(token, cAll, kids2[0], 'PREPAY', 2760000);
+  for (let i = 0; i < kids2.length; i++) {
+    const vendor = i < 3 ? '太极计算机股份' : '慧眼安防工程';
+    const ck = await createContract(token, `${names2[i]}合同`, `HT-2025-ROOT2-${String(i + 1).padStart(2, '0')}`, 1600000 + i * 120000, [kids2[i]], vendor);
+    await addPayment(token, ck, kids2[i], 'PREPAY', round2((1600000 + i * 120000) * 0.3));
+  }
 
-  // ============ 顶层独立项目（无子项目，旧单项目形态兼容） ============
+  // ============ 顶层独立项目（无子项目，单项目形态） ============
   const alone = await mkProject('中小学教育信息化改造（单项目）', 'SW', '市教育局', null, '2024-06-20', 2100000);
   await advanceProject(token, alone, 7, { name: '部署上线与试运行', percent: 50 }, '2024-06-20');
   const cAlone = await createContract(token, '教育信息化改造合同', 'HT-2024-ALONE', 1980000, [alone], '中软国际信息技术');
@@ -172,7 +172,7 @@ async function main() {
   console.log('========================================');
   console.log(`耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   console.log(`顶层项目 ${top.length} 个，核算单元(含子项目) ${leaves} 个，付款记录 ${pays} 笔`);
-  console.log('合同形态：独立(ROOT1-A)、部分共享(ROOT1-BC)、全部共享(ROOT2-ALL)、单项目(ALONE)');
+  console.log('合同：每个（子）项目独立登记（同供应商也各自合同）；总项目容器无自身合同');
 }
 
 main().catch((e) => {

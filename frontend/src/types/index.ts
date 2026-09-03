@@ -113,6 +113,8 @@ export interface ProjectListItem {
   ownerUnit?: string | null;
   /** 父(总)项目 id，null=顶层 */
   parentId?: number | null;
+  /** 子项目数量（>0=总项目容器，无自身流程） */
+  childCount?: number;
   managerUserId?: number | null;
   managerName?: string | null;
   vendorName?: string | null;
@@ -153,6 +155,7 @@ export interface ProjectDetail extends ProjectForm {
   managerName?: string | null;
   ownerDeptName?: string | null;
   parentName?: string | null;
+  childCount?: number;
   memberNames?: string[];
   contractTotal?: number;
   actualFinishDate?: string | null;

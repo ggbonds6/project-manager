@@ -183,6 +183,24 @@ public class AttachmentController {
             }
             vos.add(vo);
         }
+        // 汇总父级总项目公用附件（供子项目共用查看）
+        List<Long> ancestors = new ArrayList<>();
+        Project cur = pj.getParentId() == null ? null : projectMapper.selectById(pj.getParentId());
+        while (cur != null) {
+            ancestors.add(cur.getId());
+            cur = cur.getParentId() == null ? null : projectMapper.selectById(cur.getParentId());
+        }
+        if (!ancestors.isEmpty()) {
+            List<Attachment> shared = attachmentMapper.selectList(new LambdaQueryWrapper<Attachment>()
+                    .eq(Attachment::getBizType, "PROJECT")
+                    .in(Attachment::getBizId, ancestors)
+                    .orderByDesc(Attachment::getUploadTime));
+            for (Attachment a : shared) {
+                AttachmentVO vo = toVO(a);
+                vo.setPhaseName("总项目公用附件");
+                vos.add(vo);
+            }
+        }
         return R.ok(vos);
     }
 

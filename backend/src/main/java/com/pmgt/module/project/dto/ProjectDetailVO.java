@@ -22,6 +22,8 @@ public class ProjectDetailVO {
     /** 父(总)项目 */
     private Long parentId;
     private String parentName;
+    /** 子项目数量（>0=总项目容器，无自身流程） */
+    private Integer childCount;
     private Long managerUserId;
     private String managerName;
     private List<Long> memberIds;
