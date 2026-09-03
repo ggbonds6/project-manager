@@ -73,6 +73,8 @@ export interface ProjectForm {
   status?: string;
   ownerUnit?: string;
   ownerDeptId?: number | null;
+  /** 所属总项目 id；为空/编辑顶层时传 null */
+  parentId?: number | null;
   managerUserId?: number | null;
   memberIds?: number[];
   vendorName?: string;
@@ -109,6 +111,8 @@ export interface ProjectListItem {
   type: 'HW' | 'SW';
   status: string;
   ownerUnit?: string | null;
+  /** 父(总)项目 id，null=顶层 */
+  parentId?: number | null;
   managerUserId?: number | null;
   managerName?: string | null;
   vendorName?: string | null;
@@ -148,6 +152,7 @@ export interface ProjectDetail extends ProjectForm {
   id: number;
   managerName?: string | null;
   ownerDeptName?: string | null;
+  parentName?: string | null;
   memberNames?: string[];
   contractTotal?: number;
   actualFinishDate?: string | null;
@@ -161,6 +166,7 @@ export interface ProjectDetail extends ProjectForm {
 export interface PaymentItem {
   id?: number;
   projectId: number;
+  contractId?: number | null;
   nodeCode: string;
   nodeName?: string;
   conditionDesc?: string;
@@ -177,6 +183,24 @@ export const PAYMENT_STATUS: Record<string, { text: string; color: string }> = {
   PART: { text: '部分支付', color: 'processing' },
   PAID: { text: '已支付', color: 'success' },
 };
+
+/** 合同：可覆盖一个或多个(子)项目 */
+export interface ContractItem {
+  id?: number;
+  name: string;
+  contractNo?: string | null;
+  vendorName?: string | null;
+  vendorContact?: string | null;
+  bidType?: string | null;
+  bidAmount?: number | null;
+  contractAmount?: number | null;
+  changeAmount?: number;
+  planAmount?: number | null;
+  scopeRemark?: string | null;
+  remark?: string | null;
+  createTime?: string | null;
+  updateTime?: string | null;
+}
 
 export interface AttachmentItem {
   id: number;

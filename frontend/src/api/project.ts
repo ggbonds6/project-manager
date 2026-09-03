@@ -1,6 +1,7 @@
 import { api } from './http';
 import {
   AttachmentItem,
+  ContractItem,
   DictItem,
   LogItem,
   PageResult,
@@ -21,6 +22,8 @@ export interface ProjectQuery {
   ownerUnit?: string;
   managerUserId?: number;
   year?: number;
+  /** 查某父项目的子项目 */
+  parentId?: number;
 }
 
 export const projectApi = {
@@ -71,6 +74,29 @@ export const paymentApi = {
   },
   remove(id: number): Promise<void> {
     return api.del<void>(`/payments/${id}`);
+  },
+};
+
+export const contractApi = {
+  listByProject(projectId: number | string): Promise<ContractItem[]> {
+    return api.get<ContractItem[]>(`/projects/${projectId}/contracts`);
+  },
+  get(id: number): Promise<ContractItem> {
+    return api.get<ContractItem>(`/contracts/${id}`);
+  },
+  /** 合同覆盖的(子)项目 */
+  covered(id: number): Promise<{ id: number; name: string; code: string }[]> {
+    return api.get<{ id: number; name: string; code: string }[]>(`/contracts/${id}/projects`);
+  },
+  /** data.projectIds 为该合同覆盖的(子)项目 */
+  create(data: Partial<ContractItem> & { projectIds?: number[] }): Promise<number> {
+    return api.post<number>('/contracts', data);
+  },
+  update(id: number, data: Partial<ContractItem> & { projectIds?: number[] }): Promise<void> {
+    return api.put<void>(`/contracts/${id}`, data);
+  },
+  remove(id: number): Promise<void> {
+    return api.del<void>(`/contracts/${id}`);
   },
 };
 

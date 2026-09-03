@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -73,6 +74,26 @@ public class ContractController {
             throw new BizException(404, "合同不存在");
         }
         return R.ok(c);
+    }
+
+    /** 该合同覆盖的(子)项目（用于编辑回显/展示覆盖范围） */
+    @GetMapping("/contracts/{id}/projects")
+    public R<List<Map<String, Object>>> coveredProjects(@PathVariable Long id) {
+        if (contractMapper.selectById(id) == null) {
+            throw new BizException(404, "合同不存在");
+        }
+        List<Project> list = projectMapper.selectList(new LambdaQueryWrapper<Project>()
+                .eq(Project::getContractId, id)
+                .orderByAsc(Project::getId));
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Project p : list) {
+            Map<String, Object> row = new java.util.LinkedHashMap<>();
+            row.put("id", p.getId());
+            row.put("name", p.getName());
+            row.put("code", p.getCode());
+            rows.add(row);
+        }
+        return R.ok(rows);
     }
 
     @RequireRole({Role.ADMIN})

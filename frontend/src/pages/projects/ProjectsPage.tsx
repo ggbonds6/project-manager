@@ -30,7 +30,7 @@ import { projectApi } from '@/api/project';
 import { useAuth } from '@/store/auth';
 import { useDict } from '@/hooks/useOptions';
 import { fmtDateTime, fmtMoney } from '@/utils/format';
-import ProjectFormModal from '@/components/ProjectFormModal';
+import ProjectFormModal, { ParentOption } from '@/components/ProjectFormModal';
 import {
   phaseNameTag,
   projectStatusTag,
@@ -67,8 +67,13 @@ export default function ProjectsPage() {
   const [data, setData] = useState<ProjectListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  /** 顶层 → 其子项目（用于可折叠树） */
+  const [childrenMap, setChildrenMap] = useState<Record<number, ProjectListItem[]>>({});
+  /** 可作为“所属总项目”的全部顶层项目 */
+  const [parentOptions, setParentOptions] = useState<ParentOption[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<(ProjectForm & { id?: number }) | null>(null);
+  const [presetParent, setPresetParent] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const canEdit = user?.role === 'ADMIN' || user?.role === 'MANAGER';
@@ -88,6 +93,22 @@ export default function ProjectsPage() {
       });
       setData(res.records);
       setTotal(res.total);
+      // 顶层项目的子项目（供展开；容量内一次性拉取，后续可按需展开懒加载）
+      const maps: Record<number, ProjectListItem[]> = {};
+      const all = await Promise.all(
+        res.records.map(async (row) => {
+          try {
+            const child = await projectApi.page({ page: 1, size: 200, parentId: row.id });
+            return { id: row.id, rows: child.records };
+          } catch {
+            return { id: row.id, rows: [] };
+          }
+        }),
+      );
+      all.forEach(({ id, rows }) => {
+        maps[id] = rows;
+      });
+      setChildrenMap(maps);
     } catch {
       /* 拦截器已提示 */
     } finally {
@@ -98,6 +119,14 @@ export default function ProjectsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 一次拉取全部顶层项目作为“所属总项目”候选
+  useEffect(() => {
+    projectApi
+      .page({ page: 1, size: 500 })
+      .then((res) => setParentOptions(res.records.map((r) => ({ id: r.id, name: r.name, code: r.code }))))
+      .catch(() => undefined);
+  }, []);
 
   const applySearch = () => {
     setApplied({ ...draft });
@@ -111,8 +140,9 @@ export default function ProjectsPage() {
     setPage(1);
   };
 
-  const openCreate = () => {
+  const openCreate = (parentId: number | null = null) => {
     setEditing(null);
+    setPresetParent(parentId);
     setModalOpen(true);
   };
 
@@ -339,11 +369,11 @@ export default function ProjectsPage() {
             { label: '卡片', value: 'card' },
           ]}
         />
-        {canEdit && (
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-            新建项目
-          </Button>
-        )}
+          {canEdit && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(null)}>
+              新建项目
+            </Button>
+          )}
       </Space>
     </Card>
   );
@@ -368,6 +398,25 @@ export default function ProjectsPage() {
             columns={columns}
             dataSource={data}
             scroll={{ x: 1500 }}
+            expandable={{
+              rowExpandable: (row) => (childrenMap[row.id]?.length || 0) > 0,
+              expandedRowRender: (row) => (
+                <div style={{ margin: '0 -16px -16px' }}>
+                  <Table<ProjectListItem>
+                    rowKey="id"
+                    size="small"
+                    pagination={false}
+                    dataSource={childrenMap[row.id] || []}
+                    columns={columns}
+                    title={() => (
+                      <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+                        🔽 子项目明细（{childrenMap[row.id]?.length || 0}）
+                      </span>
+                    )}
+                  />
+                </div>
+              ),
+            }}
             pagination={{
               current: page,
               pageSize: size,
@@ -454,7 +503,15 @@ export default function ProjectsPage() {
         </Row>
       )}
 
-      <ProjectFormModal open={modalOpen} initial={editing} submitting={submitting} onOk={onFormOk} onCancel={() => setModalOpen(false)} />
+      <ProjectFormModal
+        open={modalOpen}
+        initial={editing}
+        parentOptions={parentOptions}
+        presetParentId={editing ? null : presetParent}
+        submitting={submitting}
+        onOk={onFormOk}
+        onCancel={() => setModalOpen(false)}
+      />
     </div>
   );
 }

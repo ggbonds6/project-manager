@@ -20,10 +20,20 @@ export interface ProjectFormValues extends Omit<ProjectForm, 'approveDate' | 'pl
   planFinishDate?: Dayjs | null;
 }
 
+export interface ParentOption {
+  id: number;
+  name: string;
+  code: string;
+}
+
 interface Props {
   open: boolean;
   /** 编辑时传入既有值；新建为 null */
   initial?: ProjectForm | null;
+  /** 可选：可作为“所属总项目”的顶层项目列表 */
+  parentOptions?: ParentOption[];
+  /** 新建时预设的父项目（例如在总项目详情里新增子项目） */
+  presetParentId?: number | null;
   submitting?: boolean;
   onOk: (values: ProjectForm) => void;
   onCancel: () => void;
@@ -33,7 +43,15 @@ function toDayjs(v?: string | null): Dayjs | null {
   return v ? dayjs(v) : null;
 }
 
-export default function ProjectFormModal({ open, initial, submitting, onOk, onCancel }: Props) {
+export default function ProjectFormModal({
+  open,
+  initial,
+  parentOptions,
+  presetParentId,
+  submitting,
+  onOk,
+  onCancel,
+}: Props) {
   const [form] = Form.useForm<ProjectFormValues>();
   const { options: units } = useDict('OWNER_UNIT');
   const { options: fundSources } = useDict('FUND_SOURCE');
@@ -52,9 +70,13 @@ export default function ProjectFormModal({ open, initial, submitting, onOk, onCa
       });
     } else {
       form.resetFields();
-      form.setFieldsValue({ type: 'HW', status: 'RUN' });
+      form.setFieldsValue({
+        type: 'HW',
+        status: 'RUN',
+        parentId: presetParentId ?? null,
+      });
     }
-  }, [open, initial, form]);
+  }, [open, initial, form, presetParentId]);
 
   const submit = () => {
     form.validateFields().then((values) => {
@@ -65,6 +87,7 @@ export default function ProjectFormModal({ open, initial, submitting, onOk, onCa
         planStartDate: values.planStartDate ? values.planStartDate.format('YYYY-MM-DD') : undefined,
         planFinishDate: values.planFinishDate ? values.planFinishDate.format('YYYY-MM-DD') : undefined,
         ownerDeptId: values.ownerDeptId ?? null,
+        parentId: values.parentId ?? null,
         managerUserId: values.managerUserId ?? null,
         memberIds: values.memberIds ?? [],
       };
@@ -97,6 +120,22 @@ export default function ProjectFormModal({ open, initial, submitting, onOk, onCa
               <Input placeholder="如：XX 局政务云扩容项目" />
             </Form.Item>
           </Col>
+          {!!parentOptions?.length && (
+            <Col span={12}>
+              <Form.Item label="所属总项目" name="parentId" tooltip="留空表示顶层项目；选某个总项目则本项目作为其子项目">
+                <Select
+                  allowClear
+                  showSearch
+                  optionFilterProp="label"
+                  placeholder="选择所属总项目（留空=顶层）"
+                  options={parentOptions.map((p) => ({
+                    value: p.id,
+                    label: `${p.name}（${p.code}）`,
+                  }))}
+                />
+              </Form.Item>
+            </Col>
+          )}
           <Col span={12}>
             <Form.Item label="项目类型" name="type" rules={[{ required: true }]}>
               <Select

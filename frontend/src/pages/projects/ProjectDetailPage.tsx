@@ -45,6 +45,7 @@ import ProjectFormModal from '@/components/ProjectFormModal';
 import PhaseEditModal from '@/components/PhaseEditModal';
 import AttachmentUploadModal from '@/components/AttachmentUploadModal';
 import AttachmentPreviewModal from '@/components/AttachmentPreviewModal';
+import ContractPanel from '@/components/ContractPanel';
 import { useAuth } from '@/store/auth';
 import { useDict } from '@/hooks/useOptions';
 import { fmtDate, fmtDateTime, fmtFileSize, fmtMoney } from '@/utils/format';
@@ -193,11 +194,23 @@ export default function ProjectDetailPage() {
   const [previewAtt, setPreviewAtt] = useState<AttachmentItem | null>(null);
   const [logPage, setLogPage] = useState(1);
   const [logSize, setLogSize] = useState(8);
+  // 新建子项目时预设父项目
+  const [presetParent, setPresetParent] = useState<number | null>(null);
+  const [editingChild, setEditingChild] = useState(false);
 
   const onProjectSaved = async (values: ProjectForm) => {
-    if (!detail) return;
     setSubmitting(true);
     try {
+      if (editingChild) {
+        const newId = await projectApi.create(values);
+        message.success('子项目已创建');
+        setEditOpen(false);
+        setEditingChild(false);
+        setPresetParent(null);
+        navigate(`/projects/${newId}`);
+        return;
+      }
+      if (!detail) return;
       await projectApi.update(detail.id, values);
       message.success('项目信息已更新');
       setEditOpen(false);
@@ -231,6 +244,11 @@ export default function ProjectDetailPage() {
                 返回
               </Button>
               <span style={{ fontSize: 18, fontWeight: 600 }}>{detail.name}</span>
+              {detail.parentId && detail.parentName ? (
+                <a style={{ fontSize: 13 }} onClick={() => navigate(`/projects/${detail.parentId}`)}>
+                  ← 所属总项目：{detail.parentName}
+                </a>
+              ) : null}
               <Tag color="geekblue">{PROJECT_TYPES[detail.type] || detail.type}</Tag>
               {statusMeta(detail.status) ? (
                 <Tag color={statusMeta(detail.status)!.color}>{statusMeta(detail.status)!.text}</Tag>
@@ -240,6 +258,18 @@ export default function ProjectDetailPage() {
           </Col>
           <Col>
             <Space size={8}>
+              {canEdit && !detail.parentId && (
+                <Button
+                  icon={<PlusOutlined />}
+                  onClick={() => {
+                    setEditingChild(true);
+                    setPresetParent(detail.id);
+                    setEditOpen(true);
+                  }}
+                >
+                  新增子项目
+                </Button>
+              )}
               {canEdit && (
                 <Button type="primary" icon={<EditOutlined />} onClick={() => setEditOpen(true)}>
                   编辑基本信息
@@ -617,6 +647,7 @@ export default function ProjectDetailPage() {
 
   const fundContent = (
     <div>
+      <ContractPanel projectId={detail.id} parentId={detail.parentId} canManage={canManagePay} />
       {fundSummary}
       <Card size="small" styles={{ body: { padding: 0 } }}>
         {canManagePay && (
@@ -874,7 +905,18 @@ export default function ProjectDetailPage() {
         ]}
       />
 
-      <ProjectFormModal open={editOpen} initial={detail} submitting={submitting} onOk={onProjectSaved} onCancel={() => setEditOpen(false)} />
+      <ProjectFormModal
+        open={editOpen}
+        initial={editingChild ? null : detail}
+        presetParentId={editingChild ? presetParent : undefined}
+        submitting={submitting}
+        onOk={onProjectSaved}
+        onCancel={() => {
+          setEditOpen(false);
+          setEditingChild(false);
+          setPresetParent(null);
+        }}
+      />
       <PhaseEditModal
         open={phaseModal.open}
         phase={phaseModal.phase}
