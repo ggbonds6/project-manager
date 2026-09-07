@@ -99,8 +99,8 @@
 ## 运行方式速查
 
 ```bash
-# 一键启动：双击根目录 start-dev.cmd（MySQL→后端→前端→浏览器）；停止用 stop-dev.cmd
-# MySQL（若单独管理）：E:\work\env\mysql\start-mysql.cmd
+# 一键启动：见 deploy/README（Windows: start-dev.cmd / 双击；Linux: deploy/linux/start-dev.sh；Docker: deploy/docker）
+# MySQL：自行启动，或 export MYSQL_START_CMD（脚本自动调用）——详见 deploy/README
 cd backend  && mvn spring-boot:run      # :8080（Flyway 自动迁移）
 cd frontend && npm install && npm run dev  # :5173
 node scripts/seed-demo.mjs              # 可选：重置演示项目（总项目/子项目+三种合同形态）

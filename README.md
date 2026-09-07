@@ -24,9 +24,9 @@
 
 ## 本地运行
 
-前置：JDK 17+、Node 18+、MySQL 8（本机开发已配置便携版 `E:\work\env\mysql`）。
+前置：JDK 17+、Node 18+、MySQL 8（启动脚本按平台分类，见 [`deploy/README.md`](deploy/README.md)；服务器可直接用 Docker 一体化）。
 
-**一键启动（推荐）**：双击根目录 `start-dev.cmd`（自动启动 MySQL→后端→前端并打开浏览器）；停止用 `stop-dev.cmd`（MySQL 单独用 `E:\work\env\mysql\stop-mysql.cmd`）。
+**一键启动（Windows）**：双击根目录 `start-dev.cmd`（自动检测/等待 MySQL，启动后端与前端并打开浏览器）；停止用 `stop-dev.cmd`。Linux 与 Docker 见 [`deploy/README.md`](deploy/README.md)。
 
 或分步启动：
 

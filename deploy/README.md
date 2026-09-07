@@ -27,7 +27,7 @@ docker compose -f deploy/docker/docker-compose.yml ps
 启动后：
 
 - 前端（nginx）：**http://服务器IP:8080**（默认端口，可改 `WEB_PORT`）
-- `/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露）
+- `/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露；如需在宿主机执行 `scripts/seed-demo.mjs`，可临时给 backend 映射 `- "8080:8080"`，或在容器内执行）
 - MySQL 数据卷 `pm_db`、附件卷 `pm_uploads`（宿主机 `docker volume inspect` 可查路径）
 
 ### 首次数据迁移（可选）
