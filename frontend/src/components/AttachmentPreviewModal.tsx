@@ -14,6 +14,8 @@ const TEXT_EXTS = new Set(['txt', 'log', 'json', 'xml', 'html']);
 const MD_EXTS = new Set(['md']);
 const DOCX_EXTS = new Set(['docx']);
 const XLSX_EXTS = new Set(['xls', 'xlsx']);
+const DOC_EXTS = new Set(['doc']); // 旧版 Word：内容嗅探（实为 docx 才渲染，真·doc 提示下载）
+const OFD_EXTS = new Set(['ofd']); // OFD 版式：@sharp9/ofdjs 首页 Canvas 试渲染
 
 const DOCX_BASE_CSS = `.pm-office-body{font-family:'Microsoft YaHei','PingFang SC',sans-serif;color:#1f2329;}
 .pm-office-body table{border-collapse:collapse;margin:10px 0;width:100%;}
@@ -46,6 +48,84 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
   const extTag = fileExtTag(ext);
 
   const authToken = () => localStorage.getItem('pm_token') || '';
+
+  const renderFallback = (msg: string) => {
+    if (officeRef.current) {
+      officeRef.current.innerHTML =
+        `<div style="padding:24px;text-align:center;color:#999">${msg}</div>`;
+    }
+  };
+
+  // OFD：@sharp9/ofdjs → 渲染首页到 Canvas（多页暂取第 1 页，失败回落下载提示）
+  const doOfd = async () => {
+    setBusy(true);
+    try {
+      const resp = await fetch(attachmentUrl(item!.id), {
+        headers: { Authorization: `Bearer ${authToken()}` },
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const buf = await resp.arrayBuffer();
+      const jszipMod: any = await import('jszip');
+      (window as any).JSZip = jszipMod.default;
+      const ofdMod: any = await import('@sharp9/ofdjs');
+      const ofd = await ofdMod.readOfd(new Uint8Array(buf));
+      const pageCount = typeof ofdMod.getPageCount === 'function' ? ofdMod.getPageCount(ofd) : 1;
+      const dims = await ofdMod.getPageDimensions(ofd, 0);
+      const dpi = 96;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round((dims.width * dpi) / 25.4));
+      canvas.height = Math.max(1, Math.round((dims.height * dpi) / 25.4));
+      canvas.style.maxWidth = '100%';
+      canvas.style.height = 'auto';
+      await ofdMod.renderPageToCanvas(ofd, 0, canvas, { dpi });
+      const host = officeRef.current;
+      if (host) {
+        host.innerHTML = '';
+        if (pageCount > 1) {
+          const tip = document.createElement('div');
+          tip.style.cssText = 'font-size:12px;color:#8c8c8c;margin-bottom:6px';
+          tip.textContent = `共 ${pageCount} 页，当前预览第 1 页（首页试渲染）`;
+          host.appendChild(tip);
+        }
+        host.appendChild(canvas);
+      }
+    } catch (e) {
+      console.warn('ofd preview failed:', e);
+      renderFallback('OFD 预览解析失败（该库为试集成），请下载后用 OFD 阅读器查看。');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // 旧版 .doc：若实际是 docx(zip 头 PK..) 则用 docx-preview；真·doc 提示下载
+  const doDocLegacy = async () => {
+    setBusy(true);
+    try {
+      const resp = await fetch(attachmentUrl(item!.id), {
+        headers: { Authorization: `Bearer ${authToken()}` },
+      });
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const buf = new Uint8Array(await resp.arrayBuffer());
+      const isZip = buf.length > 2 && buf[0] === 0x50 && buf[1] === 0x4b;
+      if (!isZip) throw new Error('LEGACY_DOC');
+      const docx: any = await import('docx-preview');
+      await docx.renderAsync(buf, officeRef.current!, null, {
+        className: 'pm-docx',
+        inWrapper: true,
+        ignoreWidth: true,
+        ignoreHeight: true,
+      });
+    } catch (e: any) {
+      if (e?.message === 'LEGACY_DOC') {
+        renderFallback('旧版 Word(.doc) 暂不支持在线预览，请下载后用本机 Word 打开。');
+      } else {
+        console.warn('doc preview failed:', e);
+        renderFallback('Word 解析失败，请下载后用本机软件打开。');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
 
   // 解析类预览（docx/xlsx/md/text）在附件切换时执行
   useEffect(() => {
@@ -108,6 +188,10 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
       doOffice('docx');
     } else if (XLSX_EXTS.has(ext)) {
       doOffice('xlsx');
+    } else if (OFD_EXTS.has(ext)) {
+      doOfd();
+    } else if (DOC_EXTS.has(ext)) {
+      doDocLegacy();
     }
   }, [item, ext]);
 
@@ -123,7 +207,8 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
 
   const isImage = IMG_EXTS.has(ext);
   const isPdf = PDF_EXTS.has(ext);
-  const isOfficeParsed = DOCX_EXTS.has(ext) || XLSX_EXTS.has(ext);
+  const isOfficeParsed =
+    DOCX_EXTS.has(ext) || XLSX_EXTS.has(ext) || DOC_EXTS.has(ext) || OFD_EXTS.has(ext);
 
   const renderViewer = (large: boolean) => {
     if (!item) return null;
@@ -219,7 +304,15 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
         <div style={box}>
           {busy && (
             <div style={{ textAlign: 'center', padding: 80 }}>
-              <Spin tip={DOCX_EXTS.has(ext) ? 'Word 解析中…' : 'Excel 解析中…'} />
+              <Spin
+                tip={
+                  DOCX_EXTS.has(ext) || DOC_EXTS.has(ext)
+                    ? 'Word 解析中…'
+                    : OFD_EXTS.has(ext)
+                      ? 'OFD 解析中…'
+                      : 'Excel 解析中…'
+                }
+              />
             </div>
           )}
           <style>{DOCX_BASE_CSS}</style>
@@ -231,7 +324,7 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
         </div>
       );
     }
-    // doc/ppt/pptx/ofd/压缩包等 —— 无稳定纯前端预览方案，明确提示下载
+    // ppt/pptx 等 —— 无稳定纯前端预览方案，明确提示下载
     return (
       <div style={{ textAlign: 'center', padding: 48 }}>
         <Typography.Paragraph type="secondary">
