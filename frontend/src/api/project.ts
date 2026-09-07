@@ -17,11 +17,13 @@ export interface ProjectQuery {
   page?: number;
   size?: number;
   keyword?: string;
+  /** 支持多选（后端逗号分隔，如 "HW,SW"） */
   type?: string;
+  /** 支持多选（后端逗号分隔） */
   status?: string;
-  ownerUnit?: string;
   managerUserId?: number;
-  year?: number;
+  /** 支持多选（后端逗号分隔，如 "2024,2025"） */
+  year?: number | string;
   /** 查某父项目的子项目 */
   parentId?: number;
 }

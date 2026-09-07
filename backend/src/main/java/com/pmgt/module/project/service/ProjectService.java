@@ -34,11 +34,13 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -90,11 +92,11 @@ public class ProjectService {
                     .or().like(Project::getCode, kw)
                     .or().like(Project::getVendorName, kw));
         }
-        if (StringUtils.hasText(q.getType())) {
-            qw.eq(Project::getType, q.getType());
+        if (inValues(q.getType()).isPresent()) {
+            qw.in(Project::getType, inValues(q.getType()).get());
         }
-        if (StringUtils.hasText(q.getStatus())) {
-            qw.eq(Project::getStatus, q.getStatus());
+        if (inValues(q.getStatus()).isPresent()) {
+            qw.in(Project::getStatus, inValues(q.getStatus()).get());
         }
         if (StringUtils.hasText(q.getOwnerUnit())) {
             qw.eq(Project::getOwnerUnit, q.getOwnerUnit());
@@ -102,8 +104,23 @@ public class ProjectService {
         if (q.getManagerUserId() != null) {
             qw.eq(Project::getManagerUserId, q.getManagerUserId());
         }
-        if (q.getYear() != null) {
-            qw.apply("YEAR(approve_date) = {0}", q.getYear());
+        List<Integer> years = intValues(q.getYear());
+        if (!years.isEmpty()) {
+            if (years.size() == 1) {
+                qw.apply("YEAR(approve_date) = {0}", years.get(0));
+            } else {
+                qw.and(w -> {
+                    boolean first = true;
+                    for (Integer y : years) {
+                        if (first) {
+                            w.apply("YEAR(approve_date) = {0}", y);
+                            first = false;
+                        } else {
+                            w.or().apply("YEAR(approve_date) = {0}", y);
+                        }
+                    }
+                });
+            }
         }
         if (q.getParentId() != null) {
             qw.eq(Project::getParentId, q.getParentId());
@@ -145,7 +162,7 @@ public class ProjectService {
             vo.setManagerName(optionalName(userNames, pj.getManagerUserId()));
             vo.setVendorName(pj.getVendorName());
             vo.setBudgetAmount(pj.getBudgetAmount());
-            vo.setContractAmount(pj.getContractAmount());
+            vo.setContractAmount(moneyAgg(pj, false));
             vo.setApproveDate(pj.getApproveDate());
             vo.setPlanFinishDate(pj.getPlanFinishDate());
             vo.setActualFinishDate(pj.getActualFinishDate());
@@ -155,7 +172,11 @@ public class ProjectService {
             vo.setOverallProgress(overallProgress(phases));
 
             List<Payment> pays = paymentsByProject.getOrDefault(pj.getId(), List.of());
-            vo.setPaidAmount(pays.stream().map(pr -> zero(pr.getPaidAmount())).reduce(BigDecimal.ZERO, BigDecimal::add));
+            if (childCounts.getOrDefault(pj.getId(), 0) > 0) {
+                vo.setPaidAmount(paidAgg(pj));
+            } else {
+                vo.setPaidAmount(pays.stream().map(pr -> zero(pr.getPaidAmount())).reduce(BigDecimal.ZERO, BigDecimal::add));
+            }
             vo.setPayments(pays.stream().map(this::paymentBrief).toList());
             return vo;
         }).toList();
@@ -186,7 +207,15 @@ public class ProjectService {
         vo.setContractNo(pj.getContractNo());
         vo.setContractAmount(pj.getContractAmount());
         vo.setChangeAmount(pj.getChangeAmount() == null ? BigDecimal.ZERO : pj.getChangeAmount());
-        vo.setContractTotal(contractTotal(pj));
+        Contract linked = pj.getContractId() == null ? null : contractMapper.selectById(pj.getContractId());
+        if (linked != null) {
+            // 已登记合同：项目信息中的编号/金额等口径以该合同为准（与“资金情况”合同面板一致）
+            vo.setContractNo(linked.getContractNo());
+            vo.setBidAmount(linked.getBidAmount());
+            vo.setContractAmount(linked.getContractAmount());
+            vo.setChangeAmount(linked.getChangeAmount() == null ? BigDecimal.ZERO : linked.getChangeAmount());
+        }
+        vo.setContractTotal(moneyAgg(pj, true));
         vo.setApproveDate(pj.getApproveDate());
         vo.setPlanStartDate(pj.getPlanStartDate());
         vo.setPlanFinishDate(pj.getPlanFinishDate());
@@ -497,10 +526,84 @@ public class ProjectService {
         throw new BizException(500, "项目编号生成失败，请手动指定编号");
     }
 
-    private BigDecimal contractTotal(Project pj) {
-        BigDecimal base = pj.getContractAmount() == null ? BigDecimal.ZERO : pj.getContractAmount();
-        BigDecimal change = pj.getChangeAmount() == null ? BigDecimal.ZERO : pj.getChangeAmount();
-        return base.add(change);
+    /** 直取子项目 */
+    private List<Project> directChildren(Long parentId) {
+        return projectMapper.selectList(new LambdaQueryWrapper<Project>().eq(Project::getParentId, parentId));
+    }
+
+    /**
+     * 金额口径（查询时实时汇总）：
+     * 叶子项目 = 所挂合同的金额(+变更)；未挂合同时取项目遗留合同列；
+     * 总项目容器 = 子项目之和（与统计口径一致）。
+     */
+    private BigDecimal moneyAgg(Project pj, boolean inclChange) {
+        List<Project> children = directChildren(pj.getId());
+        if (!children.isEmpty()) {
+            BigDecimal sum = BigDecimal.ZERO;
+            for (Project ch : children) {
+                sum = sum.add(moneyAgg(ch, inclChange));
+            }
+            return sum;
+        }
+        if (pj.getContractId() != null) {
+            Contract c = contractMapper.selectById(pj.getContractId());
+            if (c != null) {
+                BigDecimal total = zero(c.getContractAmount());
+                if (inclChange) {
+                    total = total.add(zero(c.getChangeAmount()));
+                }
+                return total;
+            }
+        }
+        BigDecimal total = zero(pj.getContractAmount());
+        if (inclChange) {
+            total = total.add(zero(pj.getChangeAmount()));
+        }
+        return total;
+    }
+
+    /** 已付口径（查询时实时汇总）：叶子=自身付款实付合计；容器=子项目之和 */
+    private BigDecimal paidAgg(Project pj) {
+        List<Project> children = directChildren(pj.getId());
+        BigDecimal sum = BigDecimal.ZERO;
+        if (children.isEmpty()) {
+            sum = paymentMapper.selectList(new LambdaQueryWrapper<Payment>().eq(Payment::getProjectId, pj.getId()))
+                    .stream().map(p -> zero(p.getPaidAmount())).reduce(BigDecimal.ZERO, BigDecimal::add);
+        } else {
+            for (Project ch : children) {
+                sum = sum.add(paidAgg(ch));
+            }
+        }
+        return sum;
+    }
+
+    /** 多选筛选值：逗号分隔字符串 → 去空/去重后的列表 */
+    private static Optional<List<String>> inValues(String csv) {
+        if (!StringUtils.hasText(csv)) {
+            return Optional.empty();
+        }
+        List<String> list = Arrays.stream(csv.split(","))
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .toList();
+        return list.isEmpty() ? Optional.empty() : Optional.of(list);
+    }
+
+    /** 年份多选：字符串 → 可解析的整数列表 */
+    private static List<Integer> intValues(String csv) {
+        return inValues(csv).map(list -> list.stream()
+                        .map(s -> {
+                            try {
+                                return Integer.valueOf(s);
+                            } catch (NumberFormatException e) {
+                                return null;
+                            }
+                        })
+                        .filter(java.util.Objects::nonNull)
+                        .distinct()
+                        .toList())
+                .orElse(List.of());
     }
 
     private Map<String, Object> paymentBrief(Payment pay) {

@@ -1,0 +1,20 @@
+@echo off
+rem ============================================================
+rem  [Windows] Stop backend(8080) and frontend(5173) by port.
+rem  MySQL is NOT stopped (stop it with your own MySQL tooling).
+rem ============================================================
+chcp 65001 >nul
+title PM Stop
+setlocal enabledelayedexpansion
+echo Stopping backend(8080) / frontend(5173) ...
+for %%P in (8080 5173) do (
+  for /f "tokens=5" %%a in ('netstat -ano ^| findstr /r /c:":%%P .*LISTENING"') do (
+    set PID=%%a
+    if not "!PID!"=="" (
+      echo   port %%P pid !PID! - taskkill
+      taskkill /PID !PID! /F >nul 2>&1
+    )
+  )
+)
+echo Done. MySQL is kept running.
+endlocal

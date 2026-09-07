@@ -5,7 +5,6 @@ import { ReloadOutlined } from '@ant-design/icons';
 import type { EChartsOption } from 'echarts';
 import EChart from '@/components/EChart';
 import { statsApi } from '@/api/stats';
-import { useDict } from '@/hooks/useOptions';
 import { fmtWan } from '@/utils/format';
 import { NameValue, StatsFilter } from '@/types/stats';
 import { PROJECT_STATUS, PROJECT_TYPES } from '@/types';
@@ -24,7 +23,6 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export default function StatsPage() {
-  const { options: units } = useDict('OWNER_UNIT');
   const [filter, setFilter] = useState<StatsFilter>({});
   const [loading, setLoading] = useState(false);
 
@@ -163,15 +161,6 @@ export default function StatsPage() {
             value={filter.status}
             onChange={(v) => setFilter((f) => ({ ...f, status: v }))}
             options={Object.entries(STATUS_TEXT).map(([value, label]) => ({ value, label }))}
-          />
-          <Select
-            placeholder="甲方单位"
-            allowClear
-            showSearch
-            style={{ width: 180 }}
-            value={filter.ownerUnit}
-            onChange={(v) => setFilter((f) => ({ ...f, ownerUnit: v }))}
-            options={units.map((d) => ({ value: d.name, label: d.name }))}
           />
           {hasAnyFilter && (
             <Button

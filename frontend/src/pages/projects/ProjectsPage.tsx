@@ -28,7 +28,6 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { projectApi } from '@/api/project';
 import { useAuth } from '@/store/auth';
-import { useDict } from '@/hooks/useOptions';
 import { fmtDateTime, fmtMoney } from '@/utils/format';
 import ProjectFormModal, { ParentOption } from '@/components/ProjectFormModal';
 import {
@@ -45,10 +44,12 @@ type ViewMode = 'table' | 'card';
 /** 待提交的筛选草稿（改动不触发搜索，点“搜 索”统一生效） */
 interface Draft {
   keyword: string;
-  type?: string;
-  status?: string;
-  ownerUnit?: string;
-  year?: number;
+  /** 多选 */
+  type?: string[];
+  /** 多选 */
+  status?: string[];
+  /** 多选（立项年度） */
+  year?: number[];
 }
 
 const YEARS = Array.from({ length: 8 }, (_, i) => 2026 - i);
@@ -56,7 +57,6 @@ const YEARS = Array.from({ length: 8 }, (_, i) => 2026 - i);
 export default function ProjectsPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { options: units } = useDict('OWNER_UNIT');
 
   const [mode, setMode] = useState<ViewMode>('table');
   const [draft, setDraft] = useState<Draft>({ keyword: '' });
@@ -86,10 +86,9 @@ export default function ProjectsPage() {
         page,
         size,
         keyword: applied.keyword || undefined,
-        type: applied.type,
-        status: applied.status,
-        ownerUnit: applied.ownerUnit,
-        year: applied.year,
+        type: applied.type?.length ? applied.type.join(',') : undefined,
+        status: applied.status?.length ? applied.status.join(',') : undefined,
+        year: applied.year?.length ? applied.year.join(',') : undefined,
       });
       setData(res.records);
       setTotal(res.total);
@@ -211,6 +210,109 @@ export default function ProjectsPage() {
     );
   };
 
+  /* 子项目统一采用“卡片网格”布局展示 */
+  const childActions = (ch: ProjectListItem) => (
+    <Space size={0}>
+      <Button
+        size="small"
+        type="link"
+        onClick={(e) => {
+          e.stopPropagation();
+          navigate(`/projects/${ch.id}`);
+        }}
+      >
+        详情
+      </Button>
+      {canEdit && (
+        <Button
+          size="small"
+          type="link"
+          onClick={(e) => {
+            e.stopPropagation();
+            openEdit(ch);
+          }}
+        >
+          编辑
+        </Button>
+      )}
+      {canDelete && (
+        <Button
+          size="small"
+          type="link"
+          danger
+          onClick={(e) => {
+            e.stopPropagation();
+            doDelete(ch);
+          }}
+        >
+          删除
+        </Button>
+      )}
+    </Space>
+  );
+
+  /** 子项目：迷你卡片网格 */
+  const renderChildCards = (kids: ProjectListItem[]) => (
+    <Row gutter={[12, 12]}>
+      {kids.map((ch) => {
+        const st = projectStatusTag(ch.status);
+        const ty = projectTypeTag(ch.type);
+        const ph = phaseNameTag(ch.currentPhaseName);
+        return (
+          <Col key={ch.id} xs={24} lg={12}>
+            <Card
+              size="small"
+              hoverable
+              onClick={() => navigate(`/projects/${ch.id}`)}
+              title={
+                <Tooltip title={ch.name}>
+                  <span style={{ fontWeight: 600 }}>{ch.name}</span>
+                </Tooltip>
+              }
+              extra={<Tag color={st.color}>{st.text}</Tag>}
+            >
+              <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 6 }}>
+                <span style={{ fontFamily: 'Consolas,monospace' }}>{ch.code}</span> ·{' '}
+                <Tag color={ty.color} style={{ marginRight: 0 }}>
+                  {ty.text}
+                </Tag>
+              </div>
+              <div style={{ marginBottom: 6, fontSize: 12 }}>
+                当前阶段：
+                {ch.currentPhaseName ? (
+                  <Tag color={ph.color} style={{ marginRight: 0 }}>
+                    {ph.text}
+                  </Tag>
+                ) : (
+                  '-'
+                )}
+              </div>
+              <Progress percent={ch.overallProgress || 0} size="small" />
+              <div style={{ fontSize: 12, color: '#595959', marginTop: 6 }}>{renderPayments(ch.payments)}</div>
+              <div
+                style={{
+                  fontSize: 12,
+                  color: '#595959',
+                  marginTop: 6,
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 4,
+                }}
+              >
+                <span>
+                  合同 {fmtMoney(ch.contractAmount)} 元　已付 {fmtMoney(ch.paidAmount)} 元
+                </span>
+                <Space size={0}>{childActions(ch)}</Space>
+              </div>
+            </Card>
+          </Col>
+        );
+      })}
+    </Row>
+  );
+
   const columns: ColumnsType<ProjectListItem> = [
     {
       title: '项目编号',
@@ -321,9 +423,6 @@ export default function ProjectsPage() {
 
   const filterBar = (
     <Card size="small" style={{ marginBottom: 12 }}>
-      <Space wrap style={{ marginBottom: 8 }}>
-        <span style={{ color: '#8c8c8c', fontSize: 12 }}>筛选条件（下拉改动后点击“搜 索”生效）</span>
-      </Space>
       <Space wrap>
         <Input
           placeholder="项目名称 / 编号 / 供应商"
@@ -333,23 +432,22 @@ export default function ProjectsPage() {
           onChange={(e) => setDraft((d) => ({ ...d, keyword: e.target.value }))}
           onPressEnter={applySearch}
         />
-        <Button type="primary" icon={<SearchOutlined />} onClick={applySearch}>
-          搜 索
-        </Button>
         <Select
-          placeholder="类型"
+          mode="multiple"
           allowClear
-          style={{ width: 120 }}
+          placeholder="类型"
+          style={{ width: 150 }}
           value={draft.type}
-          onChange={(v) => setDraft((d) => ({ ...d, type: v }))}
+          onChange={(v) => setDraft((d) => ({ ...d, type: v as string[] }))}
           options={Object.entries(PROJECT_TYPES).map(([value, label]) => ({ value, label }))}
         />
         <Select
-          placeholder="状态"
+          mode="multiple"
           allowClear
-          style={{ width: 120 }}
+          placeholder="状态"
+          style={{ width: 150 }}
           value={draft.status}
-          onChange={(v) => setDraft((d) => ({ ...d, status: v }))}
+          onChange={(v) => setDraft((d) => ({ ...d, status: v as string[] }))}
           options={Object.entries({
             RUN: '进行中',
             DONE: '已完结',
@@ -358,25 +456,26 @@ export default function ProjectsPage() {
           }).map(([value, label]) => ({ value, label }))}
         />
         <Select
-          placeholder="甲方单位"
+          mode="multiple"
           allowClear
-          showSearch
-          style={{ width: 160 }}
-          value={draft.ownerUnit}
-          onChange={(v) => setDraft((d) => ({ ...d, ownerUnit: v }))}
-          options={units.map((d) => ({ value: d.name, label: d.name }))}
-        />
-        <Select
           placeholder="立项年度"
-          allowClear
-          style={{ width: 120 }}
+          style={{ width: 190 }}
           value={draft.year}
-          onChange={(v) => setDraft((d) => ({ ...d, year: v }))}
+          onChange={(v) => setDraft((d) => ({ ...d, year: v as number[] }))}
           options={YEARS.map((y) => ({ value: y, label: `${y} 年` }))}
+          maxTagCount="responsive"
         />
+        <Button type="primary" icon={<SearchOutlined />} onClick={applySearch}>
+          搜 索
+        </Button>
         <Button icon={<ReloadOutlined />} onClick={resetAll}>
           重置
         </Button>
+        {canEdit && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(null)}>
+            新建项目
+          </Button>
+        )}
         <Segmented
           value={mode}
           onChange={(v) => setMode(v as ViewMode)}
@@ -385,11 +484,6 @@ export default function ProjectsPage() {
             { label: '卡片', value: 'card' },
           ]}
         />
-          {canEdit && (
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => openCreate(null)}>
-              新建项目
-            </Button>
-          )}
       </Space>
     </Card>
   );
@@ -421,61 +515,9 @@ export default function ProjectsPage() {
                 return (
                   <div style={{ margin: '0 -16px -16px', background: '#fafbfc', padding: '10px 16px 12px' }}>
                     <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 8 }}>
-                      {row.name} · 子项目明细（{kids.length}），每个子项目独立签订合同
+                      子项目明细（{kids.length}）
                     </div>
-                    {kids.map((ch) => {
-                      const st = projectStatusTag(ch.status);
-                      const ty = projectTypeTag(ch.type);
-                      const ph = phaseNameTag(ch.currentPhaseName);
-                      return (
-                        <div
-                          key={ch.id}
-                          style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: 12,
-                            background: '#fff',
-                            border: '1px solid #eef0f3',
-                            borderRadius: 8,
-                            padding: '8px 12px',
-                            marginBottom: 8,
-                            flexWrap: 'wrap',
-                          }}
-                        >
-                          <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#5b8ff9', flexShrink: 0 }} />
-                          <Space size={8} wrap style={{ flex: 'auto', minWidth: 0 }}>
-                            <a onClick={() => navigate(`/projects/${ch.id}`)} style={{ fontWeight: 600 }}>
-                              {ch.name}
-                            </a>
-                            <span style={{ fontFamily: 'Consolas,monospace', color: '#8c8c8c' }}>{ch.code}</span>
-                            <Tag color={st.color}>{st.text}</Tag>
-                            <Tag color={ty.color} style={{ marginRight: 0 }}>
-                              {ty.text}
-                            </Tag>
-                            {ch.currentPhaseName ? <Tag color={ph.color}>{ph.text}</Tag> : null}
-                            <div style={{ minWidth: 140 }}>
-                              <Progress percent={ch.overallProgress || 0} size="small" />
-                            </div>
-                            <span style={{ fontSize: 12, color: '#595959' }}>{renderPayments(ch.payments)}</span>
-                          </Space>
-                          <Space size={4}>
-                            <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => navigate(`/projects/${ch.id}`)}>
-                              详情
-                            </Button>
-                            {canEdit && (
-                              <Button size="small" type="link" icon={<EditOutlined />} onClick={() => openEdit(ch)}>
-                                编辑
-                              </Button>
-                            )}
-                            {canDelete && (
-                              <Button size="small" type="link" danger icon={<DeleteOutlined />} onClick={() => doDelete(ch)}>
-                                删除
-                              </Button>
-                            )}
-                          </Space>
-                        </div>
-                      );
-                    })}
+                    {renderChildCards(kids)}
                   </div>
                 );
               },
@@ -542,9 +584,7 @@ export default function ProjectsPage() {
                       {ty.text}
                     </Tag>
                   </div>
-                  <div style={{ marginBottom: 4 }}>
-                    甲方单位：{p.ownerUnit || '-'}　负责人：{p.managerName || '-'}
-                  </div>
+                  <div style={{ marginBottom: 4 }}>负责人：{p.managerName || '-'}</div>
                   <div style={{ marginBottom: 4 }}>
                     当前阶段：
                     {p.currentPhaseName ? <Tag color={ph.color}>{ph.text}</Tag> : '-'}

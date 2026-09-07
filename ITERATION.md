@@ -115,3 +115,44 @@ node scripts/seed-attachments.mjs       # 可选：为各核算单元阶段补�
 4. 阶段逾期自动标红提醒已具备基础版，可补充列表页逾期角标与全局提醒。
 
 > 更新约定：每次完成一个可验证的迭代后，须在本文件追加一行记录，**同步更新 [`docs/政府信息化项目管理系统-设计方案.md`](docs/政府信息化项目管理系统-设计方案.md)（版本头/§0 修订记录/受影响章节/§13 差异清单）与 README**，并在提交说明中引用对应验证结果。具体规则见设计文档 §14 维护约定。
+
+---
+
+## 待提交记录（本地工作区，尚未 commit/push）
+
+> 以下为本机评审/迭代过程中已实现并验证、但仍停留在工作区的变更，整理为一次（或多笔）提交前的内容清单，与提交说明一致。
+
+### A. 前端（frontend/src）
+
+- 项目管理列表
+  - 子项目展示统一为**卡片网格**（移除此前 TEMP 双方案对比代码与“子表格”残留）；
+  - 筛选下拉（类型/状态/立项年度）改为**多选**（请求以逗号拼接，后端 IN 查询）；
+  - 移除“甲方单位”筛选条件及提示文案；精简说明性文字。
+- 项目详情
+  - **子项目页签**与列表同款卡片网格；
+  - **资金情况页**：汇总卡按合同+付款实时计算；合同=折叠面板（父）→ 该合同付款明细（子），含合同登记/编辑/删除与“登记本合同付款”；删除旧 ContractPanel 组件；
+  - **合同附件区**（类别=合同扫描件，项目级/合同签订阶段级附件）与附件中心互通、可上传/预览/下载；
+  - **流程付款节点横幅**与付款明细同源联动（按 nodeCode 匹配），金额缺失显示标签（金额未填写/未登记付款）；
+  - 付款登记弹窗修复 `name="nodeName"` 冲突（改为 nodeTitle，提交映射 nodeName）；新增/编辑均可选择所属合同；
+  - 附件中心“文档类别/按归属”筛选改为**多选**；
+  - 统计页移除甲方单位筛选；各处冗余说明文案精简。
+- api/project.ts：ProjectQuery 支持多选（year 允许 string）。
+
+### B. 后端（backend）
+
+- ProjectService：列表/详情金额口径改为**查询时实时汇总**（叶子=所挂合同金额+变更 / 实际付款；容器=子项目求和），修复“登记合同/付款后列表与详情不同步”；
+- ProjectQuery/ProjectService.page：type/status/year 支持**多值筛选**（逗号分隔 → IN）。
+
+### C. 部署与文档（deploy / docs / README / 脚本）
+
+- 新增 `deploy/`：windows 与 linux 分类启停脚本（通用化、无机器专属路径）、`deploy/docker`（Dockerfile 后端/前端 + nginx 反代 + docker-compose：mysql+backend+frontend 一体化，含数据卷/附件卷、.env 示例）、`deploy/README.md`（Docker/Linux/Windows 部署、数据与附件迁移、环境变量）。
+- 根目录 `start-dev.cmd`/`stop-dev.cmd` 改为调用 deploy/windows 的通用入口（原硬编码 E:\work\env 写法废弃）。
+- 新增 `docs/GITHUB-SSH-setup.md`（SSH 密钥配置步骤）。
+- README 补充部署与 SSH 指引。
+
+### D. 验证记录
+
+- 前端 tsc --noEmit 通过；后端 mvn -q -DskipTests compile 通过；
+- 运行时：金额与数据库 contract/payment 一致（抽样子项目 5 项逐一对上）；多选查询 total 与 SQL 对照一致；
+- 本机运行：MySQL(E:\env) + 后端 :8080 + 前端 :5173（--host）。
+

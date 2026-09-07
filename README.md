@@ -60,6 +60,10 @@
 
 预置登录账号（密码均 `123456`）：`admin`（管理员）/ `jingban01`（经办人）/ `lingdao01`（领导，只读）。
 
+> 启动脚本按平台分类（Windows / Linux），并支持 Docker 一体化部署（环境打包）：
+> 见 [`deploy/README.md`](deploy/README.md)（含环境变量、数据迁移、附件迁移）。
+> Git 协作的 SSH 配置见 [`docs/GITHUB-SSH-setup.md`](docs/GITHUB-SSH-setup.md)。
+
 ## 接口约定
 
 统一响应 `{ code, message, data }`，`code=0` 成功；写操作以 `POST/PUT/DELETE` + `/api/...` 前缀；附件经 `/uploads/**` 静态访问。
