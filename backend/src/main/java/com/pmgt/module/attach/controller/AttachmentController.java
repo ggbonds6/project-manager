@@ -55,8 +55,16 @@ import java.util.stream.Collectors;
 public class AttachmentController {
 
     private static final Set<String> BIZ_TYPES = Set.of("PROJECT_PHASE", "PAYMENT", "PROJECT");
-    private static final Set<String> DOWNLOADABLE_EXTS = Set.of("pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
-            "txt", "csv", "png", "jpg", "jpeg", "gif", "webp", "zip", "rar", "7z");
+
+    /** 允许上传的文件扩展名（小写）。在线预览支持矩阵见 docs/附件与预览方案.md；
+     *  暂不支持在线预览的类型（Word/Excel/PPT/OFD 等）仍允许上传，仅提供下载。 */
+    private static final Set<String> UPLOADABLE_EXTS = Set.of(
+            "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx",
+            "txt", "csv", "md", "log", "json", "xml", "html",
+            "png", "jpg", "jpeg", "gif", "webp", "bmp",
+            "ofd", "zip", "rar", "7z");
+    private static final String ALLOWED_EXT_TEXT =
+            UPLOADABLE_EXTS.stream().sorted().reduce((a, b) -> a + ", " + b).orElse("");
 
     private final AttachmentMapper attachmentMapper;
     private final ProjectMapper projectMapper;
@@ -102,8 +110,8 @@ public class AttachmentController {
 
         String original = file.getOriginalFilename() == null ? "file" : file.getOriginalFilename();
         String ext = extOf(original);
-        if (!DOWNLOADABLE_EXTS.contains(ext.toLowerCase(Locale.ROOT))) {
-            throw new BizException(400, "不支持的文件类型: " + ext);
+        if (!UPLOADABLE_EXTS.contains(ext.toLowerCase(Locale.ROOT))) {
+            throw new BizException(400, "不支持的文件类型: ." + ext + "（允许上传：" + ALLOWED_EXT_TEXT + "）");
         }
         String storedName = UUID.randomUUID().toString().replace("-", "") + (ext.isEmpty() ? "" : "." + ext);
 

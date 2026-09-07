@@ -35,6 +35,7 @@
 | v1.3 | 2026-09-02 | 父子项目 + 合同模型 | Flyway V4：parent_id、contract 表、contract_id；合同可覆盖多子项目；统计口径=核算单元；前端折叠树/合同面板；种子 v2 | `4727858`、`7f625ef`、`7d0f56f`、`88385a0` |
 | v1.4 | 2026-09-02 | 独立合同口径 + 容器化 UI | 合同一律独立（多覆盖拒绝）；顶层=汇总容器（隐藏流程/资金，展示子项目汇总）；二级列表分组卡片；seed v3 | `969f9c2` |
 | v1.5 | 2026-09-07 | 评审迭代整理（本机） | 子项目/子项目页签卡片网格；资金情况"合同-付款"折叠父子结构+金额实时同步；合同附件与附件中心互通；列表/附件筛选多选；移除甲方单位筛选；部署按平台分类+Docker 一体化；SSH 指引；文档维护硬化 | `9a8e387`、`6f02c99` |
+| v1.6 | 2026-09-07 | 附件：文件类型字典/白名单 + 在线预览扩展 | FILE_TYPE 字典（V5）与上传白名单；全局类型颜色组；集成 docx-preview / SheetJS / react-markdown 实现 docx/xlsx/md 预览；doc/ppt/pptx/ofd 等明确提示"暂不支持预览请下载"；存储位置与预览加载策略评估并写入文档 | `(待提交)` |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -117,6 +118,12 @@
 - 部署与文档：新增 `deploy/`（windows/linux 分类启停脚本 + Docker 一体化 docker-compose、Dockerfile、nginx 反代、.dockerignore）、`deploy/README.md`、`docs/GITHUB-SSH-setup.md`；根目录启停脚本改为通用入口；README 补充部署/SSH/Docker 指引；本文档与设计稿按维护约定同步。
 - 环境：本机开发环境迁移至 `E:\env`（JDK17 / Maven 3.9.9 / MySQL 8.0.29），前后端本地运行验证通过（MySQL:3306 + 后端:8080 + 前端:5173 --host）。
 
+### v1.6 — 附件：文件类型字典/白名单 + 在线预览扩展
+- **文件类型字典与上传限制**：Flyway `V5__file_type_dict.sql` 新增 `FILE_TYPE` 字典（24 项，与白名单一致）；后端上传白名单扩展（新增 md/ofd/log/json/xml/html/bmp 等），非白名单 400 并列出允许清单；`tagDict` 新增 `FILE_TYPE_TAGS` 全局颜色组（预览弹窗头部展示彩色类型标签）。
+- **在线预览扩展（主流开源集成）**：docx → `docx-preview`、xls/xlsx → SheetJS 表格、md → `react-markdown`；pdf/图片/文本保持内嵌；以上均带加载等待态（Spin/onLoad），动态 import 分包避免主包膨胀。
+- **暂不支持类型策略**：doc(97-2003)/ppt/pptx/ofd/压缩包等统一提示"当前文件类型暂不支持在线预览，请下载后查看"。
+- **存储与加载评估**：本地 `backend/uploads`（UPLOAD_DIR 可改）；Docker 独立卷 `pm_uploads`；不入镜像/源码；内网规模"数据目录 vs 文件服务器"差异不大，已用等待态覆盖大文件加载，未来可切对象存储/CDN 仅改地址前缀。详见 `docs/附件与预览方案.md`。
+
 ---
 
 ## 功能完成度
@@ -134,13 +141,15 @@
 | 工作台（汇总/待办/验收/逾期/最近更新） | ✅ | v0.7，v1.3 口径=核算单元（叶子） |
 | 项目统计（ECharts，筛选联动） | ✅ | 状态·类型构成、流程阶段分布、年度资金（预算/合同/实付，合同去重） |
 | 系统管理（用户/字典/阶段模板/日志） | ✅ | v0.8：仅管理员，写操作全留痕 |
-| 附件上传/下载/在线预览/全屏/逻辑删除 | ✅ | 本地盘存储；预览支持图片/pdf/文本与全屏 |
 | 一键启动/停止 | ✅ | 按平台分类（`deploy/windows`、`deploy/linux`）+ Docker 一体化（`deploy/docker`）；根目录 `start-dev.cmd` 为 Windows 入口 |
 | 列表/附件筛选多选 | ✅ | v1.5：列表（类型/状态/年度）与附件中心（类别/归属）改为多选 |
 | 金额口径实时同步 | ✅ | v1.5：后端查询时实时汇总（合同+付款），列表/详情/资金页/统计口径一致 |
 | 部署方案 | ✅ | v1.5：Docker（mysql+backend+frontend nginx）、Linux/Win 分类脚本、数据与附件迁移说明 |
 | 文档维护约定 | ✅ | v1.1 起：每次迭代同步更新本文档、设计稿与 README（v1.5 已清理“待提交记录”半成品章节） |
 | 演示数据脚本 | ✅ | `node scripts/seed-demo.mjs`（父子+三类合同形态）、`seed-attachments.mjs` |
+| 附件上传/下载/在线预览/全屏/逻辑删除 | ✅ | v1.6：图片/pdf/文本内嵌；md 用 react-markdown、docx 用 docx-preview、xls/xlsx 用 SheetJS；doc/ppt/pptx/ofd 等提示下载；全屏支持 |
+| 文件类型字典 / 上传白名单 | ✅ | v1.6：V5 FILE_TYPE 字典 24 项；后端白名单强校验并提示允许清单 |
+| 附件存储与预览加载 | ✅ | v1.6：本地 backend/uploads / Docker 卷 pm_uploads；预览均带加载等待态，解析失败或不支持类型明确提示下载 |
 | 设计稿 Q1–Q15 评审回写 | ⏳ 待办 | 待业务反馈 |
 
 ## 运行方式速查

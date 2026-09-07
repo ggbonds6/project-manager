@@ -95,3 +95,34 @@ export const PAY_STATUS_TAGS: Record<string, TagMeta> = {
 
 export const payStatusTag = (code?: string | null): TagMeta =>
   (code && PAY_STATUS_TAGS[code]) || { text: code || '-', color: 'default' };
+
+/* ---------- 文件类型（扩展名）→ 颜色组（全局，与 V5 字典/上传白名单一致） ---------- */
+export const FILE_TYPE_TAGS: Record<string, TagMeta> = {
+  pdf: { text: 'PDF', color: 'error' },
+  doc: { text: 'DOC', color: 'blue' },
+  docx: { text: 'DOCX', color: 'blue' },
+  xls: { text: 'XLS', color: 'green' },
+  xlsx: { text: 'XLSX', color: 'green' },
+  ppt: { text: 'PPT', color: 'volcano' },
+  pptx: { text: 'PPTX', color: 'volcano' },
+  ofd: { text: 'OFD', color: 'purple' },
+  txt: { text: 'TXT', color: 'default' },
+  csv: { text: 'CSV', color: 'default' },
+  md: { text: 'MD', color: 'cyan' },
+  log: { text: 'LOG', color: 'default' },
+  json: { text: 'JSON', color: 'default' },
+  xml: { text: 'XML', color: 'default' },
+  html: { text: 'HTML', color: 'default' },
+  png: { text: 'PNG', color: 'geekblue' },
+  jpg: { text: 'JPG', color: 'geekblue' },
+  jpeg: { text: 'JPEG', color: 'geekblue' },
+  gif: { text: 'GIF', color: 'geekblue' },
+  webp: { text: 'WEBP', color: 'geekblue' },
+  bmp: { text: 'BMP', color: 'geekblue' },
+  zip: { text: 'ZIP', color: 'orange' },
+  rar: { text: 'RAR', color: 'orange' },
+  '7z': { text: '7Z', color: 'orange' },
+};
+
+export const fileExtTag = (ext?: string | null): TagMeta =>
+  FILE_TYPE_TAGS[(ext || '').toLowerCase()] || { text: (ext || 'FILE').toUpperCase().slice(0, 6), color: 'default' };

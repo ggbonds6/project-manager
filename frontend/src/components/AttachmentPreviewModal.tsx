@@ -1,13 +1,25 @@
-import { useCallback, useEffect, useState } from 'react';
-import { Button, Modal, Space, Spin, Typography, message } from 'antd';
+import { useEffect, useRef, useState } from 'react';
+import type { CSSProperties } from 'react';
+import { Button, Modal, Space, Spin, Tag, Typography, message } from 'antd';
 import { DownloadOutlined, FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
+import ReactMarkdown from 'react-markdown';
 import { attachmentUrl } from '@/api/project';
 import { fmtFileSize } from '@/utils/format';
+import { fileExtTag } from '@/config/tagDict';
 import { AttachmentItem } from '@/types';
 
-const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
-const TEXT_EXTS = new Set(['txt', 'csv', 'md', 'log', 'json', 'xml', 'html']);
-const OFFICE_EXTS = new Set(['doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx']);
+const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
+const PDF_EXTS = new Set(['pdf']);
+const TEXT_EXTS = new Set(['txt', 'log', 'json', 'xml', 'html']);
+const MD_EXTS = new Set(['md']);
+const DOCX_EXTS = new Set(['docx']);
+const XLSX_EXTS = new Set(['xls', 'xlsx']);
+
+const DOCX_BASE_CSS = `.pm-office-body{font-family:'Microsoft YaHei','PingFang SC',sans-serif;color:#1f2329;}
+.pm-office-body table{border-collapse:collapse;margin:10px 0;width:100%;}
+.pm-office-body td,.pm-office-body th{border:1px solid #d0d4da;padding:4px 8px;font-size:13px;}
+.pm-office-body p{margin:6px 0;line-height:1.7;}
+.pm-office-body img{max-width:100%;}`;
 
 interface Props {
   item: AttachmentItem | null;
@@ -15,35 +27,87 @@ interface Props {
 }
 
 /**
- * 附件在线预览：图片 / pdf 内嵌、文本抓取展示、Office 提示下载；
- * 支持全屏（Esc 或“退出全屏”按钮关闭）。
+ * 附件在线预览：
+ *  - 图片/pdf：内嵌（加载中显示等待态）
+ *  - 文本类：txt/log/json/xml/html 原文；md 用 react-markdown 渲染
+ *  - docx：docx-preview 解析渲染（懒加载）
+ *  - xls/xlsx：SheetJS(xlsx) 解析为表格 HTML（懒加载）
+ *  - doc/ppt/pptx/ofd/压缩包等：当前无稳定纯前端方案 → 提示"暂不支持在线预览，请下载后查看"
+ * 支持全屏（Esc / 按钮退出）。
  */
 export default function AttachmentPreviewModal({ item, onClose }: Props) {
   const [text, setText] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [pdfLoaded, setPdfLoaded] = useState(false);
   const [full, setFull] = useState(false);
+  const officeRef = useRef<HTMLDivElement | null>(null);
 
   const ext = (item?.fileExt || '').toLowerCase();
+  const extTag = fileExtTag(ext);
 
-  // 切换附件时复位状态
+  const authToken = () => localStorage.getItem('pm_token') || '';
+
+  // 解析类预览（docx/xlsx/md/text）在附件切换时执行
   useEffect(() => {
+    setPdfLoaded(false);
     setFull(false);
     setText(null);
     if (!item) return;
-    if (TEXT_EXTS.has(ext)) {
-      setLoading(true);
-      const token = localStorage.getItem('pm_token') || '';
-      fetch(attachmentUrl(item.id, 'inline'), { headers: { Authorization: `Bearer ${token}` } })
+    setBusy(true);
+    if (officeRef.current) officeRef.current.innerHTML = '';
+
+    const doOffice = async (kind: 'docx' | 'xlsx') => {
+      setBusy(true);
+      try {
+        const resp = await fetch(attachmentUrl(item.id), {
+          headers: { Authorization: `Bearer ${authToken()}` },
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const buf = await resp.arrayBuffer();
+        if (kind === 'docx') {
+          const docx = await import('docx-preview');
+          await docx.renderAsync(new Uint8Array(buf), officeRef.current!, null, {
+            className: 'pm-docx',
+            inWrapper: true,
+            ignoreWidth: true,
+            ignoreHeight: true,
+          });
+        } else {
+          const XLSX = await import('xlsx');
+          const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+          const first = wb.SheetNames[0];
+          const html = first
+            ? XLSX.utils.sheet_to_html(wb.Sheets[first], { editable: false })
+            : '<div style="padding:16px;color:#999">表格无数据</div>';
+          if (officeRef.current) officeRef.current.innerHTML = html;
+        }
+      } catch (e) {
+        message.error('预览解析失败：' + (e as Error).message);
+        if (officeRef.current) {
+          officeRef.current.innerHTML =
+            '<div style="padding:24px;color:#999">解析失败，请下载后用本机软件打开。</div>';
+        }
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    if (TEXT_EXTS.has(ext) || MD_EXTS.has(ext)) {
+      setBusy(true);
+      fetch(attachmentUrl(item.id, 'inline'), {
+        headers: { Authorization: `Bearer ${authToken()}` },
+      })
         .then((r) => {
           if (!r.ok) throw new Error('HTTP ' + r.status);
           return r.text();
         })
         .then(setText)
-        .catch((e) => {
-          message.error('预览读取失败：' + e.message);
-          setText('（读取失败，请下载查看）');
-        })
-        .finally(() => setLoading(false));
+        .catch(() => setText('（读取失败，请下载查看）'))
+        .finally(() => setBusy(false));
+    } else if (DOCX_EXTS.has(ext)) {
+      doOffice('docx');
+    } else if (XLSX_EXTS.has(ext)) {
+      doOffice('xlsx');
     }
   }, [item, ext]);
 
@@ -58,74 +122,153 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
   }, [full]);
 
   const isImage = IMG_EXTS.has(ext);
-  const isPdf = ext === 'pdf';
-  const isOffice = OFFICE_EXTS.has(ext);
+  const isPdf = PDF_EXTS.has(ext);
+  const isOfficeParsed = DOCX_EXTS.has(ext) || XLSX_EXTS.has(ext);
 
-  const renderViewer = useCallback(
-    (large: boolean) => {
-      if (!item) return null;
-      if (isImage) {
-        return (
-          <div style={{ textAlign: 'center' }}>
-            <img
-              src={attachmentUrl(item.id, 'inline')}
-              alt={item.fileName}
-              style={{ maxWidth: '100%', maxHeight: large ? 'calc(100vh - 140px)' : '70vh', objectFit: 'contain' }}
-            />
-          </div>
-        );
-      }
-      if (isPdf) {
-        return (
+  const renderViewer = (large: boolean) => {
+    if (!item) return null;
+    const maxH = large ? 'calc(100vh - 140px)' : '65vh';
+    const box: CSSProperties = {
+      position: 'relative',
+      maxHeight: maxH,
+      minHeight: 240,
+      overflow: 'auto',
+    };
+    if (isImage) {
+      return (
+        <div style={{ textAlign: 'center', position: 'relative', minHeight: 240 }}>
+          {busy && <Spin style={{ marginTop: 80 }} />}
+          <img
+            src={attachmentUrl(item.id, 'inline')}
+            alt={item.fileName}
+            onLoad={() => setBusy(false)}
+            onError={() => setBusy(false)}
+            style={{
+              display: busy ? 'none' : 'block',
+              maxWidth: '100%',
+              maxHeight: maxH,
+              margin: '0 auto',
+              objectFit: 'contain',
+            }}
+          />
+        </div>
+      );
+    }
+    if (isPdf) {
+      return (
+        <div style={box}>
+          {!pdfLoaded && (
+            <div style={{ textAlign: 'center', padding: 80 }}>
+              <Spin tip="PDF 加载中…" />
+            </div>
+          )}
           <iframe
             src={attachmentUrl(item.id, 'inline')}
             title={item.fileName}
-            style={{ width: '100%', height: large ? 'calc(100vh - 140px)' : '65vh', border: 'none' }}
-          />
-        );
-      }
-      if (TEXT_EXTS.has(ext)) {
-        return loading ? (
-          <div style={{ textAlign: 'center', padding: 60 }}>
-            <Spin size="large" />
-          </div>
-        ) : (
-          <pre
+            onLoad={() => setPdfLoaded(true)}
+            onError={() => setPdfLoaded(true)}
             style={{
-              textAlign: 'left',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-all',
-              background: '#fafafa',
-              padding: 12,
-              borderRadius: 6,
-              maxHeight: large ? 'calc(100vh - 140px)' : '65vh',
-              overflow: 'auto',
-              margin: 0,
+              width: '100%',
+              height: maxH,
+              border: 'none',
+              display: pdfLoaded ? 'block' : 'none',
             }}
-          >
-            {text}
-          </pre>
-        );
-      }
-      return (
-        <div style={{ textAlign: 'center', padding: 48 }}>
-          <Typography.Paragraph type="secondary">
-            {isOffice
-              ? 'Office 文档暂不支持浏览器在线预览，请下载后用本机办公软件打开。'
-              : '该文件类型暂不支持在线预览，请下载查看。'}
-          </Typography.Paragraph>
-          <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
-            下载文件
-          </Button>
+          />
         </div>
       );
-    },
-    [item, isImage, isPdf, ext, isOffice, loading, text],
-  );
+    }
+    if (MD_EXTS.has(ext)) {
+      return busy ? (
+        <div style={{ textAlign: 'center', padding: 80 }}>
+          <Spin />
+        </div>
+      ) : (
+        <div
+          className="pm-md-body"
+          style={{ background: '#fafafa', padding: '12px 18px', maxHeight: maxH, overflow: 'auto' }}
+        >
+          <ReactMarkdown>{text || ''}</ReactMarkdown>
+        </div>
+      );
+    }
+    if (TEXT_EXTS.has(ext)) {
+      return busy ? (
+        <div style={{ textAlign: 'center', padding: 80 }}>
+          <Spin />
+        </div>
+      ) : (
+        <pre
+          style={{
+            textAlign: 'left',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all',
+            background: '#fafafa',
+            padding: 12,
+            borderRadius: 6,
+            maxHeight: maxH,
+            overflow: 'auto',
+            margin: 0,
+          }}
+        >
+          {text}
+        </pre>
+      );
+    }
+    if (isOfficeParsed) {
+      return (
+        <div style={box}>
+          {busy && (
+            <div style={{ textAlign: 'center', padding: 80 }}>
+              <Spin tip={DOCX_EXTS.has(ext) ? 'Word 解析中…' : 'Excel 解析中…'} />
+            </div>
+          )}
+          <style>{DOCX_BASE_CSS}</style>
+          <div
+            ref={officeRef}
+            className="pm-office-body"
+            style={{ opacity: busy ? 0 : 1, minHeight: 240 }}
+          />
+        </div>
+      );
+    }
+    // doc/ppt/pptx/ofd/压缩包等 —— 无稳定纯前端预览方案，明确提示下载
+    return (
+      <div style={{ textAlign: 'center', padding: 48 }}>
+        <Typography.Paragraph type="secondary">
+          当前文件类型暂不支持在线预览，请下载后查看。
+        </Typography.Paragraph>
+        <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
+          下载文件
+        </Button>
+      </div>
+    );
+  };
 
   if (!item) return null;
 
-  // ==================== 全屏模式 ====================
+  const headerTitle = (
+    <Space size={8}>
+      <Tag color={extTag.color} style={{ marginInlineEnd: 0 }}>
+        {extTag.text}
+      </Tag>
+      <span>{item.fileName}</span>
+      <Typography.Text type="secondary" style={{ fontWeight: 400, fontSize: 12 }}>
+        {fmtFileSize(item.fileSize)}
+      </Typography.Text>
+    </Space>
+  );
+
+  const footer = (
+    <Space>
+      <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
+        下载
+      </Button>
+      <Button icon={<FullscreenOutlined />} onClick={() => setFull(true)}>
+        全屏查看
+      </Button>
+    </Space>
+  );
+
   if (full) {
     return (
       <div
@@ -152,6 +295,9 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
           }}
         >
           <Space size={10}>
+            <Tag color={extTag.color} style={{ marginInlineEnd: 0 }}>
+              {extTag.text}
+            </Tag>
             <b style={{ fontSize: 15 }}>{item.fileName}</b>
             <Typography.Text type="secondary">{fmtFileSize(item.fileSize)}</Typography.Text>
           </Space>
@@ -169,32 +315,9 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
     );
   }
 
-  // ==================== 弹窗模式 ====================
   return (
-    <Modal
-      title={
-        <Space size={8}>
-          <span>{item.fileName}</span>
-          <Typography.Text type="secondary" style={{ fontWeight: 400, fontSize: 12 }}>
-            {fmtFileSize(item.fileSize)}
-          </Typography.Text>
-        </Space>
-      }
-      open
-      onCancel={onClose}
-      width={880}
-      footer={
-        <Space>
-          <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
-            下载
-          </Button>
-          <Button icon={<FullscreenOutlined />} onClick={() => setFull(true)}>
-            全屏查看
-          </Button>
-        </Space>
-      }
-    >
-      <div style={{ maxHeight: '70vh', overflow: 'auto' }}>{renderViewer(false)}</div>
+    <Modal title={headerTitle} open onCancel={onClose} width={900} footer={footer}>
+      <div style={{ maxHeight: '72vh', overflow: 'auto' }}>{renderViewer(false)}</div>
     </Modal>
   );
 }
