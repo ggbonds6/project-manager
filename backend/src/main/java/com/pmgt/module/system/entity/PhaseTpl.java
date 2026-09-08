@@ -7,16 +7,14 @@ import lombok.EqualsAndHashCode;
 
 @Data
 @EqualsAndHashCode(callSuper = true)
-@TableName("phase_template")
-public class PhaseTemplate extends BaseEntity {
+@TableName("phase_tpl")
+public class PhaseTpl extends BaseEntity {
 
-    private Long tplId;
     private String projectType;
-    private String phaseName;
+    private String name;
+    private Integer builtin;
+    private Integer isDefault;
+    private Integer enabled;
     private Integer sortNo;
-    private Integer weight;
-    private String payNode;
-    private String description;
-    private String attachTypeHints;
-    private Integer skipable;
+    private String remark;
 }

@@ -32,6 +32,7 @@ export interface DictTypeInfo {
 
 export interface PhaseTemplateRow {
   id?: number;
+  tplId?: number | null;
   projectType: string;
   phaseName: string;
   sortNo?: number;
@@ -40,6 +41,18 @@ export interface PhaseTemplateRow {
   description?: string | null;
   attachTypeHints?: string | null;
   skipable?: number;
+}
+
+/** 流程模板（多套；Tab 式展示） */
+export interface PhaseTplRow {
+  id?: number;
+  projectType: string;
+  name: string;
+  builtin?: number;
+  isDefault?: number;
+  enabled?: number;
+  sortNo?: number;
+  remark?: string | null;
 }
 
 export interface LogRow {

@@ -5,6 +5,7 @@ import {
   DictTypeInfo,
   LogRow,
   PhaseTemplateRow,
+  PhaseTplRow,
 } from '@/types/system';
 import { PageResult } from '@/types';
 
@@ -52,6 +53,26 @@ export const systemApi = {
   },
   deleteTemplate(id: number): Promise<void> {
     return api.del<void>(`/phase-templates/${id}`);
+  },
+
+  // ---------- 流程模板（多套：Tab + 画布/列表） ----------
+  listTpls(): Promise<PhaseTplRow[]> {
+    return api.get<PhaseTplRow[]>('/phase-tpls');
+  },
+  createTpl(data: { projectType: string; name: string; copyTplId?: number; remark?: string }): Promise<number> {
+    return api.post<number>('/phase-tpls', data);
+  },
+  updateTpl(id: number, data: Partial<PhaseTplRow>): Promise<void> {
+    return api.put<void>(`/phase-tpls/${id}`, data);
+  },
+  deleteTpl(id: number): Promise<void> {
+    return api.del<void>(`/phase-tpls/${id}`);
+  },
+  tplPhases(tplId: number): Promise<PhaseTemplateRow[]> {
+    return api.get<PhaseTemplateRow[]>(`/phase-tpls/${tplId}/phases`);
+  },
+  saveTplPhases(tplId: number, items: Partial<PhaseTemplateRow>[]): Promise<void> {
+    return api.put<void>(`/phase-tpls/${tplId}/phases`, items);
   },
 
   // ---------- 操作日志 ----------

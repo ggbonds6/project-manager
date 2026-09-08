@@ -28,8 +28,10 @@ import com.pmgt.module.project.mapper.ProjectPhaseMapper;
 import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.project.mapper.ContractMapper;
 import com.pmgt.module.system.entity.PhaseTemplate;
+import com.pmgt.module.system.entity.PhaseTpl;
 import com.pmgt.module.system.entity.SysUser;
 import com.pmgt.module.system.mapper.PhaseTemplateMapper;
+import com.pmgt.module.system.mapper.PhaseTplMapper;
 import com.pmgt.module.system.mapper.SysUserMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -62,6 +64,7 @@ public class ProjectService {
     private final PaymentMapper paymentMapper;
     private final ContractMapper contractMapper;
     private final PhaseTemplateMapper templateMapper;
+    private final PhaseTplMapper tplMapper;
     private final SysUserMapper userMapper;
     private final OperationLogService operationLogService;
     private final ObjectMapper objectMapper;
@@ -72,6 +75,7 @@ public class ProjectService {
                           PaymentMapper paymentMapper,
                           ContractMapper contractMapper,
                           PhaseTemplateMapper templateMapper,
+                          PhaseTplMapper tplMapper,
                           SysUserMapper userMapper,
                           OperationLogService operationLogService,
                           ObjectMapper objectMapper) {
@@ -81,6 +85,7 @@ public class ProjectService {
         this.paymentMapper = paymentMapper;
         this.contractMapper = contractMapper;
         this.templateMapper = templateMapper;
+        this.tplMapper = tplMapper;
         this.userMapper = userMapper;
         this.operationLogService = operationLogService;
         this.objectMapper = objectMapper;
@@ -336,10 +341,30 @@ public class ProjectService {
         pj.setCreateBy(AuthContext.userId().orElse(null));
         projectMapper.insert(pj);
 
-        // 按模板生成阶段实例
-        List<PhaseTemplate> templates = templateMapper.selectList(new LambdaQueryWrapper<PhaseTemplate>()
-                .eq(PhaseTemplate::getProjectType, pj.getType())
-                .orderByAsc(PhaseTemplate::getSortNo));
+        // 按模板生成阶段实例（取该类型启用的默认模板；无默认则取首个启用模板）
+        PhaseTpl tpl = tplMapper.selectOne(new LambdaQueryWrapper<PhaseTpl>()
+                .eq(PhaseTpl::getProjectType, pj.getType())
+                .eq(PhaseTpl::getEnabled, 1)
+                .eq(PhaseTpl::getIsDefault, 1)
+                .orderByAsc(PhaseTpl::getSortNo)
+                .last("limit 1"));
+        if (tpl == null) {
+            tpl = tplMapper.selectOne(new LambdaQueryWrapper<PhaseTpl>()
+                    .eq(PhaseTpl::getProjectType, pj.getType())
+                    .eq(PhaseTpl::getEnabled, 1)
+                    .orderByAsc(PhaseTpl::getId)
+                    .last("limit 1"));
+        }
+        List<PhaseTemplate> templates;
+        if (tpl != null) {
+            templates = templateMapper.selectList(new LambdaQueryWrapper<PhaseTemplate>()
+                    .eq(PhaseTemplate::getTplId, tpl.getId())
+                    .orderByAsc(PhaseTemplate::getSortNo));
+        } else {
+            templates = templateMapper.selectList(new LambdaQueryWrapper<PhaseTemplate>()
+                    .eq(PhaseTemplate::getProjectType, pj.getType())
+                    .orderByAsc(PhaseTemplate::getSortNo));
+        }
         if (templates.isEmpty()) {
             throw new BizException(400, "未配置项目类型对应的阶段模板");
         }

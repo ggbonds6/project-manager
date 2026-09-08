@@ -20,6 +20,7 @@ import { CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined, KeyOutlined, 
 import { systemApi } from '@/api/system';
 import { api } from '@/api/http';
 import { useFormModal } from '@/components/useFormModal';
+import FlowTemplateDesigner from '@/components/FlowTemplateDesigner';
 import { useDict } from '@/hooks/useOptions';
 import { useAuth } from '@/store/auth';
 import { fmtDateTime } from '@/utils/format';
@@ -42,7 +43,7 @@ export default function SystemPage() {
       items={[
         { key: 'users', label: '用户管理', children: <UsersTab /> },
         { key: 'dicts', label: '基础字典', children: <DictsTab /> },
-        { key: 'templates', label: '流程模板', children: <TemplatesTab /> },
+        { key: 'templates', label: '流程模板', children: <FlowTemplateDesigner /> },
         { key: 'logs', label: '操作日志', children: <LogsTab /> },
       ]}
     />
