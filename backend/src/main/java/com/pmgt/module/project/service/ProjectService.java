@@ -378,6 +378,8 @@ public class ProjectService {
             ph.setStatus("NOT_STARTED");
             ph.setPercent(0);
             ph.setManagerUserId(pj.getManagerUserId());
+            ph.setGuide(t.getGuide());
+            ph.setKeyMaterials(t.getKeyMaterials());
             phaseMapper.insert(ph);
         }
         // 若本项目挂到某总项目下：父项目退化为纯汇总容器，不再保留自身阶段流程
@@ -822,6 +824,8 @@ public class ProjectService {
             vo.setManagerName(u == null ? null : u.getName());
         }
         vo.setNote(ph.getNote());
+        vo.setGuide(ph.getGuide());
+        vo.setKeyMaterials(ph.getKeyMaterials());
         vo.setUpdateTime(ph.getUpdateTime());
         if (StringUtils.hasText(ph.getResultFields())) {
             try {

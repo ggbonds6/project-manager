@@ -19,4 +19,8 @@ public class PhaseTemplate extends BaseEntity {
     private String description;
     private String attachTypeHints;
     private Integer skipable;
+    /** 阶段说明：本阶段要做什么（Markdown/长文本） */
+    private String guide;
+    /** 关键材料/产出物清单 */
+    private String keyMaterials;
 }

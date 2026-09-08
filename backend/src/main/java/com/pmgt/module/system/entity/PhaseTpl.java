@@ -17,4 +17,6 @@ public class PhaseTpl extends BaseEntity {
     private Integer enabled;
     private Integer sortNo;
     private String remark;
+    /** 画布布局 JSON */
+    private String flowJson;
 }

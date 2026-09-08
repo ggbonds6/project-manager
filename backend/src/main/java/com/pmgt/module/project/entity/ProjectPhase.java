@@ -27,4 +27,8 @@ public class ProjectPhase extends BaseEntity {
     private String note;
     /** 阶段关键结果字段：JSON 文本 */
     private String resultFields;
+    /** 阶段说明快照（来自模板：本阶段要做什么） */
+    private String guide;
+    /** 关键材料快照（来自模板） */
+    private String keyMaterials;
 }

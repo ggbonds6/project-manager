@@ -56,6 +56,31 @@ public class PhaseTplController {
                 .orderByAsc(PhaseTpl::getId)));
     }
 
+    /** 单个模板（含画布布局 flowJson） */
+    @GetMapping("/{id}")
+    public R<PhaseTpl> get(@PathVariable Long id) {
+        PhaseTpl t = tplMapper.selectById(id);
+        if (t == null) {
+            throw new BizException(404, "模板不存在");
+        }
+        return R.ok(t);
+    }
+
+    /** 保存画布布局（节点坐标+连线 JSON） */
+    @RequireRole({Role.ADMIN})
+    @PutMapping("/{id}/flow")
+    public R<Void> saveFlow(@PathVariable Long id, @RequestBody Map<String, Object> body) {
+        PhaseTpl exist = tplMapper.selectById(id);
+        if (exist == null) {
+            throw new BizException(404, "模板不存在");
+        }
+        Object flow = body.get("flowJson");
+        exist.setFlowJson(flow == null ? null : String.valueOf(flow));
+        tplMapper.updateById(exist);
+        operationLogService.log("TEMPLATE", id, "TPL_FLOW", "保存流程模板画布布局 " + exist.getName());
+        return R.ok();
+    }
+
     /** 新建模板；body:{projectType,name,copyTplId?,remark?}，copyTplId 提供时复制其阶段 */
     @RequireRole({Role.ADMIN})
     @PostMapping
@@ -190,6 +215,8 @@ public class PhaseTplController {
             target.setPayNode(StringUtils.hasText(item.getPayNode()) ? item.getPayNode() : null);
             target.setAttachTypeHints(StringUtils.hasText(item.getAttachTypeHints()) ? item.getAttachTypeHints() : null);
             target.setDescription(StringUtils.hasText(item.getDescription()) ? item.getDescription() : null);
+            target.setGuide(StringUtils.hasText(item.getGuide()) ? item.getGuide() : null);
+            target.setKeyMaterials(StringUtils.hasText(item.getKeyMaterials()) ? item.getKeyMaterials() : null);
             target.setSkipable(item.getSkipable() == null ? 0 : item.getSkipable());
             if (item.getId() != null && templateMapper.selectById(item.getId()) != null) {
                 target.setId(item.getId());
@@ -219,6 +246,8 @@ public class PhaseTplController {
             n.setPayNode(s.getPayNode());
             n.setAttachTypeHints(s.getAttachTypeHints());
             n.setDescription(s.getDescription());
+            n.setGuide(s.getGuide());
+            n.setKeyMaterials(s.getKeyMaterials());
             n.setSkipable(s.getSkipable() == null ? 0 : s.getSkipable());
             n.setSortNo(idx++);
             templateMapper.insert(n);

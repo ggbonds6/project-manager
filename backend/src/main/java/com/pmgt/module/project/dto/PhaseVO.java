@@ -30,4 +30,8 @@ public class PhaseVO {
     private String note;
     private Object resultFields;
     private LocalDateTime updateTime;
+    /** 阶段说明（模板快照）：本阶段要做什么 */
+    private String guide;
+    /** 关键材料（模板快照） */
+    private String keyMaterials;
 }
