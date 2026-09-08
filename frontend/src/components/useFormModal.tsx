@@ -14,6 +14,8 @@ interface ModalState {
   fields: FieldDef[];
   initial: Record<string, unknown>;
   onSave: (values: Record<string, never>) => Promise<void> | void;
+  /** 弹窗宽度（默认 560） */
+  width?: number;
 }
 
 /**
@@ -29,8 +31,9 @@ export function useFormModal() {
     fields: FieldDef[],
     initial: Record<string, unknown>,
     onSave: ModalState['onSave'],
+    width?: number,
   ) => {
-    setState({ title, fields, initial, onSave });
+    setState({ title, fields, initial, onSave, width });
     form.resetFields();
   };
 
@@ -40,7 +43,7 @@ export function useFormModal() {
     <Modal
       title={state.title}
       open
-      width={520}
+      width={state.width ?? 560}
       okText="保存"
       cancelText="取消"
       confirmLoading={saving}

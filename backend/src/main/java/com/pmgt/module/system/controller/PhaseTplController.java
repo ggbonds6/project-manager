@@ -56,31 +56,6 @@ public class PhaseTplController {
                 .orderByAsc(PhaseTpl::getId)));
     }
 
-    /** 单个模板（含画布布局 flowJson） */
-    @GetMapping("/{id}")
-    public R<PhaseTpl> get(@PathVariable Long id) {
-        PhaseTpl t = tplMapper.selectById(id);
-        if (t == null) {
-            throw new BizException(404, "模板不存在");
-        }
-        return R.ok(t);
-    }
-
-    /** 保存画布布局（节点坐标+连线 JSON） */
-    @RequireRole({Role.ADMIN})
-    @PutMapping("/{id}/flow")
-    public R<Void> saveFlow(@PathVariable Long id, @RequestBody Map<String, Object> body) {
-        PhaseTpl exist = tplMapper.selectById(id);
-        if (exist == null) {
-            throw new BizException(404, "模板不存在");
-        }
-        Object flow = body.get("flowJson");
-        exist.setFlowJson(flow == null ? null : String.valueOf(flow));
-        tplMapper.updateById(exist);
-        operationLogService.log("TEMPLATE", id, "TPL_FLOW", "保存流程模板画布布局 " + exist.getName());
-        return R.ok();
-    }
-
     /** 新建模板；body:{projectType,name,copyTplId?,remark?}，copyTplId 提供时复制其阶段 */
     @RequireRole({Role.ADMIN})
     @PostMapping

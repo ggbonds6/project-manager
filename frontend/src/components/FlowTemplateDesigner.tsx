@@ -208,18 +208,25 @@ export default function FlowTemplateDesigner() {
         { name: 'description', label: '一句话说明', el: <Input placeholder="如：设备到场清点并签收" /> },
         {
           name: 'guide',
-          label: '阶段说明（覆盖：目的/主要工作/做法/注意事项/完成标准）',
+          label: '阶段说明',
           el: (
-            <Input.TextArea
-              rows={8}
-              placeholder={'示例：\n【目的】…\n【主要工作】\n1. …\n2. …\n【做法与要求】\n…\n【完成标准】\n…\n【注意事项】\n…'}
-            />
+            <div>
+              <Input.TextArea rows={6} placeholder={'【目的】…\n【主要工作】1.… 2.…\n【完成标准】…\n【注意事项】…'} />
+              <div style={{ color: '#8c8c8c', fontSize: 12, marginTop: 4 }}>
+                建议覆盖：目的 / 主要工作 / 做法与要求 / 完成标准 / 注意事项
+              </div>
+            </div>
           ),
         },
         {
           name: 'keyMaterials',
-          label: '关键材料/交付物（每行一项）',
-          el: <Input.TextArea rows={4} placeholder={'示例：\n到货签收单\n装箱单\n设备配置清单'} />,
+          label: '关键材料',
+          el: (
+            <div>
+              <Input.TextArea rows={3} placeholder={'到货签收单\n装箱单\n设备配置清单'} />
+              <div style={{ color: '#8c8c8c', fontSize: 12, marginTop: 4 }}>每行一项：交付物 / 材料 / 单据</div>
+            </div>
+          ),
         },
         {
           name: 'skipable',
@@ -365,7 +372,6 @@ export default function FlowTemplateDesigner() {
             </Tag>
           ) : null}
           {p.skipable === 1 ? <Tag>可跳过</Tag> : null}
-          {anyP.guide || anyP.keyMaterials || p.description ? <Tag color="blue">有说明</Tag> : null}
         </Space>
       ),
       children: content,
