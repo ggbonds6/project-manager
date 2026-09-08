@@ -10,15 +10,20 @@ import com.pmgt.common.security.AuthContext;
 import com.pmgt.module.log.service.OperationLogService;
 import com.pmgt.module.project.dto.PhaseUpdateRequest;
 import com.pmgt.module.project.dto.PhaseVO;
+import com.pmgt.module.project.dto.OverviewModuleVO;
+import com.pmgt.module.project.dto.OverviewSaveRequest;
+import com.pmgt.module.project.dto.OverviewVO;
 import com.pmgt.module.project.dto.ProjectDetailVO;
 import com.pmgt.module.project.dto.ProjectQuery;
 import com.pmgt.module.project.dto.ProjectSaveRequest;
 import com.pmgt.module.project.dto.ProjectVO;
 import com.pmgt.module.project.entity.Project;
+import com.pmgt.module.project.entity.ProjectOverview;
 import com.pmgt.module.project.entity.ProjectPhase;
 import com.pmgt.module.project.entity.Payment;
 import com.pmgt.module.project.entity.Contract;
 import com.pmgt.module.project.mapper.ProjectMapper;
+import com.pmgt.module.project.mapper.ProjectOverviewMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
 import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.project.mapper.ContractMapper;
@@ -52,6 +57,7 @@ public class ProjectService {
     private static final Set<String> TYPES = Set.of("HW", "SW");
 
     private final ProjectMapper projectMapper;
+    private final ProjectOverviewMapper overviewMapper;
     private final ProjectPhaseMapper phaseMapper;
     private final PaymentMapper paymentMapper;
     private final ContractMapper contractMapper;
@@ -61,6 +67,7 @@ public class ProjectService {
     private final ObjectMapper objectMapper;
 
     public ProjectService(ProjectMapper projectMapper,
+                          ProjectOverviewMapper overviewMapper,
                           ProjectPhaseMapper phaseMapper,
                           PaymentMapper paymentMapper,
                           ContractMapper contractMapper,
@@ -69,6 +76,7 @@ public class ProjectService {
                           OperationLogService operationLogService,
                           ObjectMapper objectMapper) {
         this.projectMapper = projectMapper;
+        this.overviewMapper = overviewMapper;
         this.phaseMapper = phaseMapper;
         this.paymentMapper = paymentMapper;
         this.contractMapper = contractMapper;
@@ -252,7 +260,66 @@ public class ProjectService {
         vo.setOverallProgress(overallProgress(phases));
         long childCount = projectMapper.selectCount(new LambdaQueryWrapper<Project>().eq(Project::getParentId, id));
         vo.setChildCount((int) childCount);
+        vo.setOverview(loadOverviewVO(id));
         return vo;
+    }
+
+    /** 加载项目概览（无记录时返回空对象，前端统一处理空态） */
+    private OverviewVO loadOverviewVO(Long projectId) {
+        OverviewVO ov = new OverviewVO();
+        ProjectOverview row = overviewMapper.selectOne(new LambdaQueryWrapper<ProjectOverview>()
+                .eq(ProjectOverview::getProjectId, projectId));
+        if (row == null) {
+            ov.setModules(List.of());
+            return ov;
+        }
+        ov.setIntroMd(row.getIntroMd());
+        if (row.getModulesJson() != null && StringUtils.hasText(row.getModulesJson())) {
+            try {
+                ov.setModules(objectMapper.readValue(row.getModulesJson(), new TypeReference<List<OverviewModuleVO>>() {
+                }));
+            } catch (Exception e) {
+                ov.setModules(List.of());
+            }
+        } else {
+            ov.setModules(List.of());
+        }
+        return ov;
+    }
+
+    @Transactional
+    public void saveOverview(Long id, OverviewSaveRequest req) {
+        Project pj = projectMapper.selectById(id);
+        if (pj == null) {
+            throw new BizException(404, "项目不存在");
+        }
+        ProjectOverview row = overviewMapper.selectOne(new LambdaQueryWrapper<ProjectOverview>()
+                .eq(ProjectOverview::getProjectId, id));
+        boolean exists = row != null;
+        if (row == null) {
+            row = new ProjectOverview();
+            row.setProjectId(id);
+        }
+        row.setIntroMd(StringUtils.hasText(req.getIntroMd()) ? req.getIntroMd().trim() : null);
+        row.setModulesJson(serializeModules(req.getModules()));
+        if (exists) {
+            overviewMapper.updateById(row);
+        } else {
+            overviewMapper.insert(row);
+        }
+        operationLogService.log("PROJECT", id, "UPDATE_OVERVIEW",
+                "更新项目概览：项目介绍 / 功能模块清单");
+    }
+
+    private String serializeModules(List<OverviewModuleVO> modules) {
+        if (modules == null || modules.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(modules);
+        } catch (Exception e) {
+            throw new BizException(500, "功能模块清单格式错误");
+        }
     }
 
     // ==================== 写操作 ====================

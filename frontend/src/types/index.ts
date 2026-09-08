@@ -164,6 +164,20 @@ export interface ProjectDetail extends ProjectForm {
   phases: PhaseItem[];
   createTime?: string | null;
   updateTime?: string | null;
+  /** 项目概览：README 式介绍 + 二级功能模块清单 */
+  overview?: OverviewData;
+}
+
+/** 项目概览-功能模块节点（最多二级） */
+export interface OverviewModule {
+  name: string;
+  description?: string;
+  children?: { name: string; description?: string }[];
+}
+
+export interface OverviewData {
+  introMd?: string | null;
+  modules?: OverviewModule[] | null;
 }
 
 export interface PaymentItem {

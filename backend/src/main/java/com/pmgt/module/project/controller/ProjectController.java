@@ -5,6 +5,7 @@ import com.pmgt.common.api.R;
 import com.pmgt.common.security.RequireRole;
 import com.pmgt.common.security.Role;
 import com.pmgt.module.project.dto.PhaseUpdateRequest;
+import com.pmgt.module.project.dto.OverviewSaveRequest;
 import com.pmgt.module.project.dto.ProjectDetailVO;
 import com.pmgt.module.project.dto.ProjectQuery;
 import com.pmgt.module.project.dto.ProjectSaveRequest;
@@ -79,6 +80,14 @@ public class ProjectController {
                                @PathVariable Long phaseId,
                                @RequestBody PhaseUpdateRequest req) {
         projectService.updatePhase(id, phaseId, req);
+        return R.ok();
+    }
+
+    /** 保存项目概览：项目介绍(Markdown) + 功能模块清单 */
+    @RequireRole({Role.ADMIN, Role.MANAGER})
+    @PutMapping("/{id}/overview")
+    public R<Void> saveOverview(@PathVariable Long id, @RequestBody OverviewSaveRequest req) {
+        projectService.saveOverview(id, req);
         return R.ok();
     }
 }

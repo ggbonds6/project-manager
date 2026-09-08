@@ -47,6 +47,7 @@ import ProjectFormModal from '@/components/ProjectFormModal';
 import PhaseEditModal from '@/components/PhaseEditModal';
 import AttachmentUploadModal from '@/components/AttachmentUploadModal';
 import AttachmentPreviewModal from '@/components/AttachmentPreviewModal';
+import ProjectOverviewPanel from '@/components/ProjectOverviewPanel';
 import { useFormModal } from '@/components/useFormModal';
 import { useAuth } from '@/store/auth';
 import { useDict } from '@/hooks/useOptions';
@@ -632,6 +633,7 @@ export default function ProjectDetailPage() {
           {detail.remark || '-'}
         </Descriptions.Item>
       </Descriptions>
+      <ProjectOverviewPanel projectId={detail.id} overview={detail.overview} canEdit={canEdit} onSaved={reload} />
     </Card>
   );
 

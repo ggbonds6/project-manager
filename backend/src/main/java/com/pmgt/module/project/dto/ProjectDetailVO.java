@@ -53,4 +53,7 @@ public class ProjectDetailVO {
     private List<PhaseVO> phases;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;
+
+    /** 项目概览：README 式介绍 + 功能模块清单 */
+    private OverviewVO overview;
 }

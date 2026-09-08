@@ -4,6 +4,7 @@ import {
   ContractItem,
   DictItem,
   LogItem,
+  OverviewModule,
   PageResult,
   PaymentItem,
   PhaseItem,
@@ -43,6 +44,12 @@ export const projectApi = {
   },
   remove(id: number | string): Promise<void> {
     return api.del<void>(`/projects/${id}`);
+  },
+  updateOverview(
+    projectId: number | string,
+    data: { introMd?: string | null; modules?: OverviewModule[] | null },
+  ): Promise<void> {
+    return api.put<void>(`/projects/${projectId}/overview`, data);
   },
   updatePhase(projectId: number | string, phaseId: number, data: Partial<PhaseItem>): Promise<void> {
     return api.put<void>(`/projects/${projectId}/phases/${phaseId}`, data);
