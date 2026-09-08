@@ -55,6 +55,10 @@ public class PhaseTemplateController {
     @PostMapping
     public R<Long> create(@RequestBody PhaseTemplate tpl) {
         validate(tpl, null);
+        if (!StringUtils.hasText(tpl.getProjectType())) {
+            throw new BizException(400, "项目类型不能为空");
+        }
+        assertNoDuplicate(tpl.getProjectType(), tpl.getPhaseName(), null);
         if (tpl.getSortNo() == null) {
             Integer max = templateMapper.selectList(new LambdaQueryWrapper<PhaseTemplate>()
                             .eq(PhaseTemplate::getProjectType, tpl.getProjectType()))
@@ -75,11 +79,13 @@ public class PhaseTemplateController {
             throw new BizException(404, "阶段模板不存在");
         }
         validate(tpl, id);
+        String effName = StringUtils.hasText(tpl.getPhaseName()) ? tpl.getPhaseName() : exist.getPhaseName();
+        assertNoDuplicate(exist.getProjectType(), effName, id);
         tpl.setId(id);
         tpl.setCreateTime(exist.getCreateTime());
         templateMapper.updateById(tpl);
         operationLogService.log("TEMPLATE", id, "TEMPLATE_UPDATE",
-                "更新阶段模板 " + (StringUtils.hasText(tpl.getPhaseName()) ? tpl.getPhaseName() : exist.getPhaseName()));
+                "更新阶段模板 " + effName);
         return R.ok();
     }
 
@@ -104,6 +110,19 @@ public class PhaseTemplateController {
         }
         if (tpl.getWeight() != null && (tpl.getWeight() < 0 || tpl.getWeight() > 100)) {
             throw new BizException(400, "权重应在 0-100");
+        }
+    }
+
+    /** 同类型内阶段名称不允许重复 */
+    private void assertNoDuplicate(String type, String phaseName, Long selfId) {
+        LambdaQueryWrapper<PhaseTemplate> qw = new LambdaQueryWrapper<PhaseTemplate>()
+                .eq(PhaseTemplate::getProjectType, type)
+                .eq(PhaseTemplate::getPhaseName, phaseName);
+        if (selfId != null) {
+            qw.ne(PhaseTemplate::getId, selfId);
+        }
+        if (templateMapper.selectCount(qw) > 0) {
+            throw new BizException(400, "该类型下已存在同名阶段：「" + phaseName + "」，请勿重复");
         }
     }
 }

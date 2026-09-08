@@ -12,10 +12,11 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined, EditOutlined, KeyOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CopyOutlined, DeleteOutlined, DownOutlined, EditOutlined, KeyOutlined, PlusOutlined, ReloadOutlined, UpOutlined } from '@ant-design/icons';
 import { systemApi } from '@/api/system';
 import { api } from '@/api/http';
 import { useFormModal } from '@/components/useFormModal';
@@ -468,6 +469,58 @@ function TemplatesTab() {
     );
   };
 
+  const sortedRows = [...rows].sort((a, b) => (a.sortNo ?? 0) - (b.sortNo ?? 0));
+  const weightTotal = sortedRows.reduce((s, r) => s + (r.weight || 0), 0);
+
+  /** 交换两个相邻阶段的顺序号（线性模板拖不动就先上移/下移） */
+  const move = async (index: number, dir: -1 | 1) => {
+    const arr = [...sortedRows];
+    const j = index + dir;
+    if (j < 0 || j >= arr.length) return;
+    const a = arr[index];
+    const b = arr[j];
+    const sa = a.sortNo ?? 0;
+    const sb = b.sortNo ?? 0;
+    a.sortNo = sb;
+    b.sortNo = sa;
+    try {
+      await systemApi.updateTemplate(a.id!, { ...payloadOf(a), sortNo: sb });
+      await systemApi.updateTemplate(b.id!, { ...payloadOf(b), sortNo: sa });
+      message.success('顺序已调整');
+      load();
+    } catch {
+      /* 统一错误提示 */
+    }
+  };
+
+  const copyRow = async (row: PhaseTemplateRow) => {
+    try {
+      await systemApi.createTemplate({
+        projectType: type,
+        phaseName: `${row.phaseName}（副本）`,
+        weight: row.weight ?? 5,
+        payNode: row.payNode || null,
+        attachTypeHints: row.attachTypeHints || undefined,
+        description: row.description || null,
+        skipable: row.skipable ?? 0,
+      });
+      message.success('已复制为新阶段（排到末尾）');
+      load();
+    } catch {
+      /* 统一错误提示 */
+    }
+  };
+
+  const payloadOf = (r: PhaseTemplateRow): Partial<PhaseTemplateRow> => ({
+    projectType: type,
+    phaseName: r.phaseName,
+    weight: r.weight ?? 0,
+    payNode: r.payNode || null,
+    attachTypeHints: r.attachTypeHints || undefined,
+    description: r.description || null,
+    skipable: r.skipable ?? 0,
+  });
+
   const columns: ColumnsType<PhaseTemplateRow> = [
     { title: '顺序', dataIndex: 'sortNo', width: 70, align: 'right' },
     { title: '阶段名称', dataIndex: 'phaseName' },
@@ -488,9 +541,30 @@ function TemplatesTab() {
     {
       title: '操作',
       key: 'op',
-      width: 150,
-      render: (_, row) => (
-        <Space size={4}>
+      width: 210,
+      render: (_, row, index) => (
+        <Space size={0}>
+          <Tooltip title="上移">
+            <Button
+              size="small"
+              type="text"
+              icon={<UpOutlined />}
+              disabled={index === 0}
+              onClick={() => move(index, -1)}
+            />
+          </Tooltip>
+          <Tooltip title="下移">
+            <Button
+              size="small"
+              type="text"
+              icon={<DownOutlined />}
+              disabled={index === sortedRows.length - 1}
+              onClick={() => move(index, 1)}
+            />
+          </Tooltip>
+          <Button size="small" type="link" icon={<CopyOutlined />} onClick={() => copyRow(row)}>
+            复制
+          </Button>
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => edit(row)}>
             编辑
           </Button>
@@ -526,14 +600,16 @@ function TemplatesTab() {
           新增阶段
         </Button>
         <Button icon={<ReloadOutlined />} onClick={load} />
-        <span style={{ color: '#8c8c8c', fontSize: 12 }}>权重用于整体进度计算；顺序决定生成阶段实例的顺序。</span>
+        <span style={{ color: '#8c8c8c', fontSize: 12 }}>
+          共 {sortedRows.length} 个阶段 · 权重合计 {weightTotal}（建议 100；权重用于整体进度，顺序决定生成阶段实例的顺序）
+        </span>
       </Space>
       <Table<PhaseTemplateRow>
         rowKey="id"
         size="small"
         loading={loading}
         columns={columns}
-        dataSource={rows}
+        dataSource={sortedRows}
         pagination={false}
       />
       {el}
