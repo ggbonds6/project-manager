@@ -549,6 +549,38 @@ export default function ProjectDetailPage() {
                     })()
                   : null}
                 {ph.note ? <div className="pm-note">{ph.note}</div> : null}
+                {(() => {
+                  const px = ph as any;
+                  if (!px.guide && !px.keyMaterials) return null;
+                  return (
+                    <Collapse
+                      ghost
+                      size="small"
+                      style={{ marginTop: 6, maxWidth: 640 }}
+                      items={[
+                        {
+                          key: 'guide' + ph.id,
+                          label: <span style={{ color: '#1677ff' }}>阶段说明 · 关键材料</span>,
+                          children: (
+                            <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8 }}>
+                              {px.guide ? <div><b>要做什么：</b>{px.guide}</div> : null}
+                              {px.keyMaterials ? (
+                                <div style={{ marginTop: 6 }}>
+                                  <b>关键材料：</b>
+                                  <ul style={{ margin: '4px 0 0 18px' }}>
+                                    {String(px.keyMaterials)
+                                      .split('\n')
+                                      .map((m: string, mi: number) => (m.trim() ? <li key={mi}>{m.trim()}</li> : null))}
+                                  </ul>
+                                </div>
+                              ) : null}
+                            </div>
+                          ),
+                        },
+                      ]}
+                    />
+                  );
+                })()}
                 {ph.resultFields && typeof ph.resultFields === 'object' && Object.keys(ph.resultFields).length > 0 ? (
                   <div style={{ margin: '0 0 4px' }}>
                     {Object.entries(ph.resultFields).map(([k, v]) => (

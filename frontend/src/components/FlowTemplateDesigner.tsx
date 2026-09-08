@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Graph } from '@antv/x6';
 import {
   Alert,
   Button,
@@ -40,7 +41,7 @@ import { PhaseTemplateRow, PhaseTplRow } from '@/types/system';
  * - 保存：整模板阶段按当前顺序批量保存
  * - 暂为线性流程；并行/分支待图形化方案（X6/LogicFlow）B/C 期
  */
-type ViewMode = 'canvas' | 'list';
+type ViewMode = 'canvas' | 'list' | 'preview';
 
 export default function FlowTemplateDesigner() {
   const { open, el } = useFormModal();
@@ -52,7 +53,8 @@ export default function FlowTemplateDesigner() {
   const [phases, setPhases] = useState<PhaseTemplateRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState<ViewMode>('canvas');
-  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const graphRef = useRef<Graph | null>(null);
+  const canvasHostRef = useRef<HTMLDivElement | null>(null);
 
   const active = tpls.find((t) => t.id === activeId) || null;
   const sortedPhases = [...phases].sort((a, b) => (a.sortNo ?? 0) - (b.sortNo ?? 0));
@@ -93,7 +95,35 @@ export default function FlowTemplateDesigner() {
   const save = async () => {
     if (activeId == null) return;
     try {
-      const items: Partial<PhaseTemplateRow>[] = sortedPhases.map((p) => ({
+      let ordered: PhaseTemplateRow[];
+      if (view === 'canvas' && graphRef.current) {
+        // 画布：以连线拓扑（无连线按 Y 坐标）得到线性顺序
+        const g = graphRef.current;
+        const nodes = (g.getNodes() as any[]).map((n) => ({ id: n.id, data: n.getData() as PhaseTemplateRow, y: n.position().y }));
+        const edges = (g.getEdges() as any[]).map((e) => ({ s: e.getSourceCellId(), t: e.getTargetCellId() }));
+        const indeg: Record<string, number> = {};
+        nodes.forEach((n) => (indeg[n.id] = 0));
+        edges.forEach((e) => indeg[e.t] == null || indeg[e.t]++);
+        const order: string[] = [];
+        const ready = nodes.filter((n) => !indeg[n.id]).map((n) => n.id);
+        const map = Object.fromEntries(nodes.map((n) => [n.id, n]));
+        const adj: Record<string, string[]> = {};
+        edges.forEach((e) => (adj[e.s] = adj[e.s] || []).push(e.t));
+        const q = [...ready];
+        while (q.length) {
+          const id = q.shift()!;
+          order.push(id);
+          (adj[id] || []).forEach((t) => {
+            indeg[t]--;
+            if (!indeg[t]) q.push(t);
+          });
+        }
+        const rest = nodes.filter((n) => !order.includes(n.id)).sort((a, b) => a.y - b.y).map((n) => n.id);
+        ordered = [...order, ...rest].map((id, i) => ({ ...map[id].data, sortNo: i + 1 }));
+      } else {
+        ordered = sortedPhases.map((p, i) => ({ ...p, sortNo: i + 1 }));
+      }
+      const items: any[] = ordered.map((p) => ({
         id: p.id,
         phaseName: p.phaseName,
         weight: p.weight ?? 5,
@@ -101,6 +131,8 @@ export default function FlowTemplateDesigner() {
         attachTypeHints: p.attachTypeHints || undefined,
         description: p.description || null,
         skipable: p.skipable ?? 0,
+        guide: (p as any).guide ?? null,
+        keyMaterials: (p as any).keyMaterials ?? null,
       }));
       await systemApi.saveTplPhases(activeId, items);
       message.success('已保存（共 ' + items.length + ' 个阶段）');
@@ -215,6 +247,8 @@ export default function FlowTemplateDesigner() {
           ),
         },
         { name: 'description', label: '说明', el: <Input.TextArea rows={2} /> },
+        { name: 'guide', label: '阶段说明：本阶段要做什么', el: <Input.TextArea rows={3} placeholder={'例如：\n1. 发起验收申请\n2. 组织甲方验收'} /> },
+        { name: 'keyMaterials', label: '关键材料（每行一项）', el: <Input.TextArea rows={3} placeholder={'例如：\n验收申请单\n验收报告'} /> },
         {
           name: 'skipable',
           label: '可跳过',
@@ -234,6 +268,8 @@ export default function FlowTemplateDesigner() {
         payNode: row?.payNode || undefined,
         attachTypeHints: row?.attachTypeHints ? row.attachTypeHints.split(',') : [],
         description: row?.description || undefined,
+        guide: (row as any)?.guide || '',
+        keyMaterials: (row as any)?.keyMaterials || '',
         skipable: row?.skipable ?? 0,
       },
       async (values) => {
@@ -245,6 +281,8 @@ export default function FlowTemplateDesigner() {
             ? (values.attachTypeHints as string[]).join(',')
             : undefined,
           description: values.description ? String(values.description) : null,
+          guide: values.guide ? String(values.guide) : null,
+          keyMaterials: values.keyMaterials ? String(values.keyMaterials) : null,
           skipable: Number(values.skipable ?? 0),
         };
         if (row?.id) {
@@ -263,6 +301,8 @@ export default function FlowTemplateDesigner() {
             skipable: Number(values.skipable ?? 0),
             sortNo: phases.length + 1,
           };
+          (np as any).guide = values.guide ? String(values.guide) : null;
+          (np as any).keyMaterials = values.keyMaterials ? String(values.keyMaterials) : null;
           setPhases((prev) => [...prev, np]);
         }
         message.success('已保存到当前编辑区，请点「保存」应用到模板');
@@ -290,110 +330,107 @@ export default function FlowTemplateDesigner() {
     ]);
   };
 
-  // ---------- 画布视图：节点横向拖拽排序 ----------
-  const renderCanvas = () => {
-    const list = sortedPhases;
-    if (list.length === 0) {
+  // ---------- 画布视图：X6 draw.io 式 ----------
+  const renderCanvas = () => (
+    <div>
+      <div
+        ref={canvasHostRef}
+        style={{ height: 520, border: '1px solid #e5e8ef', borderRadius: 8, background: '#f8f9fc', overflow: 'hidden' }}
+      />
+      <div style={{ marginTop: 8, fontSize: 12, color: '#8c8c8c' }}>
+        操作：拖动节点自由排版；从节点拖出到另一节点即连线（保存时按连线拓扑排序，无连线按自上而下顺序）；单击节点编辑；Ctrl+滚轮缩放/平移。
+      </div>
+    </div>
+  );
+
+  // ---------- 折叠描述列表（列表 / 展示共用） ----------
+  const renderCollapse = (editable: boolean) => {
+    if (sortedPhases.length === 0) {
       return (
-        <Empty description="暂无阶段，点「新增阶段」开始编排，拖拽节点调整顺序">
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => editPhase(null)}>
-            新增阶段
-          </Button>
+        <Empty description="暂无阶段">
+          {editable ? (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => editPhase(null)}>
+              新增阶段
+            </Button>
+          ) : null}
         </Empty>
       );
     }
     return (
       <div>
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 4,
-            flexWrap: 'wrap',
-            minHeight: 120,
-            padding: 16,
-            background: '#f5f7fa',
-            borderRadius: 8,
-          }}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            if (dragIdx == null) return;
-            const target = Number((e.target as HTMLElement).dataset?.idx ?? -1);
-            if (target < 0 || target === dragIdx) {
-              setDragIdx(null);
-              return;
-            }
-            const arr = [...sortedPhases];
-            const [it] = arr.splice(dragIdx, 1);
-            arr.splice(target, 0, it);
-            setPhases(arr.map((p, i) => ({ ...p, sortNo: i + 1 })));
-            setDragIdx(null);
-          }}
-        >
-          {list.map((p, i) => (
-            <Space key={p.id ?? `n${i}`} size={4} style={{ display: 'inline-flex' }}>
-              {i > 0 ? (
-                <span style={{ color: '#bbb', fontWeight: 700 }}>→</span>
-              ) : (
-                <span style={{ width: 14 }} />
-              )}
-              <div
-                data-idx={i}
-                draggable
-                onDragStart={() => setDragIdx(i)}
-                onClick={() => editPhase(p)}
-                style={{
-                  cursor: 'grab',
-                  background: '#fff',
-                  border: p.skipable === 1 ? '1px dashed #faad14' : '1px solid #d9dce1',
-                  borderRadius: 8,
-                  padding: '8px 12px',
-                  minWidth: 128,
-                  textAlign: 'center',
-                  boxShadow: '0 1px 3px rgba(0,0,0,.08)',
-                  position: 'relative',
-                }}
-              >
-                <div style={{ fontWeight: 600 }}>{p.phaseName}</div>
-                <div style={{ fontSize: 11, color: '#8c8c8c', marginTop: 4 }}>
-                  权重 {p.weight ?? 0}
+        {sortedPhases.map((p, i) => {
+          const anyP = p as any;
+          return (
+            <div key={p.id ?? 'p' + i} style={{ border: '1px solid #eef0f3', borderRadius: 8, marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px', background: '#fafbfc', borderBottom: '1px solid #eef0f3', borderRadius: '8px 8px 0 0' }}>
+                <Space size={8}>
+                  <span style={{ color: '#8c8c8c' }}>STEP {i + 1}</span>
+                  <b>{p.phaseName}</b>
+                  {p.skipable === 1 ? <Tag>可跳过</Tag> : null}
                   {p.payNode ? (
-                    <Tag color="gold" style={{ marginLeft: 4 }}>
-                      {payNodes.find((n) => n.code === p.payNode)?.name || p.payNode}
-                    </Tag>
+                    <Tag color="gold">{payNodes.find((n) => n.code === p.payNode)?.name || p.payNode}</Tag>
                   ) : null}
-                </div>
-                <div
-                  data-idx={i}
-                  role="button"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    removePhase(i);
-                  }}
-                  style={{
-                    position: 'absolute',
-                    top: -8,
-                    right: -8,
-                    background: '#ff4d4f',
-                    color: '#fff',
-                    borderRadius: '50%',
-                    width: 16,
-                    height: 16,
-                    lineHeight: '16px',
-                    fontSize: 11,
-                    cursor: 'pointer',
-                  }}
-                >
-                  ×
-                </div>
+                  <span style={{ color: '#8c8c8c', fontSize: 12 }}>权重 {p.weight ?? 0}</span>
+                </Space>
+                {editable ? (
+                  <Space size={0}>
+                    <Tooltip title="上移">
+                      <Button size="small" type="text" icon={<UpOutlined />} disabled={i === 0} onClick={() => movePhase(i, -1)} />
+                    </Tooltip>
+                    <Tooltip title="下移">
+                      <Button
+                        size="small"
+                        type="text"
+                        icon={<DownOutlined />}
+                        disabled={i === sortedPhases.length - 1}
+                        onClick={() => movePhase(i, 1)}
+                      />
+                    </Tooltip>
+                    <Button size="small" type="link" icon={<CopyOutlined />} onClick={() => copyPhase(p)}>
+                      复制
+                    </Button>
+                    <Button size="small" type="link" icon={<EditOutlined />} onClick={() => editPhase(p)}>
+                      编辑
+                    </Button>
+                    <Popconfirm title="删除该阶段？" onConfirm={() => removePhase(i)}>
+                      <Button size="small" type="link" danger icon={<DeleteOutlined />}>
+                        删除
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                ) : null}
               </div>
-            </Space>
-          ))}
-        </div>
-        <div style={{ marginTop: 10, fontSize: 12, color: '#8c8c8c' }}>
-          提示：拖拽节点可调整线性顺序；点击节点编辑配置。
-        </div>
+              <div style={{ padding: '8px 12px' }}>
+                {p.description ? <div style={{ marginBottom: 6 }}>说明：{p.description}</div> : null}
+                {anyP.guide ? (
+                  <details style={{ marginBottom: 6 }} open={view === 'preview'}>
+                    <summary style={{ cursor: 'pointer', color: '#1677ff' }}>阶段说明（要做什么）</summary>
+                    <div style={{ whiteSpace: 'pre-wrap', marginTop: 4, color: '#4e5969' }}>{anyP.guide}</div>
+                  </details>
+                ) : null}
+                {anyP.keyMaterials ? (
+                  <details style={{ marginBottom: 6 }} open={view === 'preview'}>
+                    <summary style={{ cursor: 'pointer', color: '#1677ff' }}>关键材料</summary>
+                    <div style={{ whiteSpace: 'pre-wrap', marginTop: 4, color: '#4e5969' }}>{anyP.keyMaterials}</div>
+                  </details>
+                ) : null}
+                {p.attachTypeHints ? (
+                  <div style={{ marginTop: 4 }}>
+                    <span style={{ color: '#8c8c8c', marginRight: 6 }}>常用附件：</span>
+                    {p.attachTypeHints.split(',').map((code) => (
+                      <Tag key={code} style={{ marginRight: 4 }}>
+                        {attachTypes.find((a) => a.code === code)?.name || code}
+                      </Tag>
+                    ))}
+                  </div>
+                ) : null}
+                {!anyP.guide && !anyP.keyMaterials && !p.description && !p.attachTypeHints ? (
+                  <div style={{ color: '#bfbfbf', fontSize: 12 }}>暂无说明与材料</div>
+                ) : null}
+              </div>
+            </div>
+          );
+        })}
       </div>
     );
   };
@@ -453,6 +490,68 @@ export default function FlowTemplateDesigner() {
 
   const weightTotal = sortedPhases.reduce((s, p) => s + (p.weight ?? 0), 0);
 
+  // ---------- X6 画布构建 ----------
+  useEffect(() => {
+    if (view !== 'canvas' || !activeId || !canvasHostRef.current) return;
+    if (!graphRef.current) {
+      const g = new Graph({
+        container: canvasHostRef.current,
+        height: 520,
+        background: { color: '#f8f9fc' },
+        grid: { visible: true, size: 16 },
+        panning: true,
+        mousewheel: { enabled: true, modifiers: ['ctrl', 'meta'] },
+        selecting: { enabled: true, showNodeSelectionBox: true },
+        connecting: { allowBlank: false, allowLoop: false, snap: { radius: 24 }, highlight: true },
+      } as any);
+      g.on('node:click', ({ node }: any) => editPhase(node.getData()));
+      graphRef.current = g;
+    }
+    const g = graphRef.current;
+    if (!g) return;
+    g.clearCells();
+    const list = [...phases].sort((a, b) => (a.sortNo ?? 0) - (b.sortNo ?? 0));
+    let flow: any = null;
+    try {
+      flow = JSON.parse((active as any)?.flowJson || 'null');
+    } catch {
+      flow = null;
+    }
+    const fNodes: any[] = flow?.nodes || [];
+    list.forEach((p, i) => {
+      const saved = fNodes.find((n: any) => String(n.id) === String(i)) || fNodes[i];
+      const x = saved?.x ?? 40 + (i % 4) * 200;
+      const y = saved?.y ?? 30 + Math.floor(i / 4) * 120;
+      g.addNode({
+        id: 'n' + i,
+        x,
+        y,
+        width: 180,
+        height: 70,
+        data: p,
+        attrs: {
+          body: { rx: 8, fill: '#ffffff', stroke: (p as any).skipable === 1 ? '#faad14' : '#1677ff', strokeWidth: 1.5 },
+          label: { text: p.phaseName, fontSize: 12, fill: '#1f2329' },
+        },
+      });
+    });
+    const fEdges: any[] = flow?.edges || [];
+    const lineAttrs: any = { line: { stroke: '#8a919f', strokeWidth: 2, targetMarker: { name: 'block', size: 7 } } };
+    if (fEdges.length) {
+      fEdges.forEach((e: any) => {
+        try {
+          g.addEdge({ source: String(e.source), target: String(e.target), attrs: lineAttrs });
+        } catch {
+          /* ignore */
+        }
+      });
+    } else {
+      for (let i = 1; i < list.length; i++) {
+        g.addEdge({ source: 'n' + (i - 1), target: 'n' + i, attrs: lineAttrs });
+      }
+    }
+  }, [view, activeId, phases, (active as any)?.flowJson]);
+
   if (!tpls.length) {
     return (
       <Card size="small">
@@ -511,6 +610,7 @@ export default function FlowTemplateDesigner() {
               options={[
                 { label: '画布', value: 'canvas' },
                 { label: '列表', value: 'list' },
+                { label: '展示', value: 'preview' },
               ]}
             />
             <Button type="primary" icon={<PlusOutlined />} onClick={() => editPhase(null)}>
@@ -529,16 +629,8 @@ export default function FlowTemplateDesigner() {
             </span>
           </Space>
           {view === 'canvas' ? renderCanvas() : null}
-          {view === 'list' ? (
-            <Table<PhaseTemplateRow>
-              rowKey={(r) => r.id ?? r.phaseName + (r.sortNo ?? '')}
-              size="small"
-              loading={loading}
-              columns={columns}
-              dataSource={sortedPhases}
-              pagination={false}
-            />
-          ) : null}
+          {view === 'list' ? renderCollapse(true) : null}
+          {view === 'preview' ? renderCollapse(false) : null}
           {active.builtin !== 1 ? (
             <div style={{ marginTop: 8 }}>
               <Alert type="info" showIcon message="自定义模板：可另设默认后，新项目按该模板生成阶段" style={{ fontSize: 12 }} />
