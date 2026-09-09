@@ -34,6 +34,14 @@ mybatis-plus:
 
 app:
   upload-dir: ${UPLOAD_DIR:./uploads}
+  # 附件存储：local（本地磁盘，默认） | obs（华为 OBS，S3 兼容 + path-style + 忽略证书校验）
+  storage:
+    type: ${APP_STORAGE_TYPE:local}
+    obs:
+      endpoint: ${APP_STORAGE_OBS_ENDPOINT:}
+      bucket: ${APP_STORAGE_OBS_BUCKET:}
+      ak: ${APP_STORAGE_OBS_AK:}
+      sk: ${APP_STORAGE_OBS_SK:}
   jwt:
     # 仅本地开发默认值；生产环境务必通过环境变量覆盖
     secret: ${JWT_SECRET:change-me-please-this-is-a-dev-secret-0123456789abcdef}

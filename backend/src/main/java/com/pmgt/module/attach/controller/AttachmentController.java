@@ -2,11 +2,11 @@ package com.pmgt.module.attach.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.pmgt.common.api.R;
-import com.pmgt.common.config.WebConfig;
 import com.pmgt.common.exception.BizException;
 import com.pmgt.common.security.AuthContext;
 import com.pmgt.common.security.RequireRole;
 import com.pmgt.common.security.Role;
+import com.pmgt.common.storage.AttachmentStorage;
 import com.pmgt.module.attach.dto.AttachmentVO;
 import com.pmgt.module.attach.entity.Attachment;
 import com.pmgt.module.attach.mapper.AttachmentMapper;
@@ -19,8 +19,6 @@ import com.pmgt.module.project.mapper.ProjectMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
 import com.pmgt.module.system.entity.SysUser;
 import com.pmgt.module.system.mapper.SysUserMapper;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -33,12 +31,12 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import java.io.FileNotFoundException;
+import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.util.ArrayList;
@@ -72,7 +70,7 @@ public class AttachmentController {
     private final PaymentMapper paymentMapper;
     private final SysUserMapper userMapper;
     private final OperationLogService operationLogService;
-    private final WebConfig webConfig;
+    private final AttachmentStorage attachmentStorage;
 
     public AttachmentController(AttachmentMapper attachmentMapper,
                                 ProjectMapper projectMapper,
@@ -80,14 +78,14 @@ public class AttachmentController {
                                 PaymentMapper paymentMapper,
                                 SysUserMapper userMapper,
                                 OperationLogService operationLogService,
-                                WebConfig webConfig) {
+                                AttachmentStorage attachmentStorage) {
         this.attachmentMapper = attachmentMapper;
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
         this.paymentMapper = paymentMapper;
         this.userMapper = userMapper;
         this.operationLogService = operationLogService;
-        this.webConfig = webConfig;
+        this.attachmentStorage = attachmentStorage;
     }
 
     @RequireRole({Role.ADMIN, Role.MANAGER})
@@ -114,13 +112,10 @@ public class AttachmentController {
             throw new BizException(400, "不支持的文件类型: ." + ext + "（允许上传：" + ALLOWED_EXT_TEXT + "）");
         }
         String storedName = UUID.randomUUID().toString().replace("-", "") + (ext.isEmpty() ? "" : "." + ext);
-
-        Path uploadRoot = webConfig.getUploadPath();
         YearMonth ym = YearMonth.now();
-        Path dir = uploadRoot.resolve(ym.getYear() + "/" + String.format("%02d", ym.getMonthValue()));
+        String relKey = ym.getYear() + "/" + String.format("%02d", ym.getMonthValue()) + "/" + storedName;
         try {
-            Files.createDirectories(dir);
-            Files.copy(file.getInputStream(), dir.resolve(storedName), StandardCopyOption.REPLACE_EXISTING);
+            attachmentStorage.save(relKey, file.getInputStream(), file.getSize());
         } catch (Exception e) {
             throw new BizException(500, "文件保存失败: " + e.getMessage());
         }
@@ -131,7 +126,7 @@ public class AttachmentController {
         att.setAttachType(attachType);
         att.setFileName(original);
         att.setStoredName(storedName);
-        att.setFilePath(ym.getYear() + "/" + String.format("%02d", ym.getMonthValue()) + "/" + storedName);
+        att.setFilePath(relKey);
         att.setFileSize(file.getSize());
         att.setFileExt(ext);
         att.setUploadUserId(AuthContext.userId().orElse(null));
@@ -212,39 +207,42 @@ public class AttachmentController {
         return R.ok(vos);
     }
 
-    /** 下载/预览：disposition=attachment 下载，inline 内联预览 */
+    /** 下载/预览：disposition=attachment 下载，inline 内联预览（本地盘 / OBS 统一走存储抽象） */
     @GetMapping("/attachments/{id}/download")
-    public ResponseEntity<Resource> download(@PathVariable Long id,
+    public ResponseEntity<StreamingResponseBody> download(@PathVariable Long id,
                                              @RequestParam(defaultValue = "attachment") String disposition) {
         Attachment att = attachmentMapper.selectById(id);
         if (att == null) {
             throw new BizException(404, "附件不存在");
         }
-        Path root = webConfig.getUploadPath();
-        Path file = root.resolve(att.getFilePath()).normalize();
-        if (!file.startsWith(root) || !Files.exists(file)) {
+        final InputStream in;
+        try {
+            in = attachmentStorage.open(att.getFilePath());
+        } catch (FileNotFoundException e) {
             throw new BizException(404, "附件文件缺失");
         }
-        try {
-            Resource resource = new UrlResource(file.toUri());
-            MediaType mediaType = MediaType.APPLICATION_OCTET_STREAM;
-            String ext = att.getFileExt() == null ? "" : att.getFileExt().toLowerCase(Locale.ROOT);
-            if (Set.of("png", "jpg", "jpeg", "gif", "webp").contains(ext)) {
-                mediaType = MediaType.parseMediaType("image/" + ("jpg".equals(ext) ? "jpeg" : ext));
-            } else if ("pdf".equals(ext)) {
-                mediaType = MediaType.APPLICATION_PDF;
-            }
-            String filename = URLEncoder.encode(att.getFileName(), StandardCharsets.UTF_8).replace("+", "%20");
-            String cd = ("inline".equals(disposition) ? "inline" : "attachment")
-                    + "; filename*=UTF-8''" + filename;
-            return ResponseEntity.ok()
-                    .contentType(mediaType)
-                    .header(HttpHeaders.CONTENT_DISPOSITION, cd)
-                    .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(att.getFileSize()))
-                    .body(resource);
-        } catch (Exception e) {
-            throw new BizException(500, "读取附件失败");
+        MediaType mediaType = MediaType.APPLICATION_OCTET_STREAM;
+        String ext = att.getFileExt() == null ? "" : att.getFileExt().toLowerCase(Locale.ROOT);
+        if (Set.of("png", "jpg", "jpeg", "gif", "webp").contains(ext)) {
+            mediaType = MediaType.parseMediaType("image/" + ("jpg".equals(ext) ? "jpeg" : ext));
+        } else if ("pdf".equals(ext)) {
+            mediaType = MediaType.APPLICATION_PDF;
         }
+        String filename = URLEncoder.encode(att.getFileName(), StandardCharsets.UTF_8).replace("+", "%20");
+        String cd = ("inline".equals(disposition) ? "inline" : "attachment")
+                + "; filename*=UTF-8''" + filename;
+        StreamingResponseBody body = out -> {
+            try (InputStream opened = in) {
+                opened.transferTo(out);
+            } catch (Exception e) {
+                throw new RuntimeException("读取附件失败", e);
+            }
+        };
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header(HttpHeaders.CONTENT_DISPOSITION, cd)
+                .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(att.getFileSize()))
+                .body(body);
     }
 
     @RequireRole({Role.ADMIN, Role.MANAGER})

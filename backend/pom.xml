@@ -49,6 +49,13 @@
             <systemPath>${project.basedir}/lib/yashandb-jdbc-1.9.3.jar</systemPath>
         </dependency>
 
+        <!-- 华为 OBS 附件对象存储（S3 兼容；pathStyle + 忽略证书校验，见 application.yml app.storage） -->
+        <dependency>
+            <groupId>com.huaweicloud</groupId>
+            <artifactId>esdk-obs-java</artifactId>
+            <version>3.24.3</version>
+        </dependency>
+
         <!-- JWT 认证（M2 使用） -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>

@@ -17,6 +17,12 @@ services:
       SPRING_DATASOURCE_PASSWORD: ${YASHAN_PASSWORD:?必须在 .env 中设置 YASHAN_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:-please-change-this-jwt-secret-in-production-0123456789}
       UPLOAD_DIR: /uploads
+      # 附件存储：local(默认) | obs（华为 OBS，见双机部署手册 .env 说明）
+      APP_STORAGE_TYPE: ${APP_STORAGE_TYPE:-local}
+      APP_STORAGE_OBS_ENDPOINT: ${APP_STORAGE_OBS_ENDPOINT:-}
+      APP_STORAGE_OBS_BUCKET: ${APP_STORAGE_OBS_BUCKET:-}
+      APP_STORAGE_OBS_AK: ${APP_STORAGE_OBS_AK:-}
+      APP_STORAGE_OBS_SK: ${APP_STORAGE_OBS_SK:-}
     volumes:
       # 附件存储：默认本地命名卷 pm_uploads（单机）。
       # 双机 + 负载均衡时务必改为共享目录（NFS 等），两端 bind 同一路径：

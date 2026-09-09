@@ -25,7 +25,7 @@
 
 ## 2. 部署前必须满足的前提（逐项打勾）
 
-1. **[代码] 附件存储 OBS 实现已合入**（`app.storage.type=obs` 生效，环境变量 `APP_STORAGE_OBS_*` 可用；未合入前走过渡 NFS，见 §1 提示）。
+1. **[代码] 附件存储 OBS 实现已合入**（v1.1：`AttachmentStorage` 抽象 + `app.storage.type=local\|obs`，环境变量 `APP_STORAGE_OBS_*` 生效，2026-09-09 已落地并完成 local 模式回归；obs 模式联调待 OBS 网络可达后执行）。
 2. **[OBS] 桶与凭证**：桶名（私有读写）、AK/SK、endpoint（内网域名/IP，含协议）；已确认 SDK 侧 `pathStyle=true`、**忽略证书校验**（esdk-obs-java `validateCertificate` 默认 false）。
 3. **[数据库] 崖山连通**：两机到 10.254.212.106/.107 的 1688 可达；`pm` 账号可连（库已完成 V1~V8 初始化与数据迁移）。
 4. **[密钥] `JWT_SECRET`**：生成一个 ≥32 字节随机串，两机 `.env` 填写**相同**值。
