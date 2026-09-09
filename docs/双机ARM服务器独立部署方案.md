@@ -28,6 +28,7 @@
 ## 2. 必须先解决的前置问题（与选型无关，双机 + LB 的硬前提）
 
 ### 2.1 附件存储必须跨机一致（P0，最容易踩）
+> 若按 §8 直接接入**对象存储**，本节"共享盘/NFS"前提整体**可免除**（附件天然在桶内，两机读写一致）。本节目前仍是"暂用本地盘"路线的硬前提。
 - 附件写入 `backend/uploads`（容器内 `/uploads`），单机默认是**本地卷 `pm_uploads`**。
 - 若两机各自本地卷，网关轮询下会出现"上传到 A、下载命中 B → 404"，合同/验收文档等核心附件会时好时坏。
 - **处置（推荐）**：两机挂载同一 **NFS / 共享盘**，compose 里用 bind 目录替换本地卷：
@@ -140,3 +141,110 @@ docker compose -f deploy/docker/docker-compose.yml logs -f backend
 - **推荐：每台一份 `docker compose`（方案 A）**。双机同构、升级/自愈/回滚成本最低，现有 `deploy/docker/` 资产 + 本方案 §3 步骤即可落地。
 - **本方案已配套的仓库改动**：修复 `Dockerfile.backend`（补 `COPY backend/lib`，否则 arm 服务器 build 必失败）；compose 附件卷支持 `${UPLOAD_VOLUME}`（默认本地卷、可切 NFS bind）；`.env.example` 增加 `UPLOAD_VOLUME` 说明。
 - 两机上线前请逐项过 §5 冒烟清单，重点为 **JWT_SECRET 一致性** 与 **跨机附件读写**。
+- **下一步待确认**：① 附件存储路线（§8：直接上对象存储 = 免共享盘 / 先本地盘+NFS）；② 发布机架构与是否已有私有镜像仓库（§9 决定镜像 tar 还是源码包交付）。
+
+---
+
+## 8. 附件存储演进：当前代码接入对象存储的改动评估（回答"改动大吗"）
+
+### 8.1 现状代码事实（已逐文件核实）
+
+| 存储动作 | 代码位置 | 现状 |
+| --- | --- | --- |
+| 写 | `AttachmentController.upload` | `Files.copy` 到 `UPLOAD_DIR/YYYY/MM/{uuid}.{ext}`；`attachment.file_path` 存相对路径 `YYYY/MM/{storedName}` |
+| 读（下载/预览） | `AttachmentController.download` | `root.resolve(file_path)` → `UrlResource` 流式返回（disposition=attachment/inline） |
+| 删除 | `AttachmentController.delete` | **只删数据库行**（MP 逻辑删除），**从不物理删文件** → 对象存储下天然兼容 |
+| 静态直链 | `WebConfig.addResourceHandlers`（`/uploads/**`） | **前端并不使用**：前端一律经 `attachmentUrl(id)` → `/api/attachments/{id}/download?...`（已核实 frontend/src） |
+
+> 决定性事实：**所有附件 IO 都收口在后端两个接口**，前端不直接拼 `/uploads` 路径。
+> 因此"本地盘 → 对象存储"是**后端内部的存储实现替换**，前端 0 改动、数据库 0 迁移。
+
+### 8.2 改造清单与估量（结论：改动不大，属"小中型"）
+
+1. 新增存储抽象 `AttachmentStorage` 接口：`save(InputStream, relKey)` / `load(relKey): Resource` /（可选 `delete(relKey)`）。
+2. 实现 `LocalAttachmentStorage`（把现有 `Files.copy` / `UrlResource` 两段原样迁入，行为不变）。
+3. 实现 `S3AttachmentStorage`（S3 兼容协议：MinIO / 阿里 OSS / 华为 OBS / CEPH 均可，`path-style` 直连，官方 SDK 或 minio 客户端均可；`relKey` 即对象 key）。
+4. `AttachmentController.upload/download` 两处改为调用接口（约 20~30 行 diff）。
+5. 配置 `app.storage.type=local|s3` + s3 endpoint/bucket/ak/sk（环境变量注入，Docker 友好）；`WebConfig` 的 `/uploads/**` 静态映射按类型条件启用（S3 模式下前端本来就不用，保留仅兼容）。
+6. 历史数据迁移 = **0**：既有 `file_path`（`YYYY/MM/name`）即对象 key，把当前 `uploads/` 目录内容原样上传到桶对应 key 即可无缝，已传文件不需改库。
+
+估量：接口 + 双实现 ≈ 120~180 行 Java、controller 改动极小、前端 0、数据 0。**若直接让 AI 落地约一小时内；人工半天量级。**
+
+### 8.3 决策建议
+
+- 若单位已有/将配**对象存储**（信创环境常见 MinIO/OSS/OBS）→ **现在就按 §8.2 抽象落地并直连桶**，双机部署彻底摆脱共享盘，§2.1 的 NFS 无需建设。
+- 若暂不确定、必须先上线 → 本地盘 + NFS 先跑（§2.1），后续切桶只是"加一个实现类 + 改环境变量"，无需改前端与数据。
+
+---
+
+## 9. 发布与升级模型（GitHub Release → 服务器，不绑仓库源码）
+
+> 目标：服务器上**不存放开发仓库、不执行 git clone/github 链接**；升级 = 从 GitHub Release 下载发布资产到服务器后启动。
+
+### 9.1 服务器目录约定（建议）
+
+```text
+/opt/pm/
+├── app/                 # 解压后的运行工程（compose + .env + nginx conf）
+│   ├── docker-compose.yml      # 从发布包复制
+│   ├── .env                    # 服务器本机配置（两机各填，JWT_SECRET 一致）
+│   └── nginx/…                 # frontend-nginx.conf 等
+├── images/              # 从发布包 docker load 的镜像（离线留存）
+└── releases/            # 下载的发布资产归档（可选留档）
+```
+
+### 9.2 交付形态对比（Release 资产）
+
+| | A. 预构建镜像 tar（**推荐**） | B. 源码 tar + 服务器 build |
+| --- | --- | --- |
+| 服务器内容 | 无源码、无 maven/node、无镜像构建 | 需源码 + Docker 构建链（联网拉依赖） |
+| 升级动作 | 下载 images.tar → `docker load` → `compose up -d` | 下载 src.tar → `compose up -d --build`（每次重新构建） |
+| 优点 | 启动快、环境完全一致、离线可装 | 发布包小、可在服务器临时改代码 |
+| 代价 | 需发布机产出 arm64 镜像（见 9.3）；镜像较大（~数百 MB） | 每台每次升级都要联网构建，慢且依赖源站 |
+
+> 两台规模无私有 registry 时：**A（docker save/load）** 最贴合"下载到服务器再启动"；若以后机器变多/发布频繁，再补 Harbor/ACR 私有仓库（服务器直接 pull）。
+
+### 9.3 发布资产生产（在发布机执行一次）
+
+发布机须能产出 arm64 镜像——任选其一：
+- 发布机本身就是 ARM 服务器：直接 `docker build`；
+- x86 发布机：`docker buildx build --platform linux/arm64 -t pm-backend:<ver> -f deploy/docker/Dockerfile.backend .`（buildx + QEMU 模拟，首次慢，可缓存）。
+
+产出命令（示意，后续可固化为 `scripts/publish-release.sh`）：
+
+```bash
+VER=v1.0.0
+docker buildx build --platform linux/arm64 -t pm-backend:$VER   -f deploy/docker/Dockerfile.backend . 
+docker buildx build --platform linux/arm64 -t pm-frontend:$VER  -f deploy/docker/Dockerfile.frontend .
+docker save pm-backend:$VER pm-frontend:$VER | gzip > pm-$VER-arm64-images.tar.gz
+
+# 运行工程包（compose/.env.example/nginx conf/升级脚本）
+tar -czf pm-$VER-deploy.tar.gz deploy/docker/docker-compose.yml deploy/docker/frontend-nginx.conf deploy/docker/.env.example scripts/pm-upgrade.sh
+```
+
+### 9.4 服务器安装 / 升级（每台）
+
+```bash
+# 安装（首次）与升级（后续）统一走同一脚本：下载两个资产 → 解压 → load → up
+# 1) 下载（Release 资产；私有仓库时用带 token 的 curl）
+curl -fLO https://github.com/<owner>/project-manager/releases/download/$VER/pm-$VER-arm64-images.tar.gz
+curl -fLO https://github.com/<owner>/project-manager/releases/download/$VER/pm-$VER-deploy.tar.gz
+
+# 2) 安装：解压 deploy 包到 /opt/pm/app，编辑 .env（YASHAN_*/JWT_SECRET/UPLOAD_*）
+# 3) 加载镜像并启动
+gunzip -c pm-$VER-arm64-images.tar.gz | docker load
+cd /opt/pm/app && docker compose up -d
+#   升级只需重复 1+3（.env 保留，compose 使用版本化镜像 tag 或固定 tag 覆盖均可）
+```
+
+> 服务器对 GitHub 的访问按需（仅升级时下载资产，可内网代理或人工拷贝）；日常运行零外网依赖。
+> 附件若走对象存储（§8），升级时 `.env` 增加 `APP_STORAGE_TYPE=s3` 等配置即可，其余不变。
+
+---
+
+## 10. 附件存储与部署形态的联动小结
+
+| 附件路线 | 双机部署需要 | 升级/发布 | 备注 |
+| --- | --- | --- | --- |
+| 本地盘 + NFS | NFS 共享 + 备份 | §9 任选 | 当前改动 0，NFS 有单点（可冗余） |
+| 对象存储（推荐演进） | **免共享盘** | §9 任选 | 需按 §8.2 做一次性抽象（改动小），前端/数据零迁移 |
