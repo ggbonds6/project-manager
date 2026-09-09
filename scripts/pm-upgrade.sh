@@ -11,8 +11,8 @@
 #
 # 用法：
 #   ./pm-upgrade.sh <镜像tar包> [app目录]
-#   例：./pm-upgrade.sh pm-v1.0.0-arm64-images.tar.gz /opt/pm/app
-#     （缺省 app 目录 = 脚本同级的 ../deploy/docker 或 /opt/pm/app）
+#   例：./pm-upgrade.sh pm-v1.0.0-arm64-images.tar.gz ~/pm/app
+#     （缺省 app 目录 = $HOME/pm/app，其次脚本同级的 ../deploy/docker）
 # ============================================================
 set -euo pipefail
 
@@ -25,7 +25,7 @@ find_app_dir() {
   if [ -n "$APP_DIR" ]; then
     cand="$APP_DIR"
   else
-    cand="/opt/pm/app"
+    cand="${HOME}/pm/app"
   fi
   if [ ! -f "$cand/docker-compose.yml" ]; then
     # 回退：脚本仓库内 deploy/docker

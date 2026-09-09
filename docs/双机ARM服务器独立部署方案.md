@@ -47,17 +47,19 @@
 ### 3.1 模式 A：源码获取 + 服务器构建启动
 
 ```bash
+# 0) 准备目录（普通用户家目录下，无需 sudo）
+mkdir -p /home/lhim/pm
 # 1) 把源码放到服务器（三选一）：
 #    ① 直接 GitHub clone（仓库私有则配凭据/令牌）：
-#       sudo git clone https://github.com/<owner>/project-manager.git /opt/pm/project-manager
+#       git clone https://github.com/<owner>/project-manager.git /home/lhim/pm/project-manager
 #    ② 内网 Gitea clone（自建后）：
-#       sudo git clone http(s)://git.pm.internal/<org>/project-manager.git /opt/pm/project-manager
+#       git clone http(s)://git.pm.internal/<org>/project-manager.git /home/lhim/pm/project-manager
 #    ③ 拷贝源码包（无需外网/凭据）：在开发机执行打包，再 scp 到服务器解压
 #       本地： tar --exclude=.git --exclude=node_modules --exclude=target \
 #                   --exclude=backend/uploads --exclude=.workbuddy -czf pm-src.tar.gz project-manager
-#       服务器： tar -xzf pm-src.tar.gz -C /opt/pm/
+#       服务器： tar -xzf pm-src.tar.gz -C /home/lhim/pm/
 
-cd /opt/pm/project-manager
+cd /home/lhim/pm/project-manager
 # 2) 准备 .env（放仓库根，compose 从当前目录读取；内容见 §3.4）
 cp deploy/docker/.env.example ./.env && vi ./.env
 # 3) 构建并启动（首次拉镜像与依赖需几分钟；产物=本机 arm64 镜像，无需再打包）
@@ -69,9 +71,10 @@ docker compose -f deploy/docker/docker-compose.yml up -d --build
 ```bash
 # 前提：已有发布机产出的镜像 tar（产出方法见 §5 与附录 A.3，本机开发机仅能出 x86，
 #       arm64 需 ARM 服务器/支持 buildx 的机器产出）
-cd /opt/pm/releases
+mkdir -p /home/lhim/pm/releases /home/lhim/pm/app
+cd /home/lhim/pm/releases
 curl -fLO https://git.pm.internal/<org>/project-manager/releases/download/<ver>/pm-<ver>-arm64-images.tar.gz   # 或 GitHub Release / 人工拷贝
-bash /opt/pm/app/pm-upgrade.sh pm-<ver>-arm64-images.tar.gz /opt/pm/app     # docker load → compose up -d
+bash /home/lhim/pm/app/pm-upgrade.sh pm-<ver>-arm64-images.tar.gz /home/lhim/pm/app     # docker load → compose up -d
 ```
 
 ### 3.3 预构建镜像产出方法（仅模式 B 需要）
@@ -93,7 +96,7 @@ docker save pm-backend:$VER pm-frontend:$VER | gzip > pm-$VER-arm64-images.tar.g
 ### 3.4 配置 `.env`（两种模式通用；两机除注释本机外内容一致）
 
 ```bash
-cd /opt/pm/project-manager     # 模式 A；模式 B 则进入运行工程目录
+cd /home/lhim/pm/project-manager     # 模式 A；模式 B 则进入运行工程目录
 cp deploy/docker/.env.example ./.env && vi ./.env   # .env 放当前目录（compose 从当前目录读取）
 
 # ---------- 崖山数据库 ----------
@@ -163,7 +166,7 @@ curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: 
 ```text
 开发机：git tag v1.1.0 → push 内网 Gitea
      → Gitea Releases 上传 pm-v1.1.0-arm64-images.tar.gz + pm-v1.1.0-deploy.tar.gz
-两台服务器：curl 内网下载 → bash pm-upgrade.sh pm-v1.1.0-arm64-images.tar.gz /opt/pm/app
+两台服务器：curl 内网下载 → bash pm-upgrade.sh pm-v1.1.0-arm64-images.tar.gz /home/lhim/pm/app
 ```
 - `.env` 不随升级覆盖（保留在两机）；如需新增配置项在发布说明中列明并手工合并。
 - 服务器日常运行零外网依赖，仅升级时访问内网 Gitea。
@@ -176,7 +179,7 @@ curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: 
 | --- | --- |
 | 数据库 | 崖山侧备份（每日 + 按 RPO）；两机无本地数据库 |
 | 附件 | 在 **OBS**：桶私有、不开放匿名读；下载走后端带 token 接口。删除附件仅逻辑删库、**对象不物理删**（审计留痕）→ 对象会累积，建议：① OBS 启用版本化 + 生命周期规则；② 定期（如每季度）用"库内 `attachment.file_path`（加 `uploads/` 前缀）"与桶内对象做差集，清理孤儿对象（清理前备份确认） |
-| 应用日志 | `docker compose -f /opt/pm/app/docker-compose.yml logs -f backend` |
+| 应用日志 | `docker compose -f /home/lhim/pm/app/docker-compose.yml logs -f backend` |
 | 升级 | §5 流程；先升一台验证再升第二台 |
 | 巡检 | 每台 `/api/health`；网关健康探测状态；`docker compose ps` |
 | 凭据 | 账号密码/JWT/OBS SK 只在两机 `.env` 与 Gitea/密码库，不入仓库 |
