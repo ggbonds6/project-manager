@@ -10,6 +10,7 @@
 | --- | --- |
 | 前端 `frontend/` | React 18 + TypeScript + Vite + Ant Design 5 + axios + react-router |
 | 后端 `backend/` | Java 17 + Spring Boot 3.3 + MyBatis-Plus + 自研迁移 Runner + **崖山 YashanDB（Oracle 模式）** |
+| 附件存储 | 抽象 `AttachmentStorage`：默认本地盘，可切 **华为 OBS**（`app.storage.type`，见部署手册） |
 | 认证 | JWT（jjwt）+ BCrypt，角色 ADMIN / MANAGER / VIEWER |
 
 ## 目录结构
