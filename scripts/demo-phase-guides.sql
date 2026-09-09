@@ -2,7 +2,10 @@
 -- 演示数据：为内置默认模板（HW/SW）各阶段补齐全面说明与关键材料
 -- 字段：description=一句话说明；guide=阶段说明（目的/主要工作/要点/完成标准/注意）；
 --       key_materials=关键材料（每行一项）。
--- 用法：mysql -u root -p123456 project_manager < scripts/demo-phase-guides.sql
+-- v3.0 起本机 MySQL 已下线（库迁至崖山 YashanDB Oracle 模式），本脚本为
+-- 历史参考/重建演示数据用：标准 UPDATE 语法可直接在崖山客户端执行；
+-- 当前库内同款数据已由数据迁移从原 MySQL 全量带入。
+-- 用法（崖山）：崖山客户端（如 yasql）连接后整体执行；无需再起 MySQL。
 -- ============================================================
 
 UPDATE phase_template SET

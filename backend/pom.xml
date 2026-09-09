@@ -40,21 +40,13 @@
             <version>${mybatis-plus.version}</version>
         </dependency>
 
-        <!-- 数据库迁移：Flyway + MySQL 支持模块 -->
+        <!-- 崖山 YashanDB JDBC 驱动（无 Maven 坐标，本地 lib 引入；接入内网 Nexus 后可改普通依赖） -->
         <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-core</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.flywaydb</groupId>
-            <artifactId>flyway-mysql</artifactId>
-        </dependency>
-
-        <!-- MySQL 驱动 -->
-        <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
-            <scope>runtime</scope>
+            <groupId>com.yashandb</groupId>
+            <artifactId>yashandb-jdbc</artifactId>
+            <version>1.9.3</version>
+            <scope>system</scope>
+            <systemPath>${project.basedir}/lib/yashandb-jdbc-1.9.3.jar</systemPath>
         </dependency>
 
         <!-- JWT 认证（M2 使用） -->
@@ -100,6 +92,7 @@
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
+                    <includeSystemScope>true</includeSystemScope>
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>

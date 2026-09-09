@@ -2,7 +2,10 @@
 # ============================================================
 # [Linux] One-click start (generic, no machine-specific paths)
 # Requirements: Java 17 + Maven 3.6+ (JAVA_HOME or PATH),
-#               Node 18+ / npm, MySQL 8 running or MYSQL_START_CMD env.
+#               Node 18+ / npm,
+#               崖山 YashanDB 主库端口 1688 可达；
+#               后端连接环境变量 YASHAN_MASTER_IP / YASHAN_STANDBY_IP /
+#               YASHAN_DB / YASHAN_USER / YASHAN_PASSWORD 需提前 export。
 # Usage: bash deploy/linux/start-dev.sh
 # PIDs/logs stored under deploy/linux/.pids
 # ============================================================
@@ -13,21 +16,20 @@ mkdir -p "$PID_DIR"
 
 B_PORT=8080
 F_PORT=5173
+Y_PORT=1688
 
 port_listen() { (ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null) | grep -q ":$1 "; }
 
-echo "=== 1/3 MySQL (3306) ==="
-if port_listen 3306; then
-  echo "  [OK] MySQL already running"
-elif [ -n "${MYSQL_START_CMD:-}" ]; then
-  echo "  starting MySQL via MYSQL_START_CMD ..."
-  eval "$MYSQL_START_CMD"
-  for i in $(seq 1 30); do port_listen 3306 && break; sleep 1; done
-  port_listen 3306 || { echo "  [FAIL] MySQL not ready"; exit 1; }
-  echo "  [OK] MySQL ready"
+echo "=== 1/3 YashanDB (1688) ==="
+if port_listen $Y_PORT; then
+  echo "  [OK] YashanDB reachable"
 else
-  echo "  [HINT] MySQL not running. Start it first or export MYSQL_START_CMD."
+  echo "  [FAIL] YashanDB primary not reachable on port $Y_PORT. Start it first."
   exit 1
+fi
+if [ -z "${YASHAN_PASSWORD:-}" ]; then
+  echo "  [WARN] YASHAN_PASSWORD not set. Backend will fail to connect."
+  echo "         export YASHAN_MASTER_IP / YASHAN_STANDBY_IP / YASHAN_DB / YASHAN_USER / YASHAN_PASSWORD first."
 fi
 
 echo ""
@@ -38,7 +40,7 @@ else
   command -v mvn >/dev/null 2>&1 || { echo "  [FAIL] mvn not found (install Maven or set JAVA_HOME/PATH)"; exit 1; }
   echo "  starting Spring Boot ..."
   (cd "$ROOT/backend" && nohup mvn spring-boot:run > "$PID_DIR/backend.log" 2>&1 & echo $! > "$PID_DIR/backend.pid")
-  for i in $(seq 1 120); do
+  for i in $(seq 1 180); do
     curl -fsS "http://127.0.0.1:$B_PORT/api/health" >/dev/null 2>&1 && break
     sleep 2
   done

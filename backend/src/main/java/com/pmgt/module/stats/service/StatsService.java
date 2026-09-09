@@ -259,7 +259,7 @@ public class StatsService {
         LambdaQueryWrapper<Project> qw = new LambdaQueryWrapper<>();
         if (q != null) {
             if (q.getYear() != null) {
-                qw.apply("YEAR(approve_date) = {0}", q.getYear());
+                qw.apply("EXTRACT(YEAR FROM approve_date) = {0}", q.getYear());
             }
             if (StringUtils.hasText(q.getType())) qw.eq(Project::getType, q.getType());
             if (StringUtils.hasText(q.getStatus())) qw.eq(Project::getStatus, q.getStatus());

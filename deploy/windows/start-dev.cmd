@@ -2,7 +2,10 @@
 rem ============================================================
 rem  [Windows] One-click start (generic, no machine-specific paths)
 rem  Requirements: Java 17 + Maven 3.6+ on PATH (or JAVA_HOME set),
-rem                Node 18+ / npm on PATH, MySQL 8 running or MYSQL_START_CMD set.
+rem                Node 18+ / npm on PATH,
+rem                崖山 YashanDB 主库端口 1688 可达；
+rem                后端连接环境变量 YASHAN_MASTER_IP / YASHAN_STANDBY_IP /
+rem                YASHAN_DB / YASHAN_USER / YASHAN_PASSWORD 需提前设置。
 rem  Usage: deploy\windows\start-dev.cmd
 rem ============================================================
 chcp 65001 >nul
@@ -17,27 +20,20 @@ if not exist "%ROOT%\backend\pom.xml" (
 
 set "B_PORT=8080"
 set "F_PORT=5173"
-set "S_PORT=3306"
+set "Y_PORT=1688"
 
-rem ---------- 1. MySQL ----------
-call :portBusy %S_PORT%
-if not errorlevel 1 (
-  echo [OK] MySQL already running ^(port %S_PORT%^)
-) else (
-  if defined MYSQL_START_CMD (
-    echo starting MySQL via MYSQL_START_CMD ...
-    call %MYSQL_START_CMD%
-    call :waitPort %S_PORT% 30
-    if errorlevel 1 (
-      echo [FAIL] MySQL did not become ready.
-      exit /b 1
-    )
-    echo [OK] MySQL ready
-  ) else (
-    echo [HINT] MySQL not running on %S_PORT%.
-    echo        Set env MYSQL_START_CMD to your MySQL start command, or start MySQL first.
-    exit /b 1
-  )
+rem ---------- 1. YashanDB 主库可达性检查 ----------
+call :portBusy %Y_PORT%
+if errorlevel 1 (
+  echo [HINT] YashanDB primary not reachable on port %Y_PORT%.
+  echo        Start YashanDB or check network ^(default 10.254.212.106:1688^).
+  exit /b 1
+)
+echo [OK] YashanDB reachable ^(port %Y_PORT%^)
+if not defined YASHAN_PASSWORD (
+  echo [WARN] YASHAN_PASSWORD not set. Backend will fail to connect.
+  echo        Set it first, e.g.:  set YASHAN_PASSWORD=xxxx
+  echo        Also YASHAN_MASTER_IP/YASHAN_STANDBY_IP/YASHAN_DB/YASHAN_USER if not default.
 )
 
 rem ---------- 2. Backend ----------
@@ -51,7 +47,7 @@ if not errorlevel 1 (
   )
   echo starting Spring Boot ...
   start "pm-backend" cmd /k "cd /d %ROOT%\backend && mvn spring-boot:run"
-  call :waitPort %B_PORT% 120
+  call :waitPort %B_PORT% 180
   if errorlevel 1 (
     echo [FAIL] Backend start timeout. Check window "pm-backend".
     exit /b 1

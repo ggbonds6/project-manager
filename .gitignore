@@ -1,6 +1,7 @@
 # ===== DSH / 本地会话记录（不入库） =====
 session.jsonl
 *.session.jsonl
+.workbuddy/
 
 # ===== Node =====
 node_modules/
@@ -14,6 +15,9 @@ target/
 *.class
 *.jar
 !.mvn/wrapper/maven-wrapper.jar
+!backend/lib/
+backend/lib/*
+!backend/lib/*.jar
 .mvn/timing.properties
 hs_err_pid*
 

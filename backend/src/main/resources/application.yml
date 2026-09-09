@@ -5,18 +5,16 @@ spring:
   application:
     name: project-manager-backend
   datasource:
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://127.0.0.1:3306/project_manager?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
-    username: pm
-    password: Pm@123456
+    # 崖山 YashanDB（Oracle 模式）主备集群，驱动级 primary + TAF 高可用
+    # 连接信息一律环境变量注入；密码含 @ 等特殊字符，整体引号包裹
+    driver-class-name: com.yashandb.jdbc.Driver
+    url: "jdbc:yasdb:primary://${YASHAN_MASTER_IP:10.254.212.106}:1688,${YASHAN_STANDBY_IP:10.254.212.107}:1688/${YASHAN_DB:project_manager}?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2"
+    username: ${YASHAN_USER:pm}
+    password: "${YASHAN_PASSWORD:}"
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
-      connection-timeout: 10000
-  flyway:
-    enabled: true
-    locations: classpath:db/migration
-    encoding: UTF-8
+      connection-timeout: 15000   # 主备切换时留足建连时间
   servlet:
     multipart:
       max-file-size: 100MB

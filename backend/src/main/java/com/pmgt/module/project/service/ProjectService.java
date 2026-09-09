@@ -120,16 +120,16 @@ public class ProjectService {
         List<Integer> years = intValues(q.getYear());
         if (!years.isEmpty()) {
             if (years.size() == 1) {
-                qw.apply("YEAR(approve_date) = {0}", years.get(0));
+                qw.apply("EXTRACT(YEAR FROM approve_date) = {0}", years.get(0));
             } else {
                 qw.and(w -> {
                     boolean first = true;
                     for (Integer y : years) {
                         if (first) {
-                            w.apply("YEAR(approve_date) = {0}", y);
+                            w.apply("EXTRACT(YEAR FROM approve_date) = {0}", y);
                             first = false;
                         } else {
-                            w.or().apply("YEAR(approve_date) = {0}", y);
+                            w.or().apply("EXTRACT(YEAR FROM approve_date) = {0}", y);
                         }
                     }
                 });
@@ -347,13 +347,13 @@ public class ProjectService {
                 .eq(PhaseTpl::getEnabled, 1)
                 .eq(PhaseTpl::getIsDefault, 1)
                 .orderByAsc(PhaseTpl::getSortNo)
-                .last("limit 1"));
+                .last("FETCH FIRST 1 ROW ONLY"));
         if (tpl == null) {
             tpl = tplMapper.selectOne(new LambdaQueryWrapper<PhaseTpl>()
                     .eq(PhaseTpl::getProjectType, pj.getType())
                     .eq(PhaseTpl::getEnabled, 1)
                     .orderByAsc(PhaseTpl::getId)
-                    .last("limit 1"));
+                    .last("FETCH FIRST 1 ROW ONLY"));
         }
         List<PhaseTemplate> templates;
         if (tpl != null) {

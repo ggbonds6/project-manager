@@ -2,6 +2,8 @@
 -- 演示数据：为几个演示项目填充「项目概览」（项目介绍 Markdown + 二级功能模块清单）
 -- 说明：仅用于本地演示库；正式部署后在系统界面维护即可。
 -- 按项目名称匹配（deleted=0），可重复执行（存在则跳过）。
+-- v3.0 起本机 MySQL 已下线（库迁至崖山 YashanDB Oracle 模式），本脚本为
+-- 历史参考/重建演示数据用：INSERT...SELECT 为标准 SQL，可直接在崖山客户端执行。
 -- ============================================================
 
 INSERT INTO project_overview (project_id, intro_md, modules_json)

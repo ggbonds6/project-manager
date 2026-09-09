@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 # [Linux] Stop backend/frontend started by start-dev.sh.
-# MySQL is NOT stopped.
+# 崖山 YashanDB 为外部库，本脚本不触碰。
 # ============================================================
 set -u
 PID_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.pids"
@@ -27,4 +27,4 @@ for port in 8080 5173; do
     kill -9 "$pid" 2>/dev/null || true
   done
 done
-echo "Done. MySQL is kept running."
+echo "Done. YashanDB is kept running."

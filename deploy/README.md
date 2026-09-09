@@ -1,69 +1,48 @@
 # 部署与运维说明
 
-> 仓库启动脚本按平台分类：`deploy/windows`（Windows）、`deploy/linux`（Linux），
-> 服务器建议直接使用 `deploy/docker`（MySQL + 后端 + 前端 nginx 一体化，把环境也打包进去）。
-> 仓库根目录的 `start-dev.cmd` / `stop-dev.cmd` 已改为 Windows 通用启动的入口（内部调用 `deploy\windows\*`）。
+> 数据库为**崖山 YashanDB（Oracle 模式）主备集群**（外部主机，见 §4 环境变量），
+> 仓库启动脚本仅负责拉起后端与前端；`deploy/windows`（Windows）、`deploy/linux`（Linux）、
+> `deploy/docker`（后端 + 前端 nginx 一体化镜像）。
+> 仓库根目录的 `start-dev.cmd` / `stop-dev.cmd` 为 Windows 通用启动入口（内部调用 `deploy\windows\*`）。
 
 ---
 
-## 1. 方式一：Docker（服务器推荐，环境全部整合）
+## 1. 方式一：Docker（服务器推荐，前后端打包）
 
-前置：服务器安装 Docker Engine + Compose 插件。
+前置：服务器安装 Docker Engine + Compose 插件；**服务器需能访问崖山主备库**（1688）。
 
 ```bash
 # 1) 到仓库根目录
 cd project-manager
 
-# 2) 准备环境变量（可选，默认值见 .env.example）
+# 2) 准备环境变量（YASHAN_PASSWORD 必须填写）
 cp deploy/docker/.env.example deploy/docker/.env
+#    编辑 .env：填入 YASHAN_PASSWORD
 
 # 3) 构建并启动（首次会拉取镜像并构建，需几分钟）
 docker compose -f deploy/docker/docker-compose.yml up -d --build
 
-# 4) 查看状态
+# 4) 查看状态 / 日志
 docker compose -f deploy/docker/docker-compose.yml ps
+docker compose -f deploy/docker/docker-compose.yml logs -f backend
 ```
 
 启动后：
 
 - 前端（nginx）：**http://服务器IP:8080**（默认端口，可改 `WEB_PORT`）
-- `/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露；如需在宿主机执行 `scripts/seed-demo.mjs`，可临时给 backend 映射 `- "8080:8080"`，或在容器内执行）
-- MySQL 数据卷 `pm_db`、附件卷 `pm_uploads`（宿主机 `docker volume inspect` 可查路径）
+- `/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露）
+- 附件卷 `pm_uploads`（宿主机 `docker volume inspect` 可查路径）
 
-### 首次数据迁移（可选）
-
-把旧环境导出的 SQL 导入到容器数据库：
-
-```bash
-# SQL 里含 CREATE DATABASE/表/数据（含 flyway 历史）
-docker compose -f deploy/docker/docker-compose.yml exec -T mysql \
-  sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' < project_manager_db_xxxx.sql
-```
-
-若目标没有 `pm` 用户（本 compose 已在 mysql 初始化时自动建库建用户，通常无需处理），
-如需补建：
-
-```bash
-docker compose -f deploy/docker/docker-compose.yml exec mysql \
-  mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e \
-  "CREATE USER IF NOT EXISTS 'pm'@'%' IDENTIFIED BY 'Pm@123456'; GRANT ALL ON project_manager.* TO 'pm'@'%'; FLUSH PRIVILEGES;"
-```
-
-附件实体文件（旧环境 `backend/uploads`）复制进卷：
-
-```bash
-docker run --rm -v pm_uploads:/uploads -v "$PWD/old-uploads":/old:ro alpine \
-  sh -c 'cp -r /old/* /uploads/ 2>/dev/null || true'
-```
+**首次建库**：后端启动时自研迁移 Runner 自动执行 `db/migration-yashan/V1~V8` 完成建表与种子（幂等，已执行版本记入 `schema_version`），无需手工导库。
 
 > 内置账号：admin / jingban01 / lingdao01（密码均 123456）；生产务必先改密并覆盖 `JWT_SECRET`。
 
 ---
 
-## 2. 方式二：Linux 裸机（JDK17 + Maven + Node + MySQL 已装好）
+## 2. 方式二：Linux 裸机（JDK17 + Maven + Node）
 
 ```bash
-# 启动（需 JAVA_HOME/ PATH 含 mvn、npm；MySQL 需在跑，或 export MYSQL_START_CMD=...）
+# 启动（需先 export YASHAN_MASTER_IP/YASHAN_STANDBY_IP/YASHAN_DB/YASHAN_USER/YASHAN_PASSWORD）
 bash deploy/linux/start-dev.sh
 
 # 停止（只停后端与前端）
@@ -77,7 +56,7 @@ bash deploy/linux/stop-dev.sh
 ## 3. 方式三：Windows
 
 ```cmd
-:: 启动（需要 PATH 里有 mvn/java/npm；MySQL 在跑或 set MYSQL_START_CMD=...）
+:: 启动（需先 set YASHAN_MASTER_IP/YASHAN_STANDBY_IP/YASHAN_DB/YASHAN_USER/YASHAN_PASSWORD）
 deploy\windows\start-dev.cmd
 
 :: 停止
@@ -92,19 +71,27 @@ deploy\windows\stop-dev.cmd
 
 | 变量 | 用途 | 默认 |
 | --- | --- | --- |
-| `MYSQL_START_CMD` | MySQL 未运行时的启动命令（脚本自动调用） | - |
-| `MYSQL_ROOT_PASSWORD` | Docker MySQL root 密码 | root123456 |
-| `MYSQL_DATABASE` / `MYSQL_USER` / `MYSQL_PASSWORD` | 业务库与应用账号 | project_manager / pm / Pm@123456 |
+| `YASHAN_MASTER_IP` | 崖山主库 IP | 10.254.212.106 |
+| `YASHAN_STANDBY_IP` | 崖山备库 IP | 10.254.212.107 |
+| `YASHAN_DB` | 业务库名（schema） | project_manager |
+| `YASHAN_USER` | 应用账号（业务账号 `pm`，具 CONNECT/RESOURCE；勿用 sys） | pm |
+| `YASHAN_PASSWORD` | 应用账号密码（**必填，勿提交到 Git**） | - |
 | `JWT_SECRET` | JWT 密钥（生产必改） | 示例值 |
 | `UPLOAD_DIR` | 附件目录（Docker 内固定 /uploads） | ./uploads |
 | `WEB_PORT` | 前端对外端口（Docker） | 8080 |
+
+> 连接使用驱动级高可用：`jdbc:yasdb:primary://主,备/库?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2`
+> ——驱动自动识别主节点并支持故障自动重连（TAF）；主备切换对"进行中的事务"不透明，事务会失败回滚，关键写操作请重试。
 
 ---
 
 ## 5. 数据库版本与迁移
 
-- MySQL 8；Flyway 迁移位于 `backend/src/main/resources/db/migration`（V1–V4），应用启动自动执行。
-- 当前库结构（业务表 8 张）：sys_user / dict_item / phase_template / project / project_phase / payment / contract / attachment / operate_log（逻辑删除，含 flyway_schema_history）。
+- 崖山 YashanDB（Oracle 模式）；迁移脚本位于 `backend/src/main/resources/db/migration-yashan`（V1–V8），
+  由后端启动时自研 `YashanMigrationRunner` 顺序执行（替代 Flyway，崖山官方不支持 Flyway）。
+- 已执行版本记录在库表 `schema_version`；新增表结构 = 在该目录新增 `V{n}__xxx.sql` 即可。
+- 当前业务表：sys_user / dict_item / phase_template / project / project_phase / payment / contract /
+  attachment / operate_log / project_overview / phase_tpl（11 张，主键为 identity 自增）。
 
 ## 6. Git 协作（SSH）
 

@@ -1,7 +1,7 @@
 @echo off
 rem ============================================================
 rem  [Windows] Stop backend(8080) and frontend(5173) by port.
-rem  MySQL is NOT stopped (stop it with your own MySQL tooling).
+rem  崖山 YashanDB 为外部库，本脚本不触碰。
 rem ============================================================
 chcp 65001 >nul
 title PM Stop
@@ -16,5 +16,5 @@ for %%P in (8080 5173) do (
     )
   )
 )
-echo Done. MySQL is kept running.
+echo Done. YashanDB is kept running.
 endlocal
