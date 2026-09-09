@@ -41,6 +41,9 @@ docker compose -f deploy/docker/docker-compose.yml logs -f backend
 > 📌 **双机（两台 ARM 服务器，独立运行、指向同一崖山库、上层网关负载均衡）部署**：
 > 每台一份 Docker Compose 即可，含附件共享存储 / JWT 一致性 / 冒烟清单等完整步骤，
 > 见 [`docs/双机ARM服务器独立部署方案.md`](../docs/双机ARM服务器独立部署方案.md)。
+>
+> 📌 **发布全流程（本地开发 → 构建镜像 → 上传 → 服务器首次部署 / 迭代更新）与服务器环境准备**
+> （Docker daemon / compose 插件按架构安装 / .env）见 [`docs/部署与发布全流程手册.md`](../docs/部署与发布全流程手册.md)。
 
 ---
 
