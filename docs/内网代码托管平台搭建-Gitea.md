@@ -1,8 +1,11 @@
 # 内网代码托管与发布平台搭建（Gitea，替代 GitHub）
 
+> **文档性质：定稿手册（v1.0，2026-09-09）。** 主体（§1~§8）为搭建与迁移的操作依据；
+> §1 选型保留简短决策说明（便于维护者理解取舍），无过程性讨论。修订见文末。
+
 > 目标：新增一台内网服务器，自建代码托管 + Release 发布分发，使开发/部署链路不再依赖 github.com——
 > 日常 push、版本发布（Release 资产）、服务器升级下载全部走内网。
-> 适用：本项目（`project-manager`，双机 ARM 部署，见 [`双机ARM服务器独立部署方案.md`](双机ARM服务器独立部署方案.md) §9 发布模型）。
+> 适用：本项目（`project-manager`，双机 ARM 部署，见 [`双机ARM服务器独立部署方案.md`](双机ARM服务器独立部署方案.md) §5 升级流程）。
 
 ---
 
@@ -16,12 +19,9 @@
 | Gogs / Gitea 前身 | 不选 | 迭代慢，功能少于 Gitea |
 | 纯 `git --bare` + 共享盘 | 不选 | 无权限/Web/Release，无法替代 GitHub 分发 |
 
-> **澄清两类角色的分工**（易混淆）：
-> - **代码托管平台**（替代 GitHub 的 git 托管/协作/Release 分发）：Gitea、GitLab、Gogs 属此类。
-> - **制品/依赖仓库**（替代 GitHub Packages / 私服，代理并归档 Maven/npm/Docker 产物）：Sonatype **Nexus 3**、JFrog **Artifactory**（商业主流）、Harbor（偏 Docker 镜像）、registry（轻量 Docker）属此类。
-> - GitHub 同时提供"代码托管 + Packages 制品"，所以看起来"一个顶俩"；内网自建时可以拆开选，也可以**只上 Gitea** 就够本项目用：Git 托管 + tag + Release 资产下载已覆盖发布链路；
->   若以后要内网代理加速 Maven/npm 依赖（现用公网镜像）或统一归档构建产物，再单独评估 Nexus/Harbor（注意 ARM：Nexus 官方仅 amd64）。
-> - 轻量替代：Gitea 内建 **Package Registry**（支持 npm/maven/docker 等格式），小规模下可兼当"迷你制品库"。
+> **决策备注**：本项目选 Gitea 仅承担"代码托管 + Release 资产分发"（对照 GitHub 本体）。
+> Nexus/Artifactory 属制品/依赖仓库（对照 GitHub Packages），非代码托管，且 Nexus 官方无 arm64 镜像，
+> 本项目**不引入**；若后续需要内网 Maven/npm 依赖代理再单独评估（详见附录 A）。
 
 > 是否同时搭**私有 Docker Registry**：若升级走"镜像 tar 下载"（当前推荐）则**暂不需要**；
 > 以后机器变多、改为"服务器直接 pull 镜像"时，可在同机追加一个 `registry:2` 容器（见 §6，可选）。
@@ -122,7 +122,7 @@ git push -u internal main
 #    - 本地打 tag + 推送：git tag v1.0.0 && git push internal v1.0.0
 #    - 在 Gitea 仓库页 Releases → 新建 Release(v1.0.0) → 上传 §发布资产
 #      （pm-<ver>-arm64-images.tar.gz + pm-<ver>-deploy.tar.gz）
-#    - 服务器升级下载源改为内网（替换双机部署方案 §9.4 的 github.com 链接）：
+#    - 服务器升级下载源改为内网（对应双机部署手册 §3.3 的下载命令，替换其中的仓库 URL）：
 #        curl -fLO https://git.pm.internal/pm-org/project-manager/releases/download/v1.0.0/pm-v1.0.0-arm64-images.tar.gz
 #      然后照常 ./pm-upgrade.sh（脚本不绑仓库，天然支持内网）
 ```
@@ -177,4 +177,12 @@ docker exec gitea gitea dump -c /data/gitea/conf/app.ini --file /backup/gitea-du
 
 - 服务器**无需**在此托管平台放开发仓库源码即可运行：`pm-upgrade.sh` 只消费 Release 资产（镜像 tar + 部署包）。
 - 完整升级链路变为：开发机打 tag → Gitea Release 上传资产 → 服务器 curl 内网下载 → `./pm-upgrade.sh`。
-- 本平台搭好前的过渡期，仍可继续用 GitHub Release（`双机ARM服务器独立部署方案.md` §9.4 命令不变，仅换 URL）。
+- 本平台搭好前的过渡期，仍可继续用 GitHub Release（下载命令见双机部署手册 §3.3，仅换 URL）。
+
+---
+
+## 修订记录
+
+| 版本 | 日期 | 说明 |
+| --- | --- | --- |
+| v1.0 | 2026-09-09 | 定稿手册：Gitea 选型（含与 Nexus 制品库的职责澄清）、compose 部署、HTTPS 内网 CA、仓库迁移与 Release 发布切换、可选 registry、备份与安全清单 |
