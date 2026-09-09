@@ -17,13 +17,13 @@
 | 入口 | 上层网关负载均衡（用户自建），健康检查 **`/api/health`**（db:up 才在池内） |
 | 安全基线 | 两机 `.env` 的 `JWT_SECRET` **必须一致**（否则跨机验签 401）；业务账号勿用 sys；密码/密钥不进仓库与镜像 |
 
-> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**，§3 步骤可直接执行；OBS 模式实库验证在服务器首启时按 §5 冒烟执行。
+> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**，§3 步骤可直接执行；OBS 模式实库验证在服务器首启时按 §3.4 验收 A3 执行。
 
 ---
 
 ## 2. 部署前必须满足的前提（逐项打勾）
 
-1. **[代码] 附件存储 OBS 实现已合入并提交**（v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`，OBS 走 esdk-obs-java：path-style + 忽略证书校验 + **对象前缀 `uploads/`**；存量附件已由人工上传至桶 `pdmsbucket/uploads/2026/...`，与 `attachment.file_path` 通过前缀精确对应）。**obs 模式实库验证**在服务器部署完成后执行（§5 冒烟 #4：obs 模式起后端 → 下载存量附件与源文件字节比对）。
+1. **[代码] 附件存储 OBS 实现已合入并提交**（v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`，OBS 走 esdk-obs-java：path-style + 忽略证书校验 + **对象前缀 `uploads/`**；存量附件已由人工上传至桶 `pdmsbucket/uploads/2026/...`，与 `attachment.file_path` 通过前缀精确对应）。**obs 模式实库验证**在服务器部署完成后执行（§3.4 验收 A3：下载存量附件与源文件字节比对）。
 2. **[OBS] 桶与凭证**：桶名（私有读写）、AK/SK、endpoint（内网域名/IP，含协议）；已确认 SDK 侧 `pathStyle=true`、**忽略证书校验**（esdk-obs-java `validateCertificate` 默认 false）。
 3. **[数据库] 崖山连通**：两机到 10.254.212.106/.107 的 1688 可达；`pm` 账号可连（库已完成 V1~V8 初始化与数据迁移）。
 4. **[密钥] `JWT_SECRET`**：生成一个 ≥32 字节随机串，两机 `.env` 填写**相同**值。
@@ -78,11 +78,30 @@ bash /opt/pm/app/pm-upgrade.sh pm-<ver>-arm64-images.tar.gz /opt/pm/app
 # 脚本自动：docker load → compose config 校验 → compose up -d
 ```
 
-### 3.4 本机验证
+### 3.4 本机验证与部署后验收（每台，逐项通过）
+
 ```bash
-curl http://127.0.0.1:8080/api/health        # {"code":0,...,"db":"up"}
-# 登录 admin → 项目列表/详情；上传附件并在另一台下载验证（OBS 模式天然跨机一致）
+# A1 健康检查（同时验证已连崖山）
+curl http://127.0.0.1:8080/api/health        # 期望 {"code":0,...,"db":"up"}
+
+# A2 登录拿 token
+TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/auth/login -H 'Content-Type: application/json' \
+  -d '{"account":"admin","password":"123456"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['token'])")
+
+# A3 【OBS 关键验收】取一个存量附件并下载：应 HTTP 200 且 size>0（obs 模式读取桶内 uploads/ 前缀对象）
+LIST=$(curl -s http://127.0.0.1:8080/api/projects/<项目id>/attachments -H "Authorization: Bearer $TOKEN")
+AID=<任一行附件id，如 285>
+curl -s -o /tmp/att.bin -w "HTTP=%{http_code} size=%{size_download}\n" \
+  "http://127.0.0.1:8080/api/attachments/$AID/download" -H "Authorization: Bearer $TOKEN"
+
+# A4 新上传一个测试附件 → 能下载且内容一致（验证 obs 写桶）
+curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: Bearer $TOKEN" \
+  -F "file=@/tmp/att.bin" -F "projectId=<项目id>" -F "bizType=PROJECT" -F "bizId=<项目id>"
+
+# A5 逻辑删除后下载应返回附件不存在（HTTP 200 + body code=404）
+# A6（第二台起来后）用第一台签发的 token 访问第二台同一下载 → 200 且字节一致（验证 JWT_SECRET 一致 + OBS 天然跨机一致）
 ```
+> 源文件字节比对：把下载文件与开发机本地 `backend/uploads` 中同名文件 `sha256sum` 对比；obs 模式首启若 A3 下载失败，先核对 `.env` 的 `APP_STORAGE_OBS_PREFIX=uploads` 与桶内结构是否一致。
 
 ### 3.5 第二台
 重复 3.1~3.4。**唯一注意**：`.env` 中 `JWT_SECRET`、崖山连接、OBS 凭证与第一台**完全一致**。
@@ -115,7 +134,7 @@ curl http://127.0.0.1:8080/api/health        # {"code":0,...,"db":"up"}
 | 对象 | 责任与做法 |
 | --- | --- |
 | 数据库 | 崖山侧备份（每日 + 按 RPO）；两机无本地数据库 |
-| 附件 | 在 **OBS**：启用版本化与生命周期；桶私有、不开放匿名读；下载走后端带 token 接口 |
+| 附件 | 在 **OBS**：桶私有、不开放匿名读；下载走后端带 token 接口。删除附件仅逻辑删库、**对象不物理删**（审计留痕）→ 对象会累积，建议：① OBS 启用版本化 + 生命周期规则；② 定期（如每季度）用"库内 `attachment.file_path`（加 `uploads/` 前缀）"与桶内对象做差集，清理孤儿对象（清理前备份确认） |
 | 应用日志 | `docker compose -f /opt/pm/app/docker-compose.yml logs -f backend` |
 | 升级 | §5 流程；先升一台验证再升第二台 |
 | 巡检 | 每台 `/api/health`；网关健康探测状态；`docker compose ps` |
@@ -144,7 +163,7 @@ curl http://127.0.0.1:8080/api/health        # {"code":0,...,"db":"up"}
 ### A.4 待办（落地顺序）
 1. 后端附件存储抽象 + OBS 实现（含 `app.storage.type` 配置与 `APP_STORAGE_OBS_*` 环境变量）。
 2. Gitea 服务器部署 + 仓库迁移 + 首个 Release。
-3. 双机生产部署执行 + §5 冒烟验收。
+3. 双机生产部署执行 + §3.4 验收清单。
 
 ---
 
