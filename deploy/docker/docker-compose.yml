@@ -18,7 +18,10 @@ services:
       JWT_SECRET: ${JWT_SECRET:-please-change-this-jwt-secret-in-production-0123456789}
       UPLOAD_DIR: /uploads
     volumes:
-      - pm_uploads:/uploads
+      # 附件存储：默认本地命名卷 pm_uploads（单机）。
+      # 双机 + 负载均衡时务必改为共享目录（NFS 等），两端 bind 同一路径：
+      #   UPLOAD_VOLUME=/mnt/pm-uploads   （两机 .env 配同一共享挂载点，本机 volume 定义自动失效）
+      - ${UPLOAD_VOLUME:-pm_uploads}:/uploads
     expose:
       - "8080"
 

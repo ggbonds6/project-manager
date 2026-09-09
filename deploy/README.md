@@ -37,6 +37,10 @@ docker compose -f deploy/docker/docker-compose.yml logs -f backend
 
 > 内置账号：admin / jingban01 / lingdao01（密码均 123456）；生产务必先改密并覆盖 `JWT_SECRET`。
 
+> 📌 **双机（两台 ARM 服务器，独立运行、指向同一崖山库、上层网关负载均衡）部署**：
+> 每台一份 Docker Compose 即可，含附件共享存储 / JWT 一致性 / 冒烟清单等完整步骤，
+> 见 [`docs/双机ARM服务器独立部署方案.md`](../docs/双机ARM服务器独立部署方案.md)。
+
 ---
 
 ## 2. 方式二：Linux 裸机（JDK17 + Maven + Node）

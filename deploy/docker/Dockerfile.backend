@@ -3,6 +3,8 @@
 FROM maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /app
 COPY backend/pom.xml ./pom.xml
+# v3.0：system-scope 崖山驱动 jar 必须在构建上下文内（pom 以 ${project.basedir}/lib 引用）
+COPY backend/lib ./lib
 RUN mvn -B -q dependency:go-offline || true
 COPY backend/src ./src
 RUN mvn -B -q -DskipTests package
