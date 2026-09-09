@@ -5,6 +5,8 @@
 # ============================================================
 services:
   backend:
+    # 双模：有网时 `--build` 构建并打上 IMAGE_TAG；离线服务器 `docker load` 同 tag 镜像后 `up -d` 直接使用，不触发构建
+    image: pm-backend:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.backend
@@ -33,6 +35,7 @@ services:
       - "8080"
 
   frontend:
+    image: pm-frontend:${IMAGE_TAG:-latest}
     build:
       context: ../..
       dockerfile: deploy/docker/Dockerfile.frontend
