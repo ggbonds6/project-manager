@@ -12,8 +12,16 @@
 | --- | --- | --- |
 | **Gitea** | ✅ **推荐** | Go 单二进制，内存占用小（数百 MB 级）；**官方提供 arm64** 二进制与容器镜像；自带 **Release（发布资产下载）**、用户/组织/私有仓库、Webhook、Git LFS；操作习惯与 GitHub 高度一致，迁移平滑 |
 | GitLab CE | 次选（重） | 功能全但内存要求高（建议 ≥4GB）；小型内部团队偏重 |
+| **Nexus / Artifactory** | ❌ **赛道不同，不替代代码托管** | 属**制品/依赖仓库**（Maven/npm 代理与归档、Docker 托管等），不管 git 代码托管与协作；且 Nexus 官方仅 x86_64 镜像，**本项目服务器为 ARM，无官方 arm64 支持**，排除 |
 | Gogs / Gitea 前身 | 不选 | 迭代慢，功能少于 Gitea |
 | 纯 `git --bare` + 共享盘 | 不选 | 无权限/Web/Release，无法替代 GitHub 分发 |
+
+> **澄清两类角色的分工**（易混淆）：
+> - **代码托管平台**（替代 GitHub 的 git 托管/协作/Release 分发）：Gitea、GitLab、Gogs 属此类。
+> - **制品/依赖仓库**（替代 GitHub Packages / 私服，代理并归档 Maven/npm/Docker 产物）：Sonatype **Nexus 3**、JFrog **Artifactory**（商业主流）、Harbor（偏 Docker 镜像）、registry（轻量 Docker）属此类。
+> - GitHub 同时提供"代码托管 + Packages 制品"，所以看起来"一个顶俩"；内网自建时可以拆开选，也可以**只上 Gitea** 就够本项目用：Git 托管 + tag + Release 资产下载已覆盖发布链路；
+>   若以后要内网代理加速 Maven/npm 依赖（现用公网镜像）或统一归档构建产物，再单独评估 Nexus/Harbor（注意 ARM：Nexus 官方仅 amd64）。
+> - 轻量替代：Gitea 内建 **Package Registry**（支持 npm/maven/docker 等格式），小规模下可兼当"迷你制品库"。
 
 > 是否同时搭**私有 Docker Registry**：若升级走"镜像 tar 下载"（当前推荐）则**暂不需要**；
 > 以后机器变多、改为"服务器直接 pull 镜像"时，可在同机追加一个 `registry:2` 容器（见 §6，可选）。
