@@ -170,10 +170,22 @@ docker compose -f deploy/docker/docker-compose.yml logs -f backend
 
 估量：接口 + 双实现 ≈ 120~180 行 Java、controller 改动极小、前端 0、数据 0。**若直接让 AI 落地约一小时内；人工半天量级。**
 
+**华为 OBS 对接要点（已确认使用 OBS，通用 S3 协议 + 忽略证书校验）：**
+- 客户端建议用华为官方 **`esdk-obs-java`**（`com.huaweicloud:esdk-obs-java`，Maven 中央仓库有，classifier 大 jar 免依赖冲突可按需处理）。
+- 关键配置（`ObsConfiguration`）与本项目需求的对应：
+  - `setEndPoint(内网/自定义 endpoint，含协议)` — 指定 OBS 服务地址；
+  - `setPathStyle(true)` — 内网/自定义域名访问用 path-style（否则默认虚拟托管风格）;
+  - `setValidateCertificate(false)` — **忽略服务端证书校验（该值 SDK 默认即为 false，正好符合"忽略证书"要求）**；
+  - `setIsStrictHostnameVerification(false)` — 关闭严格主机名校验（默认 false）；
+  - 认证走 `ak/sk`（`new ObsClient(ak, sk, config)`），`AuthTypeEnum` 自动协商（OBS 原生/兼容 S3 v2/v4）。
+- 配置项全部由环境变量注入（`APP_STORAGE_OBS_ENDPOINT/BUCKET/AK/SK`），Docker `.env` 直接填，不进代码/镜像。
+- 桶策略/生命周期：按单位规范设置私有读写 + 版本化/生命周期（附件删除仅 DB 逻辑删，桶内对象保留，与现有"逻辑删除保留文件"语义一致）。
+- 附件直链安全：下载/预览仍走后端 `/api/attachments/{id}/download`（带 token），**不对外暴露桶匿名读**；未来若需超大文件直链可再加预签名 URL（本期不做）。
+
 ### 8.3 决策建议
 
-- 若单位已有/将配**对象存储**（信创环境常见 MinIO/OSS/OBS）→ **现在就按 §8.2 抽象落地并直连桶**，双机部署彻底摆脱共享盘，§2.1 的 NFS 无需建设。
-- 若暂不确定、必须先上线 → 本地盘 + NFS 先跑（§2.1），后续切桶只是"加一个实现类 + 改环境变量"，无需改前端与数据。
+- 已确认使用**华为 OBS**（通用 S3 协议、忽略证书校验）→ **按 §8.2 抽象落地并直连 OBS**，双机部署彻底摆脱共享盘，§2.1 的 NFS 无需建设；OBS 对接要点见上节。
+- 若因排期暂不能落地抽象 → 本地盘 + NFS 先跑（§2.1），后续切 OBS 只是"加一个实现类 + 改环境变量"，无需改前端与数据。
 
 ---
 
@@ -239,6 +251,13 @@ cd /opt/pm/app && docker compose up -d
 
 > 服务器对 GitHub 的访问按需（仅升级时下载资产，可内网代理或人工拷贝）；日常运行零外网依赖。
 > 附件若走对象存储（§8），升级时 `.env` 增加 `APP_STORAGE_TYPE=s3` 等配置即可，其余不变。
+
+### 9.5 发布源可切换为内网自建平台（替代 GitHub）
+
+若加一台内网服务器自建代码托管与 Release 分发（**推荐 Gitea**，Go 单二进制、arm64 官方支持、自带 Release 资产下载），
+发布链路即可完全脱离 github.com：`git remote` 指向内网、Release 资产放内网、服务器 `curl` 内网 URL 下载后照常 `./pm-upgrade.sh`
+（该脚本不绑定任何仓库，天然兼容内网源）。
+搭建与迁移步骤见 [`内网代码托管平台搭建-Gitea.md`](内网代码托管平台搭建-Gitea.md)。
 
 ---
 
