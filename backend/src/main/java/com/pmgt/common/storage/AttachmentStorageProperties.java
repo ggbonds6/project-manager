@@ -25,5 +25,11 @@ public class AttachmentStorageProperties {
         private String bucket = "";
         private String ak = "";
         private String sk = "";
+        /**
+         * 对象 key 前缀（桶内目录）。本项目附件对象统一存于桶内 uploads/ 下
+         * （与本地 uploads 目录相对结构一致：file_path=2026/09/x 对应 key=uploads/2026/09/x）；
+         * 如需桶根直存可置空。
+         */
+        private String prefix = "uploads";
     }
 }

@@ -24,6 +24,8 @@ public class ObsAttachmentStorage implements AttachmentStorage {
 
     private final ObsClient client;
     private final String bucket;
+    /** 对象 key 前缀（桶内目录，如 uploads），拼接后为完整对象 key */
+    private final String keyPrefix;
 
     public ObsAttachmentStorage(AttachmentStorageProperties props) {
         AttachmentStorageProperties.Obs cfg = props.getObs();
@@ -40,6 +42,14 @@ public class ObsAttachmentStorage implements AttachmentStorage {
         conf.setConnectionTimeout(15_000);
         this.client = new ObsClient(cfg.getAk(), cfg.getSk(), conf);
         this.bucket = cfg.getBucket();
+        String p = cfg.getPrefix();
+        this.keyPrefix = (p == null || p.isBlank() || "/".equals(p.trim()))
+                ? "" : p.trim().replaceAll("/+$", "");
+    }
+
+    /** relKey（file_path，如 2026/09/x.pdf）→ 桶内完整对象 key（prefix + relKey） */
+    private String key(String relKey) {
+        return keyPrefix.isEmpty() ? relKey : keyPrefix + "/" + relKey;
     }
 
     @Override
@@ -47,28 +57,29 @@ public class ObsAttachmentStorage implements AttachmentStorage {
         try {
             ObjectMetadata md = new ObjectMetadata();
             md.setContentLength(size);
-            client.putObject(bucket, relKey, in, md);
+            client.putObject(bucket, key(relKey), in, md);
         } catch (Exception e) {
-            throw new RuntimeException("OBS 保存附件失败[" + relKey + "]: " + e.getMessage(), e);
+            throw new RuntimeException("OBS 保存附件失败[" + key(relKey) + "]: " + e.getMessage(), e);
         }
     }
 
     @Override
     public InputStream open(String relKey) throws FileNotFoundException {
+        String fullKey = key(relKey);
         boolean exists;
         try {
-            exists = client.doesObjectExist(bucket, relKey);
+            exists = client.doesObjectExist(bucket, fullKey);
         } catch (Exception e) {
-            throw new RuntimeException("OBS 检查附件失败[" + relKey + "]: " + e.getMessage(), e);
+            throw new RuntimeException("OBS 检查附件失败[" + fullKey + "]: " + e.getMessage(), e);
         }
         if (!exists) {
-            throw new FileNotFoundException(relKey);
+            throw new FileNotFoundException(fullKey);
         }
         try {
-            ObsObject obj = client.getObject(bucket, relKey);
+            ObsObject obj = client.getObject(bucket, fullKey);
             return obj.getObjectContent();
         } catch (Exception e) {
-            throw new RuntimeException("OBS 读取附件失败[" + relKey + "]: " + e.getMessage(), e);
+            throw new RuntimeException("OBS 读取附件失败[" + fullKey + "]: " + e.getMessage(), e);
         }
     }
 }

@@ -42,6 +42,8 @@ app:
       bucket: ${APP_STORAGE_OBS_BUCKET:}
       ak: ${APP_STORAGE_OBS_AK:}
       sk: ${APP_STORAGE_OBS_SK:}
+      # 对象 key 前缀（桶内目录），本项目附件统一存于桶内 uploads/ 下；桶根直存可置空
+      prefix: ${APP_STORAGE_OBS_PREFIX:uploads}
   jwt:
     # 仅本地开发默认值；生产环境务必通过环境变量覆盖
     secret: ${JWT_SECRET:change-me-please-this-is-a-dev-secret-0123456789abcdef}

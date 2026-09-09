@@ -19,6 +19,10 @@ public class WebConfig implements WebMvcConfigurer {
     @Value("${app.upload-dir:./uploads}")
     private String uploadDir;
 
+    /** 附件存储类型（local | obs）：仅 local 时注册 /uploads 本地静态映射 */
+    @Value("${app.storage.type:local}")
+    private String storageType;
+
     private Path uploadPath;
 
     private final RoleInterceptor roleInterceptor;
@@ -54,9 +58,12 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addResourceHandlers(ResourceHandlerRegistry registry) {
-        // 附件通过 /uploads/** 直接访问（文件名使用随机存储名，防止路径穿越）
-        String location = uploadPath.toUri().toString();
-        registry.addResourceHandler("/uploads/**").addResourceLocations(location);
+        // 附件访问统一走后端 /api/attachments/{id}/download；此处仅 local 存储时提供 /uploads 静态直读兼容
+        // （obs 存储时附件在 OBS 桶，无本地文件，不注册静态映射）
+        if (!"obs".equals(storageType)) {
+            String location = uploadPath.toUri().toString();
+            registry.addResourceHandler("/uploads/**").addResourceLocations(location);
+        }
     }
 
     @Override

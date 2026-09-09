@@ -17,15 +17,13 @@
 | 入口 | 上层网关负载均衡（用户自建），健康检查 **`/api/health`**（db:up 才在池内） |
 | 安全基线 | 两机 `.env` 的 `JWT_SECRET` **必须一致**（否则跨机验签 401）；业务账号勿用 sys；密码/密钥不进仓库与镜像 |
 
-> **当前代码状态提示**：附件存储的后端抽象与 OBS 实现为**待落地代码项**（见 §2 前提 ①）；
-> 落地前如需先上线，附件暂用"本地卷 + 共享盘（NFS）"过渡（compose 的 `${UPLOAD_VOLUME}` 已支持）。
-> 除此项外，§3 步骤可直接执行。
+> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**，§3 步骤可直接执行；OBS 模式实库验证在服务器首启时按 §5 冒烟执行。
 
 ---
 
 ## 2. 部署前必须满足的前提（逐项打勾）
 
-1. **[代码] 附件存储 OBS 实现已合入**（v1.1：`AttachmentStorage` 抽象 + `app.storage.type=local\|obs`，环境变量 `APP_STORAGE_OBS_*` 生效，2026-09-09 已落地并完成 local 模式回归；obs 模式联调待 OBS 网络可达后执行）。
+1. **[代码] 附件存储 OBS 实现已合入并提交**（v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`，OBS 走 esdk-obs-java：path-style + 忽略证书校验 + **对象前缀 `uploads/`**；存量附件已由人工上传至桶 `pdmsbucket/uploads/2026/...`，与 `attachment.file_path` 通过前缀精确对应）。**obs 模式实库验证**在服务器部署完成后执行（§5 冒烟 #4：obs 模式起后端 → 下载存量附件与源文件字节比对）。
 2. **[OBS] 桶与凭证**：桶名（私有读写）、AK/SK、endpoint（内网域名/IP，含协议）；已确认 SDK 侧 `pathStyle=true`、**忽略证书校验**（esdk-obs-java `validateCertificate` 默认 false）。
 3. **[数据库] 崖山连通**：两机到 10.254.212.106/.107 的 1688 可达；`pm` 账号可连（库已完成 V1~V8 初始化与数据迁移）。
 4. **[密钥] `JWT_SECRET`**：生成一个 ≥32 字节随机串，两机 `.env` 填写**相同**值。
@@ -60,11 +58,12 @@ YASHAN_PASSWORD=<业务账号密码>
 JWT_SECRET=<相同随机串>
 
 # ---------- 附件：OBS（生产定稿） ----------
-APP_STORAGE_TYPE=obs                 # 本地盘过渡期=local
-APP_STORAGE_OBS_ENDPOINT=https://<obs-endpoint>
-APP_STORAGE_OBS_BUCKET=<bucket-name>
+APP_STORAGE_TYPE=obs                 # local=本地盘（默认）| obs=华为 OBS
+APP_STORAGE_OBS_ENDPOINT=https://obs.lhim.com
+APP_STORAGE_OBS_BUCKET=pdmsbucket
 APP_STORAGE_OBS_AK=<ak>
 APP_STORAGE_OBS_SK=<sk>
+APP_STORAGE_OBS_PREFIX=uploads       # 对象在桶内 uploads/ 前缀下（与已上传存量结构一致）；桶根直存可置空
 # 本地盘/NFS 过渡期才需要：UPLOAD_VOLUME=/mnt/pm-uploads
 
 # ---------- 对外端口 ----------

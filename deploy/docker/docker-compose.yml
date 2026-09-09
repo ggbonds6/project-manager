@@ -23,6 +23,7 @@ services:
       APP_STORAGE_OBS_BUCKET: ${APP_STORAGE_OBS_BUCKET:-}
       APP_STORAGE_OBS_AK: ${APP_STORAGE_OBS_AK:-}
       APP_STORAGE_OBS_SK: ${APP_STORAGE_OBS_SK:-}
+      APP_STORAGE_OBS_PREFIX: ${APP_STORAGE_OBS_PREFIX:-uploads}
     volumes:
       # 附件存储：默认本地命名卷 pm_uploads（单机）。
       # 双机 + 负载均衡时务必改为共享目录（NFS 等），两端 bind 同一路径：

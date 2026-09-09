@@ -32,6 +32,7 @@ docker compose -f deploy/docker/docker-compose.yml logs -f backend
 - 前端（nginx）：**http://服务器IP:8080**（默认端口，可改 `WEB_PORT`）
 - `/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露）
 - 附件卷 `pm_uploads`（宿主机 `docker volume inspect` 可查路径）
+- **附件存储**：默认本地卷 `pm_uploads`（`APP_STORAGE_TYPE=local`）；生产可切 **华为 OBS**（`APP_STORAGE_TYPE=obs` + `APP_STORAGE_OBS_*`，对象置于桶内 `uploads/` 前缀下），详见《双机ARM服务器独立部署方案.md》
 
 **首次建库**：后端启动时自研迁移 Runner 自动执行 `db/migration-yashan/V1~V8` 完成建表与种子（幂等，已执行版本记入 `schema_version`），无需手工导库。
 

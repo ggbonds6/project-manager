@@ -48,6 +48,9 @@ public class UploadExistingToObs {
         String bucket = System.getenv("APP_STORAGE_OBS_BUCKET");
         String ak = System.getenv("APP_STORAGE_OBS_AK");
         String sk = System.getenv("APP_STORAGE_OBS_SK");
+        String prefix = System.getenv("APP_STORAGE_OBS_PREFIX"); // 与后端一致，默认 uploads
+        if (isBlank(prefix)) prefix = "uploads";
+        prefix = prefix.trim().replaceAll("/+$", "");
         if (!dryRun && (isBlank(endpoint) || isBlank(bucket) || isBlank(ak) || isBlank(sk))) {
             System.err.println("缺少环境变量 APP_STORAGE_OBS_ENDPOINT/BUCKET/AK/SK");
             System.exit(2);
@@ -59,7 +62,8 @@ public class UploadExistingToObs {
         }
         System.out.println("待上传文件数: " + files.size() + "  根目录: " + root);
         if (dryRun) {
-            files.stream().limit(10).forEach(f -> System.out.println("  [dry-run] " + root.relativize(f).toString().replace('\\', '/')));
+            files.stream().limit(10).forEach(f ->
+                    System.out.println("  [dry-run] " + fullKey(prefix, root.relativize(f).toString().replace('\\', '/'))));
             return;
         }
 
@@ -74,17 +78,18 @@ public class UploadExistingToObs {
         try (ObsClient client = new ObsClient(ak, sk, conf)) {
             for (Path f : files) {
                 String rel = root.relativize(f).toString().replace('\\', '/');
+                String full = fullKey(prefix, rel);
                 try (FileInputStream in = new FileInputStream(f.toFile())) {
                     ObjectMetadata md = new ObjectMetadata();
                     md.setContentLength(f.toFile().length());
-                    client.putObject(bucket, rel, in, md);
+                    client.putObject(bucket, full, in, md);
                     ok.incrementAndGet();
                     if (ok.get() % 50 == 0) {
                         System.out.println("  已上传 " + ok.get() + "/" + files.size());
                     }
                 } catch (Exception e) {
-                    failed.add(rel + " => " + e.getMessage());
-                    System.err.println("  [FAIL] " + rel + " : " + e.getMessage());
+                    failed.add(full + " => " + e.getMessage());
+                    System.err.println("  [FAIL] " + full + " : " + e.getMessage());
                 }
             }
         }
@@ -98,5 +103,9 @@ public class UploadExistingToObs {
 
     private static boolean isBlank(String s) {
         return s == null || s.isBlank();
+    }
+
+    private static String fullKey(String prefix, String rel) {
+        return prefix.isEmpty() ? rel : prefix + "/" + rel;
     }
 }

@@ -45,6 +45,7 @@
 | v2.3 | 2026-09-08 | 去除画布、纯阶段列表 + 全面阶段说明 | 移除 X6 画布及相关代码与依赖；流程模板只保留 Tab 多模板 + **折叠阶段列表**（面板默认收起，展开显示 说明/做什么/关键材料/常用附件/操作）；清理 SystemPage 遗留旧模板代码；新增 `scripts/demo-phase-guides.sql` 为内置 HW/SW 共 20 阶段补齐"目的/主要工作/要点/完成标准/注意/关键材料"演示数据 | `741de1c` |
 | v2.4 | 2026-09-08 | 阶段表单弹窗修复 + 冗余清理 | useFormModal 默认宽度加大、阶段表单标签改短并把提示说明放到输入框下方（不再被输入框遮挡）；阶段列表去掉"有说明"标签；移除画布遗留代码/接口与 `phase_tpl.flow_json` 字段引用（含 GET/{id}、saveFlow） | `0739c77` |
 | v3.0 | 2026-09-09 | 数据库国产化：MySQL → 崖山 YashanDB（Oracle 模式） | 依赖/配置/Java 方言/7 处手写 SQL 全量改造；`db/migration-yashan/` V1~V8（yashan 方言：VARCHAR(n CHAR)/CLOB/TIMESTAMP/NUMBER/identity）自研 `YashanMigrationRunner` 替代 Flyway；驱动 `yashandb-jdbc-1.9.3.jar` 本地引入（system scope）；主备驱动级 primary+TAF 高可用连接；deploy/README/docs 全面清理 MySQL 痕迹；PoC 关键项实库验证通过；11 张表数据全量迁移核验一致、本机 MySQL 下线 | `295d1b0` |
+| v3.1 | 2026-09-09 | 附件存储对象化（华为 OBS） | 新增 `AttachmentStorage` 抽象（`app.storage.type=local\|obs`，默认 local）；OBS 走 esdk-obs-java（path-style + 忽略证书校验），对象置于桶内 `uploads/` 前缀（与本地相对结构一致）；`AttachmentController` 存储无关化 + 流式下载；`file_path` 即对象相对 key、存量附件已上传桶、元数据零迁移、前端零改动；compose/.env 透传 `APP_STORAGE_*`；存量上传工具 `UploadExistingToObs`（test scope） | `8374e54`、`(前缀修复待提交)` |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -164,6 +165,13 @@
 - **实施落地（2026-09-09）**：业务账号 `pm`（CONNECT/RESOURCE）主库建立并执行 V1~V8 建表/种子（`schema_version` 登记）；本机 MySQL 11 张表全量迁移并逐表核验一致（identity 每表校准 `START WITH max+1`，金额聚合双端一致）；后端 :8080 / 前端 :5173 接口回归通过；一次性迁移工具已清除（源文件备份本机临时目录）；配置/文档默认应用账号统一为 `pm`；本机 MySQL 已优雅下线。
 - **剩余待办**：① 主从切换演练（kill 主观察 TAF 重连，低峰执行）；② 空串/长文本前端回归（崖山空串按 NULL 存储）；③ 业务侧全流程手测一轮。
 
+### v3.1 — 附件存储对象化（华为 OBS）
+- **背景**：双机独立部署 + 负载均衡，附件若留本地盘需共享存储；用户环境提供华为 OBS（通用 S3 协议、忽略证书校验）。经代码核实：前端附件 IO 全部收口于 `/api/attachments/{id}/download`（不使用 `/uploads` 静态直链）→ 存储切换为**后端内部替换**，前端 0 改动、元数据 0 迁移（`file_path` 即对象相对 key）。
+- **代码**：新增 `com.pmgt.common.storage`：`AttachmentStorage` 接口 + `LocalAttachmentStorage`（默认，行为不变）+ `ObsAttachmentStorage`（esdk-obs-java 3.24.3：path-style、`validateCertificate=false` 忽略证书、连接/读超时）；`AttachmentController` 存储无关化（上传 `storage.save`、下载改 `StreamingResponseBody` 流式、对象缺失 404）；对象 key 带桶内前缀 `uploads/`（可配 `APP_STORAGE_OBS_PREFIX`，默认 uploads，与本地相对结构/已上传存量一致）；`WebConfig` 的 `/uploads` 静态映射仅 local 模式注册；清理 controller 冗余 import。
+- **配置**：`app.storage.type=local|obs` + `app.storage.obs.*`（`APP_STORAGE_*` 环境变量注入）；docker-compose/.env.example 透传（默认 local，部署切 obs 只需填 endpoint/bucket/ak/sk/prefix）。
+- **存量附件**：本地 `backend/uploads`（495 个）已由人工上传至桶 `pdmsbucket/uploads/2026/...`；另备一次性工具 `UploadExistingToObs`（test scope，不进生产 jar）供需要时重跑。
+- **回归**：编译通过；local 模式全回归（上传→下载字节一致→inline 预览→逻辑删除 404）；存量 pdf 在 8080 下载正常。**obs 模式实库验证**在服务器部署首启时执行（下载存量附件字节比对）。
+
 ---
 
 ## 功能完成度
@@ -178,6 +186,7 @@
 | 阶段推进 + 整体进度自动计算 | ✅ | 权重口径见设计稿 §9 |
 | 项目详情五页签（流程/信息/资金/附件/日志） | ✅ | 附件按阶段展示与直达上传；资金页含合同面板 |
 | 付款记录 CRUD + 资金汇总 | ✅ | 管理员录入；凭证附件预览/全屏 |
+| 附件存储（本地盘 ↔ 华为 OBS） | ✅ | v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`；切换对前端透明、元数据零迁移 |
 | 工作台（汇总/待办/验收/逾期/最近更新） | ✅ | v0.7，v1.3 口径=核算单元（叶子） |
 | 项目统计（ECharts，筛选联动） | ✅ | 状态·类型构成、流程阶段分布、年度资金（预算/合同/实付，合同去重） |
 | 系统管理（用户/字典/阶段模板/日志） | ✅ | v0.8：仅管理员，写操作全留痕 |
