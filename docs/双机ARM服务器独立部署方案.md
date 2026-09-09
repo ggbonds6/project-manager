@@ -17,36 +17,85 @@
 | 入口 | 上层网关负载均衡（用户自建），健康检查 **`/api/health`**（db:up 才在池内） |
 | 安全基线 | 两机 `.env` 的 `JWT_SECRET` **必须一致**（否则跨机验签 401）；业务账号勿用 sys；密码/密钥不进仓库与镜像 |
 
-> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**，§3 步骤可直接执行；OBS 模式实库验证在服务器首启时按 §3.4 验收 A3 执行。
+> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**，§3 步骤可直接执行；OBS 模式实库验证在服务器首启时按 §3.5 验收 A3 执行。
 
 ---
 
 ## 2. 部署前必须满足的前提（逐项打勾）
 
-1. **[代码] 附件存储 OBS 实现已合入并提交**（v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`，OBS 走 esdk-obs-java：path-style + 忽略证书校验 + **对象前缀 `uploads/`**；存量附件已由人工上传至桶 `pdmsbucket/uploads/2026/...`，与 `attachment.file_path` 通过前缀精确对应）。**obs 模式实库验证**在服务器部署完成后执行（§3.4 验收 A3：下载存量附件与源文件字节比对）。
+1. **[代码] 附件存储 OBS 实现已合入并提交**（v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`，OBS 走 esdk-obs-java：path-style + 忽略证书校验 + **对象前缀 `uploads/`**；存量附件已由人工上传至桶 `pdmsbucket/uploads/2026/...`，与 `attachment.file_path` 通过前缀精确对应）。**obs 模式实库验证**在服务器部署完成后执行（§3.5 验收 A3：下载存量附件与源文件字节比对）。
 2. **[OBS] 桶与凭证**：桶名（私有读写）、AK/SK、endpoint（内网域名/IP，含协议）；已确认 SDK 侧 `pathStyle=true`、**忽略证书校验**（esdk-obs-java `validateCertificate` 默认 false）。
 3. **[数据库] 崖山连通**：两机到 10.254.212.106/.107 的 1688 可达；`pm` 账号可连（库已完成 V1~V8 初始化与数据迁移）。
 4. **[密钥] `JWT_SECRET`**：生成一个 ≥32 字节随机串，两机 `.env` 填写**相同**值。
-5. **[发布源] 内网 Gitea 就绪**（或过渡期使用 GitHub Release）：仓库与 Release 上传权限可用。
-6. **[Docker] 两机** `docker compose version` 可用；磁盘预留镜像与 Release 资产空间。
+5. **[发布源]（可选，仅升级与模式 B 需要）**：内网 Gitea（或 GitHub Release）仓库与上传权限。**首次部署走模式 A（源码直建）不需要发布源**，有源码即可。
+6. **[Docker] 两机** `docker compose version` 可用；磁盘预留镜像空间。**模式 A 要求服务器能联网**（拉 Docker Hub 基础镜像 + Maven Central + npm registry）；离线服务器请走模式 B。
 
 ---
 
 ## 3. 服务器部署步骤（两台各执行一遍）
 
-### 3.1 准备运行目录
+### 3.0 先选部署模式（重要：决定你是否需要"打包"）
+
+| 模式 | 适用 | 你需要准备什么 | 服务器是否要联网构建 |
+| --- | --- | --- | --- |
+| **A. 源码直建（推荐首次）** | 服务器能访问 Docker Hub / Maven Central / npm registry | **只需源码**（GitHub 拉取、内网 Gitea 或拷贝 tar 均可） | 是（首次 `--build` 拉基础镜像 + 依赖，几分钟） |
+| **B. 预构建镜像** | 服务器离线/不便联网；或想升级免构建 | 发布机产出的 arm64 镜像 tar（§3.3） | 否（`docker load` 即可） |
+
+> 你当前"只有 GitHub 源码、未打包"→ **走模式 A 即可，无需任何打包**。
+> 源码在 ARM 服务器上构建时，Dockerfile 会自动拉取 arm64 基础镜像，产物即本机镜像，不涉及跨架构。
+
+### 3.1 模式 A：源码获取 + 服务器构建启动
+
 ```bash
-sudo mkdir -p /opt/pm/app /opt/pm/images /opt/pm/releases
-# 从发布资产包（pm-<ver>-deploy.tar.gz）解压 compose 与配置模板到 /opt/pm/app
-tar -xzf pm-<ver>-deploy.tar.gz -C /opt/pm/app
-ls /opt/pm/app        # docker-compose.yml / frontend-nginx.conf / .env.example / pm-upgrade.sh
+# 1) 把源码放到服务器（三选一）：
+#    ① 直接 GitHub clone（仓库私有则配凭据/令牌）：
+#       sudo git clone https://github.com/<owner>/project-manager.git /opt/pm/project-manager
+#    ② 内网 Gitea clone（自建后）：
+#       sudo git clone http(s)://git.pm.internal/<org>/project-manager.git /opt/pm/project-manager
+#    ③ 拷贝源码包（无需外网/凭据）：在开发机执行打包，再 scp 到服务器解压
+#       本地： tar --exclude=.git --exclude=node_modules --exclude=target \
+#                   --exclude=backend/uploads --exclude=.workbuddy -czf pm-src.tar.gz project-manager
+#       服务器： tar -xzf pm-src.tar.gz -C /opt/pm/
+
+cd /opt/pm/project-manager
+# 2) 准备 .env（放仓库根，compose 从当前目录读取；内容见 §3.4）
+cp deploy/docker/.env.example ./.env && vi ./.env
+# 3) 构建并启动（首次拉镜像与依赖需几分钟；产物=本机 arm64 镜像，无需再打包）
+docker compose -f deploy/docker/docker-compose.yml up -d --build
 ```
 
-### 3.2 配置 `.env`（两机除注释本机外内容一致）
+### 3.2 模式 B：加载预构建镜像（离线 / 升级免构建）
+
 ```bash
-cp /opt/pm/app/.env.example /opt/pm/app/.env && vi /opt/pm/app/.env
+# 前提：已有发布机产出的镜像 tar（产出方法见 §5 与附录 A.3，本机开发机仅能出 x86，
+#       arm64 需 ARM 服务器/支持 buildx 的机器产出）
+cd /opt/pm/releases
+curl -fLO https://git.pm.internal/<org>/project-manager/releases/download/<ver>/pm-<ver>-arm64-images.tar.gz   # 或 GitHub Release / 人工拷贝
+bash /opt/pm/app/pm-upgrade.sh pm-<ver>-arm64-images.tar.gz /opt/pm/app     # docker load → compose up -d
 ```
+
+### 3.3 预构建镜像产出方法（仅模式 B 需要）
+
+在有 Docker 的发布机执行（发布机须能产 arm64：ARM 服务器直 build，或 x86 用 buildx）：
+
 ```bash
+VER=<版本>
+# ARM 发布机：
+docker build -f deploy/docker/Dockerfile.backend  -t pm-backend:$VER .
+docker build -f deploy/docker/Dockerfile.frontend -t pm-frontend:$VER .
+# x86 发布机（buildx + QEMU 模拟 arm64）：
+docker buildx build --platform linux/arm64 -t pm-backend:$VER  -f deploy/docker/Dockerfile.backend .
+docker buildx build --platform linux/arm64 -t pm-frontend:$VER -f deploy/docker/Dockerfile.frontend .
+# 导出单文件供服务器 load：
+docker save pm-backend:$VER pm-frontend:$VER | gzip > pm-$VER-arm64-images.tar.gz
+```
+
+### 3.4 配置 `.env`（两种模式通用；两机除注释本机外内容一致）
+
+```bash
+cd /opt/pm/project-manager     # 模式 A；模式 B 则进入运行工程目录
+cp deploy/docker/.env.example ./.env && vi ./.env   # .env 放当前目录（compose 从当前目录读取）
+
 # ---------- 崖山数据库 ----------
 YASHAN_MASTER_IP=10.254.212.106
 YASHAN_STANDBY_IP=10.254.212.107
@@ -70,15 +119,7 @@ APP_STORAGE_OBS_PREFIX=uploads       # 对象在桶内 uploads/ 前缀下（与�
 WEB_PORT=8080
 ```
 
-### 3.3 加载镜像并启动
-```bash
-cd /opt/pm/releases
-curl -fLO https://git.pm.internal/<org>/project-manager/releases/download/<ver>/pm-<ver>-arm64-images.tar.gz   # 或 GitHub Release / 人工拷贝
-bash /opt/pm/app/pm-upgrade.sh pm-<ver>-arm64-images.tar.gz /opt/pm/app
-# 脚本自动：docker load → compose config 校验 → compose up -d
-```
-
-### 3.4 本机验证与部署后验收（每台，逐项通过）
+### 3.5 本机验证与部署后验收（每台，逐项通过）
 
 ```bash
 # A1 健康检查（同时验证已连崖山）
@@ -103,8 +144,8 @@ curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: 
 ```
 > 源文件字节比对：把下载文件与开发机本地 `backend/uploads` 中同名文件 `sha256sum` 对比；obs 模式首启若 A3 下载失败，先核对 `.env` 的 `APP_STORAGE_OBS_PREFIX=uploads` 与桶内结构是否一致。
 
-### 3.5 第二台
-重复 3.1~3.4。**唯一注意**：`.env` 中 `JWT_SECRET`、崖山连接、OBS 凭证与第一台**完全一致**。
+### 3.6 第二台
+重复 §3.1~§3.5。**唯一注意**：`.env` 中 `JWT_SECRET`、崖山连接、OBS 凭证与第一台**完全一致**。
 
 ---
 
@@ -163,7 +204,7 @@ curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: 
 ### A.4 待办（落地顺序）
 1. 后端附件存储抽象 + OBS 实现（含 `app.storage.type` 配置与 `APP_STORAGE_OBS_*` 环境变量）。
 2. Gitea 服务器部署 + 仓库迁移 + 首个 Release。
-3. 双机生产部署执行 + §3.4 验收清单。
+3. 双机生产部署执行 + §3.5 验收清单。
 
 ---
 
