@@ -13,9 +13,8 @@
 #
 # 产出：dist/pm-release-<版本>/
 #   ├─ pm-images-<arch>-<版本>.tar.gz    镜像包（docker load 用）
-#   ├─ docker-compose.yml                运行编排（含 image 双模）
+#   ├─ docker-compose.yml                服务器专用编排（无 build 段；运行目录只需「本文件 + .env」）
 #   ├─ .env.example                      .env 模板（含 IMAGE_TAG 预填）
-#   ├─ frontend-nginx.conf               前端 nginx 配置
 #   ├─ pm-upgrade.sh                     服务器升级脚本（可选）
 #   └─ 服务器部署步骤.txt                 照做即可
 # ============================================================
@@ -47,6 +46,8 @@ if [ -z "$DOCKER_BIN" ]; then
 fi
 
 OUT="dist/pm-release-${VER}"
+# 清空旧产出，避免上一版遗留文件（如已停用的 frontend-nginx.conf）混进发布包
+rm -rf "$OUT"
 mkdir -p "$OUT"
 
 if [ "${SKIP_BUILD:-0}" = "1" ]; then
@@ -67,11 +68,11 @@ echo "[3/5] 导出镜像包"
 ls -lh "${OUT}/pm-images-${ARCH}-${VER}.tar.gz"
 
 echo "[4/5] 复制部署文件"
-cp deploy/docker/docker-compose.yml   "${OUT}/"
-cp deploy/docker/.env.example         "${OUT}/"
-cp deploy/docker/frontend-nginx.conf  "${OUT}/"
+# 服务器专用编排（无 build 段）：服务器运行目录里不需要任何源码
+cp deploy/docker/docker-compose.deploy.yml "${OUT}/docker-compose.yml"
+cp deploy/docker/.env.example              "${OUT}/"
 [ -f scripts/pm-upgrade.sh ] && cp scripts/pm-upgrade.sh "${OUT}/"
-# .env.example 中 IMAGE_TAG 预填为本次版本，避免服务器漏配导致回退到 latest 而尝试 build
+# .env.example 中 IMAGE_TAG 预填为本次版本，避免服务器漏配导致 No such image
 sed -i.bak "s/^IMAGE_TAG=.*/IMAGE_TAG=${VER}/" "${OUT}/.env.example" 2>/dev/null || \
   sed -i '' "s/^IMAGE_TAG=.*/IMAGE_TAG=${VER}/" "${OUT}/.env.example"
 rm -f "${OUT}/.env.example.bak"
@@ -80,32 +81,46 @@ echo "[5/5] 生成服务器部署步骤说明"
 cat > "${OUT}/服务器部署步骤.txt" <<TXT
 PM ${VER} 服务器部署步骤（${ARCH}，离线：只 load 不 build）
 =====================================================
+服务器上【不需要源码】，运行目录只有 docker 相关文件：
+    /home/lhim/pm/
+     ├─ releases/                        镜像包归档
+     └─ app/                             运行目录：只需 docker-compose.yml + .env
+         ├─ docker-compose.yml
+         └─ .env
+
 1) 上传（开发机执行；两台服务器各一份）
    scp ${OUT}/pm-images-${ARCH}-${VER}.tar.gz  lhim@<服务器>:/home/lhim/pm/releases/
-   scp ${OUT}/docker-compose.yml ${OUT}/.env.example  lhim@<服务器>:/home/lhim/pm/project-manager/deploy/docker/
+   ssh lhim@<服务器> 'mkdir -p /home/lhim/pm/app'
+   scp ${OUT}/docker-compose.yml ${OUT}/.env.example  lhim@<服务器>:/home/lhim/pm/app/
 
-2) 服务器配置 .env（放在 compose 同目录！）
-   cd /home/lhim/pm/project-manager
-   cp deploy/docker/.env.example deploy/docker/.env && vi deploy/docker/.env
-   必填：YASHAN_PASSWORD / JWT_SECRET（两台相同）/ OBS 四项；确认 IMAGE_TAG=${VER}
+2) 服务器配置 .env（首次；放在 docker-compose.yml 同目录）
+   cd /home/lhim/pm/app
+   cp .env.example .env && vi .env
+   必填：YASHAN_PASSWORD / JWT_SECRET（两台相同）/ OBS 五项；确认 IMAGE_TAG=${VER}
    服务器附件统一 OBS：APP_STORAGE_TYPE=obs、APP_STORAGE_OBS_PREFIX=uploads
+   之后升级【不要】用 .env.example 覆盖 .env
 
 3) 加载镜像并启动（不加 --build）
    docker load -i /home/lhim/pm/releases/pm-images-${ARCH}-${VER}.tar.gz
-   docker compose -f deploy/docker/docker-compose.yml up -d
+   cd /home/lhim/pm/app && docker compose up -d
 
 4) 验收
-   curl http://127.0.0.1:\${WEB_PORT:-8080}/api/health      # 期望 db:"up"
+   curl http://127.0.0.1:8080/api/health      # 期望 db:"up"
    浏览器登录 admin/123456 → 下载一个存量附件（应成功，读 OBS 桶 uploads/ 前缀）
 
-5) 回滚（如需）
-   改 deploy/docker/.env 的 IMAGE_TAG 为上一版本号 → docker compose -f deploy/docker/docker-compose.yml up -d
+5) 升级（新版本）
+   docker load -i /home/lhim/pm/releases/pm-images-${ARCH}-<新版本>.tar.gz
+   cd /home/lhim/pm/app
+   改 .env 的 IMAGE_TAG=<新版本>   →   docker compose up -d
+
+6) 回滚（如需）
+   改 .env 的 IMAGE_TAG 为上一版本号 → docker compose up -d（旧镜像仍在本机）
 TXT
 
 echo
 echo "✅ 发布目录已生成: ${OUT}/"
-ls -lh "${OUT}/"
+ls -la "${OUT}/"
 echo
 echo "上传命令模板（把 <服务器> 换成 pdmsappgh / ai-kingbase-gh）："
 echo "  scp ${OUT}/pm-images-${ARCH}-${VER}.tar.gz lhim@<服务器>:/home/lhim/pm/releases/"
-echo "  scp ${OUT}/docker-compose.yml ${OUT}/.env.example lhim@<服务器>:/home/lhim/pm/project-manager/deploy/docker/"
+echo "  scp ${OUT}/docker-compose.yml ${OUT}/.env.example lhim@<服务器>:/home/lhim/pm/app/"

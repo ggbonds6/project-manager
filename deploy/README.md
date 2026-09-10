@@ -22,10 +22,11 @@ cp deploy/docker/.env.example deploy/docker/.env
 # 3-a) 有外网（本机开发测试）：构建并启动
 docker compose -f deploy/docker/docker-compose.yml up -d --build
 
-# 3-b) 无外网服务器（生产）：在开发机构建镜像后 scp 上传，服务器只 load 不 build
+# 3-b) 无外网服务器（生产）：服务器【不需要源码】，运行目录只放 2 个文件
+#     运行目录 /home/lhim/pm/app/ ： docker-compose.yml（取自发布包，无 build 段）+ .env
 #     docker load -i /home/lhim/pm/releases/pm-images-aarch64-<ver>.tar.gz
-#     docker compose -f deploy/docker/docker-compose.yml up -d        ← 不加 --build
-#     详见 docs/部署与发布全流程手册.md §3
+#     cd /home/lhim/pm/app && docker compose up -d        ← 不加 --build
+#     详见 docs/部署与发布全流程手册.md §2.4 / §3
 
 # 4) 查看状态 / 日志
 docker compose -f deploy/docker/docker-compose.yml ps
@@ -49,6 +50,11 @@ docker compose -f deploy/docker/docker-compose.yml logs -f backend
 >
 > 📌 **发布全流程（本地开发 → 构建镜像 → 上传 → 服务器首次部署 / 迭代更新）与服务器环境准备**
 > （Docker daemon / compose 插件按架构安装 / .env）见 [`docs/部署与发布全流程手册.md`](../docs/部署与发布全流程手册.md)。
+>
+> 📌 **服务器不存源码**：镜像已含后端 jar（含建库迁移 SQL）、前端产物与 nginx 配置，服务器运行目录只需
+> `docker-compose.yml` + `.env`（均取自发布包）。服务器用的编排是 `deploy/docker/docker-compose.deploy.yml`
+> （**无 `build:` 段** + `pull_policy: never`，不会误触发联网构建）；**本节 1 里的 `deploy/docker/docker-compose.yml`
+> 含 `build:`，是开发机本地用，服务器不要用**。
 
 ---
 

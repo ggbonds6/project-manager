@@ -11,8 +11,9 @@
 #
 # 用法：
 #   ./pm-upgrade.sh <镜像tar包> [app目录]
-#   例：./pm-upgrade.sh pm-images-aarch64-v1.1.0.tar.gz
-#     （缺省 app 目录 = $HOME/pm/project-manager/deploy/docker；其次 $HOME/pm/app；最后脚本同级 ../deploy/docker）
+#   例：./pm-upgrade.sh /home/lhim/pm/releases/pm-images-aarch64-v1.1.0.tar.gz
+#     （缺省 app 目录 = $HOME/pm/app，即只含 docker-compose.yml + .env 的运行目录；
+#       其次 $HOME/pm/project-manager/deploy/docker；最后脚本同级 ../deploy/docker）
 # ============================================================
 set -euo pipefail
 
@@ -26,7 +27,7 @@ find_app_dir() {
     cand="$APP_DIR"
   else
     local c
-    for c in "${HOME}/pm/project-manager/deploy/docker" "${HOME}/pm/app"; do
+    for c in "${HOME}/pm/app" "${HOME}/pm/project-manager/deploy/docker"; do
       if [ -f "$c/docker-compose.yml" ]; then cand="$c"; break; fi
     done
   fi

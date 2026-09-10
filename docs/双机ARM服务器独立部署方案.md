@@ -9,7 +9,7 @@
 
 | 项 | 定稿 |
 | --- | --- |
-| 部署形态 | **每台服务器一份 Docker Compose**（前端 nginx 容器 + 后端 Spring Boot 容器），两台完全同构、各自独立对外服务 |
+| 部署形态 | **每台服务器一份 Docker Compose**（前端 nginx 容器 + 后端 Spring Boot 容器），两台完全同构、各自独立对外服务；**服务器不存源码**，运行目录仅 `docker-compose.yml` + `.env` |
 | 服务器 | 两台 **ARM64**（Linux，已装 Docker Engine + Compose v2） |
 | 数据库 | 外部**崖山 YashanDB（Oracle 模式）主备**（主 10.254.212.106 / 备 10.254.212.107:1688，库 `project_manager`，账号 `pm`）——两台指向同一套，驱动级 primary + TAF 高可用 |
 | 附件存储 | **华为 OBS**（通用 S3 协议、忽略证书校验），桶私有、不匿名读；附件下载/预览一律经后端带 token 接口 |
@@ -17,7 +17,8 @@
 | 入口 | 上层网关负载均衡（用户自建），健康检查 **`/api/health`**（db:up 才在池内） |
 | 安全基线 | 两机 `.env` 的 `JWT_SECRET` **必须一致**（否则跨机验签 401）；业务账号勿用 sys；密码/密钥不进仓库与镜像 |
 
-> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**；arm64 镜像构建（开发机 buildx）与本地 Docker 全链路已验证通过。
+> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**；arm64 镜像构建（开发机 buildx）与本地 Docker 全链路已验证通过；
+> "服务器不存源码"模型已实测通过（运行目录仅 `docker-compose.yml` + `.env`，整套系统含 db:up 与前端页面均正常）。
 > **操作步骤**（含命令与预期输出）见《部署与发布全流程手册.md》；OBS 模式实库验证在该手册 §5 验收 A3 执行。
 
 ---
@@ -50,21 +51,24 @@
 > 开发机用 buildx（QEMU 模拟）产 arm64 镜像 → scp 上传 → 服务器 `docker load` + `docker compose up -d`（**不加 `--build`**）。
 > 两台服务器均为 **aarch64**，故**一份 arm64 镜像两台通用**。
 
-### 3.1 路径与文件口径（服务器）
+### 3.1 路径与文件口径（服务器**不存源码**）
+
+服务器 `/home/lhim/pm/` 下只有两个目录：
 
 | 内容 | 路径 |
 | --- | --- |
-| 源码目录 | `/home/lhim/pm/project-manager`（首次 scp 上传；服务器不能 git pull） |
-| compose 文件 | `/home/lhim/pm/project-manager/deploy/docker/docker-compose.yml` |
-| **`.env`** | **`/home/lhim/pm/project-manager/deploy/docker/.env`** |
-| 镜像包 | `/home/lhim/pm/releases/pm-images-aarch64-<ver>.tar.gz` |
+| **运行目录**（只有 2 个文件） | `/home/lhim/pm/app/` → `docker-compose.yml` + `.env` |
+| 镜像包归档 | `/home/lhim/pm/releases/pm-images-aarch64-<ver>.tar.gz` |
 
-> ⚠️ **`.env` 必须与 docker-compose.yml 同目录**：compose v2 从 compose 文件所在目录读取 `.env`，放在仓库根**不生效**（会静默回落到默认值）。
+> 镜像内已包含后端 jar（含建库迁移 SQL）、前端产物与 nginx 配置，运行不需要源码；
+> 服务器用的 `docker-compose.yml` 取自 `deploy/docker/docker-compose.deploy.yml`（**无 `build:` 段** + `pull_policy: never`），
+> 因此不会误触发联网构建。仓库内的 `deploy/docker/docker-compose.yml` 是**开发机本地用**（含 build），服务器不要用。
+> ⚠️ **`.env` 必须与 docker-compose.yml 同目录**：compose v2 只从 compose 文件所在目录读取。
 
 ### 3.2 配置 `.env`（两台内容完全一致）
 
 ```bash
-cd /home/lhim/pm/project-manager/deploy/docker
+cd /home/lhim/pm/app
 cp .env.example .env && vi .env
 ```
 
@@ -118,21 +122,22 @@ WEB_PORT=8080
 
 ```text
 开发机：bash scripts/make-release.sh v1.1.0      # 产 dist/pm-release-v1.1.0/
-     → scp 镜像包到两台 /home/lhim/pm/releases/
-服务器：docker load -i .../pm-images-aarch64-v1.1.0.tar.gz
-     → 改 deploy/docker/.env 的 IMAGE_TAG=v1.1.0（或命令行指定）
-     → docker compose -f deploy/docker/docker-compose.yml up -d
+     → scp 镜像包到两台 /home/lhim/pm/releases/（+ 如有编排变更，覆盖 /home/lhim/pm/app/docker-compose.yml）
+服务器：docker load -i /home/lhim/pm/releases/pm-images-aarch64-v1.1.0.tar.gz
+     → 改 /home/lhim/pm/app/.env 的 IMAGE_TAG=v1.1.0（或命令行指定）
+     → cd /home/lhim/pm/app && docker compose up -d
 ```
 
 **Gitea 就绪后（可选，替换 scp 环节）**
 
 ```text
 开发机：git tag v1.1.0 → push 内网 Gitea → Release 上传 pm-images-aarch64-v1.1.0.tar.gz
-两台服务器：curl 内网下载 → bash pm-upgrade.sh <镜像包> /home/lhim/pm/project-manager/deploy/docker
+两台服务器：curl 内网下载 → bash pm-upgrade.sh <镜像包> /home/lhim/pm/app
 ```
 
+- **服务器不存源码**：升级只换镜像（+ 必要时换 `docker-compose.yml`），不存在"同步源码"这一步。
 - 逐步命令与验收见《部署与发布全流程手册.md》§4 / §5。
-- `.env` 不随升级覆盖（保留在两机 `deploy/docker/.env`）；如需新增配置项在发布说明中列明并手工合并。
+- `.env` 不随升级覆盖（保留在两机 `/home/lhim/pm/app/.env`）；如需新增配置项在发布说明中列明并手工合并。
 - 先升一台验收通过，再升第二台；回滚只需把 `IMAGE_TAG` 改回旧版本号（旧镜像仍在服务器本机）。
 - 服务器日常运行零外网依赖，仅升级时访问内网 Gitea（若启用）。
 
@@ -144,10 +149,11 @@ WEB_PORT=8080
 | --- | --- |
 | 数据库 | 崖山侧备份（每日 + 按 RPO）；两机无本地数据库 |
 | 附件 | 在 **OBS**：桶私有、不开放匿名读；下载走后端带 token 接口。删除附件仅逻辑删库、**对象不物理删**（审计留痕）→ 对象会累积，建议：① OBS 启用版本化 + 生命周期规则；② 定期（如每季度）用"库内 `attachment.file_path`（加 `uploads/` 前缀）"与桶内对象做差集，清理孤儿对象（清理前备份确认） |
-| 应用日志 | `docker compose -f /home/lhim/pm/project-manager/deploy/docker/docker-compose.yml logs -f backend` |
+| 应用日志 | `cd /home/lhim/pm/app && docker compose logs -f backend` |
 | 升级 | §5 流程 或《部署与发布全流程手册.md》§4；先升一台验证再升第二台 |
-| 巡检 | 每台 `curl http://127.0.0.1:8080/api/health`；网关健康探测状态；`docker compose -f /home/lhim/pm/project-manager/deploy/docker/docker-compose.yml ps` |
-| 凭据 | 账号密码/JWT/OBS SK 只在两机 `deploy/docker/.env` 与密码库，不入仓库/镜像 |
+| 巡检 | 每台 `curl http://127.0.0.1:8080/api/health`；网关健康探测状态；`cd /home/lhim/pm/app && docker compose ps` |
+| 磁盘 | 运行目录极小（仅配置文件）；空间主要被镜像占用 → 定期 `docker image prune` 清理无 tag 的旧版本镜像 |
+| 凭据 | 账号密码/JWT/OBS SK 只在两机 `/home/lhim/pm/app/.env` 与密码库，不入仓库/镜像 |
 
 ---
 
@@ -172,8 +178,16 @@ WEB_PORT=8080
 ### A.4 待办与进度
 1. ✅ 后端附件存储抽象 + OBS 实现（`app.storage.type` 与 `APP_STORAGE_OBS_*` 环境变量）——v3.1 已落地并提交。
 2. ✅ 开发机 arm64 镜像构建 + 本地 Docker 全链路验证（v3.1.0，157MB 包）——已完成。
-3. ⬜ 双机生产部署执行 + 《部署与发布全流程手册.md》§5 验收清单（含 A3 OBS 存量附件读取）。
-4. ⬜ （可选）Gitea 服务器部署 + 仓库迁移 + 首个 Release。
+3. ✅ 「服务器不存源码」模型验证——裸运行目录（仅 `docker-compose.yml` + `.env`）实测启动成功（db:up、前端 200）。
+4. ⬜ 双机生产部署执行 + 《部署与发布全流程手册.md》§5 验收清单（含 A3 OBS 存量附件读取）。
+5. ⬜ （可选）Gitea 服务器部署 + 仓库迁移 + 首个 Release。
+
+### A.5 「服务器是否存源码」的结论（2026-09-10）
+- 问题：是不是每次部署都得把源码传到服务器？
+- 核实：`Dockerfile.backend` / `Dockerfile.frontend` 均为多阶段构建，后端 jar（含 `db/migration-yashan` 建库 SQL）、前端 `dist`、`frontend-nginx.conf` **全部 COPY 进镜像**；compose 中除附件卷外**无任何指向源码的 bind mount**。
+- 结论：**服务器无需源码**。运行目录只需 `docker-compose.yml` + `.env`；代码变更通过镜像传递。
+- 配套措施：新增 `deploy/docker/docker-compose.deploy.yml`（无 `build:` 段 + `pull_policy: never`），彻底消除"镜像缺失时误触发联网构建/拉取"的风险；实测镜像缺失时报 `No such image: pm-backend:vX`（明确且快速失败）。
+- 附带收益：运行目录从"整棵源码树"缩到 2 个文件 → 升级不再有"同步源码"步骤，回滚只改一个 `IMAGE_TAG`。
 
 ---
 
@@ -182,4 +196,5 @@ WEB_PORT=8080
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-09-09 | 定稿为手册体：主体=部署/升级/运维；OBS 与内网 Gitea 敲定进 §1~§2；选型与问答移附录 A（此前评估过程版本保留于 git 历史） |
-| v1.1 | 2026-09-10 | §3 收敛为"架构口径 + 指向全流程手册"；部署模式定稿为 **B（预构建镜像）**（实测服务器无外网）；**修正 `.env` 路径为 `deploy/docker/.env`**（原写仓库根不生效）；运行目录统一 `/home/lhim/pm/project-manager`（废弃 `pm/app`）；§2 前提更新（DNS、compose aarch64 二进制、磁盘）；§5 升级流程补"scp 传包"当前路径；附录 A.4 更新进度 |
+| v1.1 | 2026-09-10 | §3 收敛为"架构口径 + 指向全流程手册"；部署模式定稿为 **B（预构建镜像）**（实测服务器无外网）；修正 `.env` 路径为与 compose 同目录；§2 前提更新（DNS、compose aarch64 二进制、磁盘）；§5 升级流程补"scp 传包"当前路径；附录 A.4 更新进度 |
+| v1.2 | 2026-09-10 | **服务器不存源码**：路径口径改为 `/home/lhim/pm/app`（运行）+ `/home/lhim/pm/releases`（归档）；§1 部署形态与 §5 升级流程同步；新增附录 A.5（结论与实测依据）；§6 补磁盘项、日志/巡检命令改在 app 目录执行 |
