@@ -46,6 +46,7 @@
 | v2.4 | 2026-09-08 | 阶段表单弹窗修复 + 冗余清理 | useFormModal 默认宽度加大、阶段表单标签改短并把提示说明放到输入框下方（不再被输入框遮挡）；阶段列表去掉"有说明"标签；移除画布遗留代码/接口与 `phase_tpl.flow_json` 字段引用（含 GET/{id}、saveFlow） | `0739c77` |
 | v3.0 | 2026-09-09 | 数据库国产化：MySQL → 崖山 YashanDB（Oracle 模式） | 依赖/配置/Java 方言/7 处手写 SQL 全量改造；`db/migration-yashan/` V1~V8（yashan 方言：VARCHAR(n CHAR)/CLOB/TIMESTAMP/NUMBER/identity）自研 `YashanMigrationRunner` 替代 Flyway；驱动 `yashandb-jdbc-1.9.3.jar` 本地引入（system scope）；主备驱动级 primary+TAF 高可用连接；deploy/README/docs 全面清理 MySQL 痕迹；PoC 关键项实库验证通过；11 张表数据全量迁移核验一致、本机 MySQL 下线 | `295d1b0` |
 | v3.1 | 2026-09-09 | 附件存储对象化（华为 OBS） | 新增 `AttachmentStorage` 抽象（`app.storage.type=local\|obs`，默认 local）；OBS 走 esdk-obs-java（path-style + 忽略证书校验），对象置于桶内 `uploads/` 前缀（与本地相对结构一致）；`AttachmentController` 存储无关化 + 流式下载；`file_path` 即对象相对 key、存量附件已上传桶、元数据零迁移、前端零改动；compose/.env 透传 `APP_STORAGE_*`；存量上传工具 `UploadExistingToObs`（test scope）；对象 key 对齐桶内 `uploads/` 前缀 | `8374e54`、`75877a7` |
+| v3.1.1 | 2026-09-10 | 部署资产整理与库名口径修正 | **服务器不存源码**模型定稿：新增 `deploy/docker/docker-compose.deploy.yml`（无 `build:` + `pull_policy: never`），发布包以 `docker-compose.yml` 之名下发，运行目录只需该文件 + `.env`（实测裸目录启动 db:up / 前端 200）；清理 `demo/`（静态原型，零引用）与 `deploy/linux/`（无执行场景）净删 1779 行；崖山库名 `project_manager` → **`PM`** 全仓库统一（含 application.yml / compose / .env.example / README / 两本手册）；deploy/README 重构为生产-本地-源码三段 | `e7f9754` |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -171,6 +172,15 @@
 - **配置**：`app.storage.type=local|obs` + `app.storage.obs.*`（`APP_STORAGE_*` 环境变量注入）；docker-compose/.env.example 透传（默认 local，部署切 obs 只需填 endpoint/bucket/ak/sk/prefix）。
 - **存量附件**：本地 `backend/uploads`（495 个）已由人工上传至桶 `pdmsbucket/uploads/2026/...`；另备一次性工具 `UploadExistingToObs`（test scope，不进生产 jar）供需要时重跑。
 - **回归**：编译通过；local 模式全回归（上传→下载字节一致→inline 预览→逻辑删除 404）；存量 pdf 在 8080 下载正常。**obs 模式实库验证**在服务器部署首启时执行（下载存量附件字节比对）。
+
+### v3.1.1 — 部署资产整理与库名口径修正
+- **服务器不存源码（模型定稿）**：核实两个 Dockerfile 均为多阶段构建——后端 jar（含建库迁移 SQL）、前端 `dist`、`frontend-nginx.conf` 全部 `COPY` 进镜像，compose 除附件卷外无任何指向源码的 bind mount → 服务器运行目录只需 `docker-compose.yml` + `.env`。新增 `deploy/docker/docker-compose.deploy.yml`（**无 `build:` 段** + `pull_policy: never`：镜像缺失时快速失败，不会误联网拉取或构建），由 `make-release.sh` 以 `docker-compose.yml` 之名打进发布包。
+  - 实测：裸运行目录（仅 2 个文件）启动成功（`db:up`、前端 HTTP 200）；用发布包实际文件复测同样通过；`IMAGE_TAG` 指向不存在镜像时报 `No such image` 快速失败。
+- **清理僵尸资产（净删 1779 行）**：删除 `demo/`（4 文件早期静态交互原型，真实前端 `frontend/` 已完全覆盖，全仓库零引用）、`deploy/linux/`（Linux 源码直跑脚本；本项目唯一开发机为 Windows、服务器不存源码，无任何执行场景）；`.dockerignore` 去掉失效的 `deploy/linux/.pids`。
+- **修正崖山库名口径**：`project_manager` → **`PM`**（Oracle 模式下即 schema 名，大写）。覆盖 `application.yml` 默认值、`docker-compose.yml`/`docker-compose.deploy.yml` 默认值、`.env.example`、`README`、`deploy/README`、两本部署手册、迁移实施方案、ITERATION 速查——原默认值与实库不符，漏配 `YASHAN_DB` 即连错库。
+- **发版脚本**：`make-release.sh` 产出 5 件（镜像包 + 服务器编排 + `.env` 模板含预填 `IMAGE_TAG` + `pm-upgrade.sh` + 服务器步骤说明），产出前清空旧目录防上一版残留；`pm-upgrade.sh` 默认运行目录 `~/pm/app`。
+- **文档**：`deploy/README` 重构为「生产 Docker（服务器）/ 本地 Docker 试跑 / Windows 源码模式」三段；《部署与发布全流程手册》与《双机ARM服务器独立部署方案》同步为"服务器不存源码"口径。
+- **产物**：arm64 镜像包（后端 + 前端）由开发机 buildx 产出，两台 aarch64 服务器通用。
 
 ---
 
