@@ -7,3 +7,6 @@ backend/uploads
 deploy/linux/.pids
 deploy/docker/.env
 *.log
+
+# 本地运行配置（含凭证）
+.env

@@ -2,12 +2,15 @@
 # build:  docker build -f deploy/docker/Dockerfile.backend -t pm-backend .
 FROM maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /app
+# Maven 镜像加速（默认 central 在国内较慢；如需内网私服可替换该地址）
+RUN mkdir -p /root/.m2 \
+ && printf '%s' '<settings><mirrors><mirror><id>aliyun</id><mirrorOf>central</mirrorOf><url>https://maven.aliyun.com/repository/public</url></mirror></mirrors></settings>' > /root/.m2/settings.xml
 COPY backend/pom.xml ./pom.xml
 # v3.0：system-scope 崖山驱动 jar 必须在构建上下文内（pom 以 ${project.basedir}/lib 引用）
 COPY backend/lib ./lib
-RUN mvn -B -q dependency:go-offline || true
 COPY backend/src ./src
-RUN mvn -B -q -DskipTests package
+# maven.test.skip：跳过测试编译/执行（一次性工具类不参与镜像构建，加快构建）
+RUN mvn -B -q -Dmaven.test.skip=true package
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app

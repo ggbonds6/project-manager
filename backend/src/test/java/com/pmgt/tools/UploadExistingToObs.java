@@ -48,9 +48,8 @@ public class UploadExistingToObs {
         String bucket = System.getenv("APP_STORAGE_OBS_BUCKET");
         String ak = System.getenv("APP_STORAGE_OBS_AK");
         String sk = System.getenv("APP_STORAGE_OBS_SK");
-        String prefix = System.getenv("APP_STORAGE_OBS_PREFIX"); // 与后端一致，默认 uploads
-        if (isBlank(prefix)) prefix = "uploads";
-        prefix = prefix.trim().replaceAll("/+$", "");
+        String prefixEnv = System.getenv("APP_STORAGE_OBS_PREFIX"); // 与后端一致，默认 uploads
+        final String prefix = isBlank(prefixEnv) ? "uploads" : prefixEnv.trim().replaceAll("/+$", "");
         if (!dryRun && (isBlank(endpoint) || isBlank(bucket) || isBlank(ak) || isBlank(sk))) {
             System.err.println("缺少环境变量 APP_STORAGE_OBS_ENDPOINT/BUCKET/AK/SK");
             System.exit(2);

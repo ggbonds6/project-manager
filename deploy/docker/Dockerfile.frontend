@@ -2,7 +2,9 @@
 FROM node:20-alpine AS build
 WORKDIR /fe
 COPY frontend/package*.json ./
-RUN npm ci --ignore-scripts || npm install --ignore-scripts
+# npm 镜像加速（默认 registry 在国内较慢；如需内网私服可替换该地址）
+RUN npm config set registry https://registry.npmmirror.com \
+ && (npm ci --ignore-scripts || npm install --ignore-scripts)
 COPY frontend ./
 RUN npm run build
 
