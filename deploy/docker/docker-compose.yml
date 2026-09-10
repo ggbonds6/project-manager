@@ -13,6 +13,10 @@ services:
     container_name: pm-backend
     restart: unless-stopped
     environment:
+      # 时区（政务系统日期敏感；容器默认 UTC 会导致时间差 8 小时）
+      TZ: ${TZ:-Asia/Shanghai}
+      # JVM 参数（内存上限 + 时区，防长期运行内存膨胀；可用 .env 覆盖）
+      JAVA_TOOL_OPTIONS: "${JAVA_TOOL_OPTIONS:--Xms256m -Xmx512m -Duser.timezone=Asia/Shanghai}"
       # 崖山主备（驱动级 primary + TAF），URL 含 ? & 需加引号
       SPRING_DATASOURCE_URL: "jdbc:yasdb:primary://${YASHAN_MASTER_IP:-10.254.212.106}:1688,${YASHAN_STANDBY_IP:-10.254.212.107}:1688/${YASHAN_DB:-project_manager}?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2"
       SPRING_DATASOURCE_USERNAME: ${YASHAN_USER:-pm}
@@ -33,6 +37,19 @@ services:
       - ${UPLOAD_VOLUME:-pm_uploads}:/uploads
     expose:
       - "8080"
+    healthcheck:
+      # 容器内无 curl，用 bash /dev/tcp 探测端口
+      test: ["CMD-SHELL", "timeout 2 bash -c '</dev/tcp/127.0.0.1/8080' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 90s
+    logging:
+      # 限制容器日志体积，防长期运行打满磁盘（无外网服务器尤为重要）
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
   frontend:
     image: pm-frontend:${IMAGE_TAG:-latest}
@@ -41,10 +58,19 @@ services:
       dockerfile: deploy/docker/Dockerfile.frontend
     container_name: pm-frontend
     restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
     depends_on:
-      - backend
+      backend:
+        # 后端健康后再起前端，避免启动瞬间 502
+        condition: service_healthy
     ports:
       - "${WEB_PORT:-8080}:80"
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
 
 volumes:
   pm_uploads:
