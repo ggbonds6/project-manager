@@ -98,6 +98,8 @@ PM ${VER} 服务器部署步骤（${ARCH}，离线：只 load 不 build）
    cp .env.example .env && vi .env
    必填：YASHAN_PASSWORD / JWT_SECRET（两台相同）/ OBS 五项；确认 IMAGE_TAG=${VER}
    服务器附件统一 OBS：APP_STORAGE_TYPE=obs、APP_STORAGE_OBS_PREFIX=uploads
+   ★YASHAN_DB=PM、YASHAN_USER=pm 两项【保持默认不要改】（用 sys 会报表不存在，密码不符还会
+     因容器反复重试触发数据库锁定 YAS-02193 the account is locked）
    之后升级【不要】用 .env.example 覆盖 .env
 
 3) 加载镜像并启动（不加 --build）

@@ -80,7 +80,7 @@ IMAGE_TAG=v3.1.1
 YASHAN_MASTER_IP=10.254.212.106
 YASHAN_STANDBY_IP=10.254.212.107
 YASHAN_DB=PM                   # Oracle 模式下的 schema 名（大写；勿写 project_manager）
-YASHAN_USER=pm                 # 必须用业务账号 pm；勿用 sys（会查 SYS.* 报 YAS-02012）
+YASHAN_USER=pm                 # ★必须用业务账号 pm；勿用 sys（①会查 SYS.* 报 YAS-02012；②密码不符会因容器反复重试致账号被锁 YAS-02193）
 YASHAN_PASSWORD=<业务账号密码>
 
 # ---------- 安全（两机必须相同，≥32 字节随机串）----------
@@ -199,3 +199,4 @@ WEB_PORT=8080
 | v1.1 | 2026-09-10 | §3 收敛为"架构口径 + 指向全流程手册"；部署模式定稿为 **B（预构建镜像）**（实测服务器无外网）；修正 `.env` 路径为与 compose 同目录；§2 前提更新（DNS、compose aarch64 二进制、磁盘）；§5 升级流程补"scp 传包"当前路径；附录 A.4 更新进度 |
 | v1.2 | 2026-09-10 | **服务器不存源码**：路径口径改为 `/home/lhim/pm/app`（运行）+ `/home/lhim/pm/releases`（归档）；§1 部署形态与 §5 升级流程同步；新增附录 A.5（结论与实测依据）；§6 补磁盘项、日志/巡检命令改在 app 目录执行 |
 | v1.3 | 2026-09-10 | **崖山库名口径修正**：`project_manager` → **`PM`**（Oracle 模式下即 schema 名、大写；与实库一致，防漏配 `YASHAN_DB` 连错库）——更新 §1 定稿表、§3.2 `.env` 示例；附录 A.1 标注 `deploy/linux` 脚本已移除 |
+| v1.4 | 2026-09-10 | **账号口径加固**：§3.2 明确 `YASHAN_USER` 只能用业务账号 `pm`（用 `sys`：① 按登录用户 schema 查表会报表不存在；② 密码不符 + 容器反复重试会触发账号锁定 `YAS-02193`） |
