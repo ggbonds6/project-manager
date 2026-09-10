@@ -1,7 +1,7 @@
-# 生产部署手册：双机 ARM 独立部署（崖山 YashanDB + OBS + 内网 Gitea 发布）
+# 生产部署手册：双机 ARM 独立部署（崖山 YashanDB + OBS + 内网 Gitea 发布（可选））
 
-> **文档性质：定稿手册（v1.0，2026-09-09）。** 主体（§1~§6）是部署/升级/运维的唯一操作依据；
-> 方案选型对比、备选路线与问答记录统一放在**附录 A（过程记录）**，修订历史见**附录 B**。
+> **文档性质：定稿手册（v1.1，2026-09-10）。** 本文件是**架构与运维**依据（架构、环境前提、网关、运维、附录）；
+> **逐条操作步骤**见《部署与发布全流程手册.md》。方案选型对比与问答记录统一放在**附录 A（过程记录）**，修订历史见**附录 B**。
 
 ---
 
@@ -13,144 +13,95 @@
 | 服务器 | 两台 **ARM64**（Linux，已装 Docker Engine + Compose v2） |
 | 数据库 | 外部**崖山 YashanDB（Oracle 模式）主备**（主 10.254.212.106 / 备 10.254.212.107:1688，库 `project_manager`，账号 `pm`）——两台指向同一套，驱动级 primary + TAF 高可用 |
 | 附件存储 | **华为 OBS**（通用 S3 协议、忽略证书校验），桶私有、不匿名读；附件下载/预览一律经后端带 token 接口 |
-| 代码托管 / 发布 | 内网 **Gitea**：git 托管 + Release 资产分发；服务器升级 = 下载 Release → `scripts/pm-upgrade.sh` |
+| 代码托管 / 发布 | 内网 **Gitea**（可选）：git 托管 + Release 资产分发；**未就绪前用 scp 传镜像包**，服务器升级 = `docker load` + 改 `IMAGE_TAG` + `compose up -d` |
 | 入口 | 上层网关负载均衡（用户自建），健康检查 **`/api/health`**（db:up 才在池内） |
 | 安全基线 | 两机 `.env` 的 `JWT_SECRET` **必须一致**（否则跨机验签 401）；业务账号勿用 sys；密码/密钥不进仓库与镜像 |
 
-> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**，§3 步骤可直接执行；OBS 模式实库验证在服务器首启时按 §3.5 验收 A3 执行。
+> **代码状态**：附件存储抽象（local/OBS）已于 **v3.1 落地并提交**；arm64 镜像构建（开发机 buildx）与本地 Docker 全链路已验证通过。
+> **操作步骤**（含命令与预期输出）见《部署与发布全流程手册.md》；OBS 模式实库验证在该手册 §5 验收 A3 执行。
 
 ---
 
 ## 2. 部署前必须满足的前提（逐项打勾）
 
-1. **[代码] 附件存储 OBS 实现已合入并提交**（v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`，OBS 走 esdk-obs-java：path-style + 忽略证书校验 + **对象前缀 `uploads/`**；存量附件已由人工上传至桶 `pdmsbucket/uploads/2026/...`，与 `attachment.file_path` 通过前缀精确对应）。**obs 模式实库验证**在服务器部署完成后执行（§3.5 验收 A3：下载存量附件与源文件字节比对）。
-2. **[OBS] 桶与凭证**：桶名（私有读写）、AK/SK、endpoint（内网域名/IP，含协议）；已确认 SDK 侧 `pathStyle=true`、**忽略证书校验**（esdk-obs-java `validateCertificate` 默认 false）。
+1. **[代码] 附件存储 OBS 实现已合入并提交**（v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`，OBS 走 esdk-obs-java：path-style + 忽略证书校验 + **对象前缀 `uploads/`**；存量附件已由人工上传至桶 `pdmsbucket/uploads/2026/...`，与 `attachment.file_path` 通过前缀精确对应）。**obs 模式实库验证**在服务器部署完成后执行（全流程手册 §5 验收 A3：下载存量附件与源文件字节比对）。
+2. **[OBS] 桶与凭证**：桶名（私有读写）、AK/SK、endpoint（内网域名/IP，含协议）；已确认 SDK 侧 `pathStyle=true`、**忽略证书校验**（esdk-obs-java `validateCertificate` 默认 false）。内网访问 `obs.lhim.com` 需先配好 DNS（10.254.208.100 / 10.254.209.100）。
 3. **[数据库] 崖山连通**：两机到 10.254.212.106/.107 的 1688 可达；`pm` 账号可连（库已完成 V1~V8 初始化与数据迁移）。
 4. **[密钥] `JWT_SECRET`**：生成一个 ≥32 字节随机串，两机 `.env` 填写**相同**值。
-5. **[发布源]（可选，仅升级与模式 B 需要）**：内网 Gitea（或 GitHub Release）仓库与上传权限。**首次部署走模式 A（源码直建）不需要发布源**，有源码即可。
-6. **[Docker] 两机** `docker compose version` 可用；磁盘预留镜像空间。**模式 A 要求服务器能联网**（拉 Docker Hub 基础镜像 + Maven Central + npm registry）；离线服务器请走模式 B。
+5. **[构建机] 开发机**已装 Docker Desktop 并启用 arm64 模拟（`tonistiigi/binfmt`）；**服务器无外网，不参与构建**。
+6. **[Docker] 两机** `docker compose version` 可用（麒麟源无 compose 包，用官方 aarch64 二进制放入 `~/.docker/cli-plugins/`）；磁盘预留镜像空间（镜像包约 150MB，含历史版本建议预留 ≥5GB）。
+7. **[发布源]（可选）**：内网 Gitea 尚未搭建时，用 scp 传镜像包即可完成部署；Gitea 建好后可改为 Release 下载 + `scripts/pm-upgrade.sh`。
 
 ---
 
-## 3. 服务器部署步骤（两台各执行一遍）
+## 3. 服务器部署步骤
 
-### 3.0 先选部署模式（重要：决定你是否需要"打包"）
+> **操作级步骤以《部署与发布全流程手册.md》为唯一依据**（该手册逐条给出「在哪执行 / 命令 / 预期输出 / 失败怎么办」）。
+> 本节只保留部署模式定稿与路径、字段口径，避免两处步骤互相矛盾。
 
-| 模式 | 适用 | 你需要准备什么 | 服务器是否要联网构建 |
-| --- | --- | --- | --- |
-| **A. 源码直建（推荐首次）** | 服务器能访问 Docker Hub / Maven Central / npm registry | **只需源码**（GitHub 拉取、内网 Gitea 或拷贝 tar 均可） | 是（首次 `--build` 拉基础镜像 + 依赖，几分钟） |
-| **B. 预构建镜像** | 服务器离线/不便联网；或想升级免构建 | 发布机产出的 arm64 镜像 tar（§3.3） | 否（`docker load` 即可） |
+### 3.0 部署模式（定稿：模式 B · 预构建镜像）
 
-> 你当前"只有 GitHub 源码、未打包"→ **走模式 A 即可，无需任何打包**。
-> 源码在 ARM 服务器上构建时，Dockerfile 会自动拉取 arm64 基础镜像，产物即本机镜像，不涉及跨架构。
+| 模式 | 适用 | 服务器是否需联网构建 |
+| --- | --- | --- |
+| A. 源码直建 | 服务器能访问 Docker Hub / Maven Central / npm registry | 是 |
+| **B. 预构建镜像（定稿）** | **两台服务器均无外网 → 必须走 B** | 否（`docker load` 即可） |
 
-### 3.1 模式 A：源码获取 + 服务器构建启动
+> 早期设计含“服务器有网可直建”（模式 A），实测**两台服务器均无外网**，故定稿为**模式 B**：
+> 开发机用 buildx（QEMU 模拟）产 arm64 镜像 → scp 上传 → 服务器 `docker load` + `docker compose up -d`（**不加 `--build`**）。
+> 两台服务器均为 **aarch64**，故**一份 arm64 镜像两台通用**。
+
+### 3.1 路径与文件口径（服务器）
+
+| 内容 | 路径 |
+| --- | --- |
+| 源码目录 | `/home/lhim/pm/project-manager`（首次 scp 上传；服务器不能 git pull） |
+| compose 文件 | `/home/lhim/pm/project-manager/deploy/docker/docker-compose.yml` |
+| **`.env`** | **`/home/lhim/pm/project-manager/deploy/docker/.env`** |
+| 镜像包 | `/home/lhim/pm/releases/pm-images-aarch64-<ver>.tar.gz` |
+
+> ⚠️ **`.env` 必须与 docker-compose.yml 同目录**：compose v2 从 compose 文件所在目录读取 `.env`，放在仓库根**不生效**（会静默回落到默认值）。
+
+### 3.2 配置 `.env`（两台内容完全一致）
 
 ```bash
-# 0) 准备目录（普通用户家目录下，无需 sudo）
-mkdir -p /home/lhim/pm
-# 1) 把源码放到服务器（三选一）：
-#    ① 直接 GitHub clone（仓库私有则配凭据/令牌）：
-#       git clone https://github.com/<owner>/project-manager.git /home/lhim/pm/project-manager
-#    ② 内网 Gitea clone（自建后）：
-#       git clone http(s)://git.pm.internal/<org>/project-manager.git /home/lhim/pm/project-manager
-#    ③ 拷贝源码包（无需外网/凭据）：在开发机执行打包，再 scp 到服务器解压
-#       本地： tar --exclude=.git --exclude=node_modules --exclude=target \
-#                   --exclude=backend/uploads --exclude=.workbuddy -czf pm-src.tar.gz project-manager
-#       服务器： tar -xzf pm-src.tar.gz -C /home/lhim/pm/
-
-cd /home/lhim/pm/project-manager
-# 2) 准备 .env（放仓库根，compose 从当前目录读取；内容见 §3.4）
-cp deploy/docker/.env.example ./.env && vi ./.env
-# 3) 构建并启动（首次拉镜像与依赖需几分钟；产物=本机 arm64 镜像，无需再打包）
-docker compose -f deploy/docker/docker-compose.yml up -d --build
+cd /home/lhim/pm/project-manager/deploy/docker
+cp .env.example .env && vi .env
 ```
 
-### 3.2 模式 B：加载预构建镜像（离线 / 升级免构建）
-
-```bash
-# 前提：已有发布机产出的镜像 tar（产出方法见 §5 与附录 A.3，本机开发机仅能出 x86，
-#       arm64 需 ARM 服务器/支持 buildx 的机器产出）
-mkdir -p /home/lhim/pm/releases /home/lhim/pm/app
-cd /home/lhim/pm/releases
-curl -fLO https://git.pm.internal/<org>/project-manager/releases/download/<ver>/pm-<ver>-arm64-images.tar.gz   # 或 GitHub Release / 人工拷贝
-bash /home/lhim/pm/app/pm-upgrade.sh pm-<ver>-arm64-images.tar.gz /home/lhim/pm/app     # docker load → compose up -d
-```
-
-### 3.3 预构建镜像产出方法（仅模式 B 需要）
-
-在有 Docker 的发布机执行（发布机须能产 arm64：ARM 服务器直 build，或 x86 用 buildx）：
-
-```bash
-VER=<版本>
-# ARM 发布机：
-docker build -f deploy/docker/Dockerfile.backend  -t pm-backend:$VER .
-docker build -f deploy/docker/Dockerfile.frontend -t pm-frontend:$VER .
-# x86 发布机（buildx + QEMU 模拟 arm64）：
-docker buildx build --platform linux/arm64 -t pm-backend:$VER  -f deploy/docker/Dockerfile.backend .
-docker buildx build --platform linux/arm64 -t pm-frontend:$VER -f deploy/docker/Dockerfile.frontend .
-# 导出单文件供服务器 load：
-docker save pm-backend:$VER pm-frontend:$VER | gzip > pm-$VER-arm64-images.tar.gz
-```
-
-### 3.4 配置 `.env`（两种模式通用；两机除注释本机外内容一致）
-
-```bash
-cd /home/lhim/pm/project-manager     # 模式 A；模式 B 则进入运行工程目录
-cp deploy/docker/.env.example ./.env && vi ./.env   # .env 放当前目录（compose 从当前目录读取）
+```ini
+# ---------- 镜像版本：与 docker load 的 tag 一致（回滚时改回旧版本号）----------
+IMAGE_TAG=v3.1.1
 
 # ---------- 崖山数据库 ----------
 YASHAN_MASTER_IP=10.254.212.106
 YASHAN_STANDBY_IP=10.254.212.107
 YASHAN_DB=project_manager
-YASHAN_USER=pm
+YASHAN_USER=pm                 # 必须用业务账号 pm；勿用 sys（会查 SYS.* 报 YAS-02012）
 YASHAN_PASSWORD=<业务账号密码>
 
-# ---------- 安全（两机必须相同，≥32 字节随机串） ----------
+# ---------- 安全（两机必须相同，≥32 字节随机串）----------
 JWT_SECRET=<相同随机串>
 
-# ---------- 附件：OBS（生产定稿） ----------
+# ---------- 附件：OBS（生产定稿）----------
 APP_STORAGE_TYPE=obs                 # local=本地盘（默认）| obs=华为 OBS
 APP_STORAGE_OBS_ENDPOINT=https://obs.lhim.com
 APP_STORAGE_OBS_BUCKET=pdmsbucket
 APP_STORAGE_OBS_AK=<ak>
 APP_STORAGE_OBS_SK=<sk>
-APP_STORAGE_OBS_PREFIX=uploads       # 对象在桶内 uploads/ 前缀下（与已上传存量结构一致）；桶根直存可置空
+APP_STORAGE_OBS_PREFIX=uploads       # 对象在桶内 uploads/ 前缀下（与存量结构一致）；桶根直存可置空
 # 本地盘/NFS 过渡期才需要：UPLOAD_VOLUME=/mnt/pm-uploads
 
 # ---------- 对外端口 ----------
 WEB_PORT=8080
 ```
 
-### 3.5 本机验证与部署后验收（每台，逐项通过）
+### 3.3 部署与验收
 
-```bash
-# A1 健康检查（同时验证已连崖山）
-curl http://127.0.0.1:8080/api/health        # 期望 {"code":0,...,"db":"up"}
+- **首次部署**：见《部署与发布全流程手册.md》**§3**（建目录 → 配 `.env` → `compose config` 自检 → `docker load` → `up -d`）。
+- **迭代更新**：见该手册 **§4**；**回滚**：`.env` 的 `IMAGE_TAG` 改回旧版本号后 `up -d`（旧镜像仍在服务器本机）。
+- **验收清单**：见该手册 **§5**（A1 健康检查 / A3 存量附件读 OBS / A4 新上传 / A6 跨机 token）。
 
-# A2 登录拿 token
-TOKEN=$(curl -s -X POST http://127.0.0.1:8080/api/auth/login -H 'Content-Type: application/json' \
-  -d '{"account":"admin","password":"123456"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['token'])")
-
-# A3 【OBS 关键验收】取一个存量附件并下载：应 HTTP 200 且 size>0（obs 模式读取桶内 uploads/ 前缀对象）
-LIST=$(curl -s http://127.0.0.1:8080/api/projects/<项目id>/attachments -H "Authorization: Bearer $TOKEN")
-AID=<任一行附件id，如 285>
-curl -s -o /tmp/att.bin -w "HTTP=%{http_code} size=%{size_download}\n" \
-  "http://127.0.0.1:8080/api/attachments/$AID/download" -H "Authorization: Bearer $TOKEN"
-
-# A4 新上传一个测试附件 → 能下载且内容一致（验证 obs 写桶）
-curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: Bearer $TOKEN" \
-  -F "file=@/tmp/att.bin" -F "projectId=<项目id>" -F "bizType=PROJECT" -F "bizId=<项目id>"
-
-# A5 逻辑删除后下载应返回附件不存在（HTTP 200 + body code=404）
-# A6（第二台起来后）用第一台签发的 token 访问第二台同一下载 → 200 且字节一致（验证 JWT_SECRET 一致 + OBS 天然跨机一致）
-```
 > 源文件字节比对：把下载文件与开发机本地 `backend/uploads` 中同名文件 `sha256sum` 对比；obs 模式首启若 A3 下载失败，先核对 `.env` 的 `APP_STORAGE_OBS_PREFIX=uploads` 与桶内结构是否一致。
-
-### 3.6 第二台
-重复 §3.1~§3.5。**唯一注意**：`.env` 中 `JWT_SECRET`、崖山连接、OBS 凭证与第一台**完全一致**。
-
----
 
 ## 4. 网关负载均衡
 
@@ -161,15 +112,29 @@ curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: 
 
 ---
 
-## 5. 升级流程（定稿：内网 Gitea Release）
+## 5. 升级流程
+
+**当前定稿（Gitea 未就绪前）：scp 传镜像包**
 
 ```text
-开发机：git tag v1.1.0 → push 内网 Gitea
-     → Gitea Releases 上传 pm-v1.1.0-arm64-images.tar.gz + pm-v1.1.0-deploy.tar.gz
-两台服务器：curl 内网下载 → bash pm-upgrade.sh pm-v1.1.0-arm64-images.tar.gz /home/lhim/pm/app
+开发机：bash scripts/make-release.sh v1.1.0      # 产 dist/pm-release-v1.1.0/
+     → scp 镜像包到两台 /home/lhim/pm/releases/
+服务器：docker load -i .../pm-images-aarch64-v1.1.0.tar.gz
+     → 改 deploy/docker/.env 的 IMAGE_TAG=v1.1.0（或命令行指定）
+     → docker compose -f deploy/docker/docker-compose.yml up -d
 ```
-- `.env` 不随升级覆盖（保留在两机）；如需新增配置项在发布说明中列明并手工合并。
-- 服务器日常运行零外网依赖，仅升级时访问内网 Gitea。
+
+**Gitea 就绪后（可选，替换 scp 环节）**
+
+```text
+开发机：git tag v1.1.0 → push 内网 Gitea → Release 上传 pm-images-aarch64-v1.1.0.tar.gz
+两台服务器：curl 内网下载 → bash pm-upgrade.sh <镜像包> /home/lhim/pm/project-manager/deploy/docker
+```
+
+- 逐步命令与验收见《部署与发布全流程手册.md》§4 / §5。
+- `.env` 不随升级覆盖（保留在两机 `deploy/docker/.env`）；如需新增配置项在发布说明中列明并手工合并。
+- 先升一台验收通过，再升第二台；回滚只需把 `IMAGE_TAG` 改回旧版本号（旧镜像仍在服务器本机）。
+- 服务器日常运行零外网依赖，仅升级时访问内网 Gitea（若启用）。
 
 ---
 
@@ -179,10 +144,10 @@ curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: 
 | --- | --- |
 | 数据库 | 崖山侧备份（每日 + 按 RPO）；两机无本地数据库 |
 | 附件 | 在 **OBS**：桶私有、不开放匿名读；下载走后端带 token 接口。删除附件仅逻辑删库、**对象不物理删**（审计留痕）→ 对象会累积，建议：① OBS 启用版本化 + 生命周期规则；② 定期（如每季度）用"库内 `attachment.file_path`（加 `uploads/` 前缀）"与桶内对象做差集，清理孤儿对象（清理前备份确认） |
-| 应用日志 | `docker compose -f /home/lhim/pm/app/docker-compose.yml logs -f backend` |
-| 升级 | §5 流程；先升一台验证再升第二台 |
-| 巡检 | 每台 `/api/health`；网关健康探测状态；`docker compose ps` |
-| 凭据 | 账号密码/JWT/OBS SK 只在两机 `.env` 与 Gitea/密码库，不入仓库 |
+| 应用日志 | `docker compose -f /home/lhim/pm/project-manager/deploy/docker/docker-compose.yml logs -f backend` |
+| 升级 | §5 流程 或《部署与发布全流程手册.md》§4；先升一台验证再升第二台 |
+| 巡检 | 每台 `curl http://127.0.0.1:8080/api/health`；网关健康探测状态；`docker compose -f /home/lhim/pm/project-manager/deploy/docker/docker-compose.yml ps` |
+| 凭据 | 账号密码/JWT/OBS SK 只在两机 `deploy/docker/.env` 与密码库，不入仓库/镜像 |
 
 ---
 
@@ -204,10 +169,11 @@ curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: 
 - 澄清：Nexus/Artifactory 属制品/依赖仓库（非代码托管），且 Nexus 官方仅 x86_64（ARM 无官方镜像），本项目不引入。
 - 搭建 Gitea 见独立手册《内网代码托管平台搭建-Gitea.md》。
 
-### A.4 待办（落地顺序）
-1. 后端附件存储抽象 + OBS 实现（含 `app.storage.type` 配置与 `APP_STORAGE_OBS_*` 环境变量）。
-2. Gitea 服务器部署 + 仓库迁移 + 首个 Release。
-3. 双机生产部署执行 + §3.5 验收清单。
+### A.4 待办与进度
+1. ✅ 后端附件存储抽象 + OBS 实现（`app.storage.type` 与 `APP_STORAGE_OBS_*` 环境变量）——v3.1 已落地并提交。
+2. ✅ 开发机 arm64 镜像构建 + 本地 Docker 全链路验证（v3.1.0，157MB 包）——已完成。
+3. ⬜ 双机生产部署执行 + 《部署与发布全流程手册.md》§5 验收清单（含 A3 OBS 存量附件读取）。
+4. ⬜ （可选）Gitea 服务器部署 + 仓库迁移 + 首个 Release。
 
 ---
 
@@ -216,3 +182,4 @@ curl -s -X POST http://127.0.0.1:8080/api/attachments/upload -H "Authorization: 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
 | v1.0 | 2026-09-09 | 定稿为手册体：主体=部署/升级/运维；OBS 与内网 Gitea 敲定进 §1~§2；选型与问答移附录 A（此前评估过程版本保留于 git 历史） |
+| v1.1 | 2026-09-10 | §3 收敛为"架构口径 + 指向全流程手册"；部署模式定稿为 **B（预构建镜像）**（实测服务器无外网）；**修正 `.env` 路径为 `deploy/docker/.env`**（原写仓库根不生效）；运行目录统一 `/home/lhim/pm/project-manager`（废弃 `pm/app`）；§2 前提更新（DNS、compose aarch64 二进制、磁盘）；§5 升级流程补"scp 传包"当前路径；附录 A.4 更新进度 |

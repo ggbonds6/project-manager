@@ -11,23 +11,26 @@
 #
 # 用法：
 #   ./pm-upgrade.sh <镜像tar包> [app目录]
-#   例：./pm-upgrade.sh pm-v1.0.0-arm64-images.tar.gz ~/pm/app
-#     （缺省 app 目录 = $HOME/pm/app，其次脚本同级的 ../deploy/docker）
+#   例：./pm-upgrade.sh pm-images-aarch64-v1.1.0.tar.gz
+#     （缺省 app 目录 = $HOME/pm/project-manager/deploy/docker；其次 $HOME/pm/app；最后脚本同级 ../deploy/docker）
 # ============================================================
 set -euo pipefail
 
 IMG_TAR="${1:?用法: pm-upgrade.sh <镜像tar包> [app目录]}"
 APP_DIR="${2:-}"
 
-# 定位运行工程目录（含 docker-compose.yml）
+# 定位运行工程目录（含 docker-compose.yml 与 .env）
 find_app_dir() {
-  local cand
+  local cand=""
   if [ -n "$APP_DIR" ]; then
     cand="$APP_DIR"
   else
-    cand="${HOME}/pm/app"
+    local c
+    for c in "${HOME}/pm/project-manager/deploy/docker" "${HOME}/pm/app"; do
+      if [ -f "$c/docker-compose.yml" ]; then cand="$c"; break; fi
+    done
   fi
-  if [ ! -f "$cand/docker-compose.yml" ]; then
+  if [ -z "$cand" ] || [ ! -f "$cand/docker-compose.yml" ]; then
     # 回退：脚本仓库内 deploy/docker
     local here
     here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

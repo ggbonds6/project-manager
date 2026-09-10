@@ -17,10 +17,15 @@ cd project-manager
 
 # 2) 准备环境变量（YASHAN_PASSWORD 必须填写）
 cp deploy/docker/.env.example deploy/docker/.env
-#    编辑 .env：填入 YASHAN_PASSWORD
+#    编辑 deploy/docker/.env：填入 YASHAN_PASSWORD 等（⚠️ .env 必须与 docker-compose.yml 同目录）
 
-# 3) 构建并启动（首次会拉取镜像并构建，需几分钟）
+# 3-a) 有外网（本机开发测试）：构建并启动
 docker compose -f deploy/docker/docker-compose.yml up -d --build
+
+# 3-b) 无外网服务器（生产）：在开发机构建镜像后 scp 上传，服务器只 load 不 build
+#     docker load -i /home/lhim/pm/releases/pm-images-aarch64-<ver>.tar.gz
+#     docker compose -f deploy/docker/docker-compose.yml up -d        ← 不加 --build
+#     详见 docs/部署与发布全流程手册.md §3
 
 # 4) 查看状态 / 日志
 docker compose -f deploy/docker/docker-compose.yml ps
