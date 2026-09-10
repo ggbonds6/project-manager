@@ -18,8 +18,11 @@ spring:
       connection-timeout: 15000   # 主备切换时留足建连时间
   servlet:
     multipart:
-      max-file-size: 100MB
-      max-request-size: 200MB
+      # 单文件上限。政务附件常有大幅扫描件/图纸，100MB 偏紧（超限会抛
+      # FileSizeLimitExceededException 直接 500），放宽到 500MB；
+      # 同步需匹配 nginx 的 client_max_body_size，并确认容器临时目录有足够空间。
+      max-file-size: 500MB
+      max-request-size: 600MB
 
 mybatis-plus:
   configuration:

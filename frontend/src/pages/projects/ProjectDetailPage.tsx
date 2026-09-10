@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Button,
   Card,
@@ -48,8 +48,10 @@ import PhaseEditModal from '@/components/PhaseEditModal';
 import AttachmentUploadModal from '@/components/AttachmentUploadModal';
 import AttachmentPreviewModal from '@/components/AttachmentPreviewModal';
 import ProjectOverviewPanel from '@/components/ProjectOverviewPanel';
+import UploadTaskCenter from '@/components/UploadTaskCenter';
 import { useFormModal } from '@/components/useFormModal';
 import { useAuth } from '@/store/auth';
+import { useUploadTasks } from '@/store/uploadTask';
 import { useDict } from '@/hooks/useOptions';
 import { fmtDate, fmtDateTime, fmtFileSize, fmtMoney } from '@/utils/format';
 import { payNodeTag, payStatusTag, phaseNameTag, projectStatusTag, projectTypeTag } from '@/config/tagDict';
@@ -187,6 +189,22 @@ export default function ProjectDetailPage() {
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // 上传中心：把当前项目告知全局上传状态（用于拉取/轮询该项目的上传记录）
+  const { setProjectId, tasks: uploadTasks } = useUploadTasks();
+  useEffect(() => {
+    setProjectId(id ?? null);
+  }, [id, setProjectId]);
+
+  // 有任务后台上传成功后，自动刷新附件列表（用户不必手动刷新页面）
+  const successCount = uploadTasks.filter((t) => t.status === 'SUCCESS').length;
+  const prevSuccessRef = useRef(0);
+  useEffect(() => {
+    if (successCount > prevSuccessRef.current) {
+      reload();
+    }
+    prevSuccessRef.current = successCount;
+  }, [successCount, reload]);
 
   // 总项目容器：拉取其子项目供“子项目”页签展示
   useEffect(() => {
@@ -991,6 +1009,8 @@ export default function ProjectDetailPage() {
               上传附件（项目级）
             </Button>
           )}
+          {/* 统一的上传入口：随时查看后台进度与历史记录（不依赖上传弹窗是否打开） */}
+          <UploadTaskCenter />
           <Select
             mode="multiple"
             allowClear

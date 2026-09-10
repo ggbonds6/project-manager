@@ -139,7 +139,20 @@ public class AttachmentController {
                         .eq(AttachmentUploadTask::getProjectId, projectId)
                         .orderByDesc(AttachmentUploadTask::getCreateTime)
                         .last("LIMIT " + size));
-        return R.ok(tasks.stream().map(this::toTaskVO).toList());
+        // 批量补齐阶段名（一次查库），供前端展示「所属阶段」标签
+        Map<Long, String> phaseNames = new java.util.HashMap<>();
+        List<Long> phaseIds = tasks.stream()
+                .filter(t -> "PROJECT_PHASE".equals(t.getBizType()))
+                .map(AttachmentUploadTask::getBizId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (!phaseIds.isEmpty()) {
+            for (ProjectPhase p : phaseMapper.selectBatchIds(phaseIds)) {
+                phaseNames.put(p.getId(), p.getPhaseName());
+            }
+        }
+        return R.ok(tasks.stream().map(t -> toTaskVO(t, phaseNames)).toList());
     }
 
     /** 上传任务状态（轮询用）：前端据此更新进度条与最终成败 */
@@ -288,12 +301,19 @@ public class AttachmentController {
     }
 
     private AttachmentUploadTaskVO toTaskVO(AttachmentUploadTask t) {
+        return toTaskVO(t, Map.of());
+    }
+
+    private AttachmentUploadTaskVO toTaskVO(AttachmentUploadTask t, Map<Long, String> phaseNames) {
         AttachmentUploadTaskVO vo = new AttachmentUploadTaskVO();
         vo.setId(t.getId());
         vo.setProjectId(t.getProjectId());
         vo.setBizType(t.getBizType());
         vo.setBizId(t.getBizId());
         vo.setAttachType(t.getAttachType());
+        if ("PROJECT_PHASE".equals(t.getBizType())) {
+            vo.setPhaseName(phaseNames.get(t.getBizId()));
+        }
         vo.setFileName(t.getFileName());
         vo.setFileSize(t.getFileSize());
         vo.setFileExt(t.getFileExt());

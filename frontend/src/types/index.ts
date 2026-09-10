@@ -241,6 +241,8 @@ export interface UploadTaskItem {
   bizType: string;
   bizId: number;
   attachType?: string | null;
+  /** 归属阶段名（bizType=PROJECT_PHASE 时由后端补齐，用于展示「所属阶段」标签） */
+  phaseName?: string | null;
   fileName: string;
   fileSize?: number;
   fileExt?: string;
