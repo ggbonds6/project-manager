@@ -8,7 +8,8 @@ spring:
     # 崖山 YashanDB（Oracle 模式）主备集群，驱动级 primary + TAF 高可用
     # 连接信息一律环境变量注入；密码含 @ 等特殊字符，整体引号包裹
     driver-class-name: com.yashandb.jdbc.Driver
-    url: "jdbc:yasdb:primary://${YASHAN_MASTER_IP:10.254.212.106}:1688,${YASHAN_STANDBY_IP:10.254.212.107}:1688/${YASHAN_DB:project_manager}?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2"
+    # YASHAN_DB = 崖山 Oracle 模式下的 schema 名（生产为 PM，注意大写；默认值与生产一致，防漏配连错库）
+    url: "jdbc:yasdb:primary://${YASHAN_MASTER_IP:10.254.212.106}:1688,${YASHAN_STANDBY_IP:10.254.212.107}:1688/${YASHAN_DB:PM}?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2"
     username: ${YASHAN_USER:pm}
     password: "${YASHAN_PASSWORD:}"
     hikari:

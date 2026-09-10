@@ -4,7 +4,6 @@
 **/dist
 backend/target
 backend/uploads
-deploy/linux/.pids
 deploy/docker/.env
 *.log
 

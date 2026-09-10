@@ -55,7 +55,7 @@
                  ┌────────────────────────────┐
   Web/Nginx ───▶ │  后端 Spring Boot 3.3.5    │  单数据源（代码不变）
                  └─────────────┬──────────────┘
-   jdbc:yasdb:primary://主IP:1688,备IP:1688/project_manager
+   jdbc:yasdb:primary://主IP:1688,备IP:1688/PM
                  ┌─────────────┴──────────────┐
                  │   崖山【主库】 10.254.212.106:1688 │  读+写
                  └─────────────┬──────────────┘
@@ -68,7 +68,7 @@
 ### 2.1 连接方式（官方文档核实的驱动级能力，无需 VIP/中间件）
 
 ```text
-jdbc:yasdb:primary://主IP:1688,备IP:1688/project_manager?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2
+jdbc:yasdb:primary://主IP:1688,备IP:1688/PM?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2
 ```
 
 - `serverType=primary`：驱动按序连接并执行 `SELECT * FROM DATABASE_ROLE` 判断角色，**只保留主节点连接** → 地址顺序写错也不会有写备风险（仍建议主在前）。
@@ -138,7 +138,7 @@ jar 已从仓库根目录移至 `backend/lib/yashandb-jdbc-1.9.3.jar`。
 spring:
   datasource:
     driver-class-name: com.yashandb.jdbc.Driver
-    url: "jdbc:yasdb:primary://${YASHAN_MASTER_IP}:1688,${YASHAN_STANDBY_IP}:1688/${YASHAN_DB:project_manager}?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2"
+    url: "jdbc:yasdb:primary://${YASHAN_MASTER_IP}:1688,${YASHAN_STANDBY_IP}:1688/${YASHAN_DB:PM}?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2"
     username: ${YASHAN_USER:pm}
     password: "${YASHAN_PASSWORD:}"
     hikari:

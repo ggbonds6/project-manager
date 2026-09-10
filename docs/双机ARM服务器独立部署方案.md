@@ -11,7 +11,7 @@
 | --- | --- |
 | 部署形态 | **每台服务器一份 Docker Compose**（前端 nginx 容器 + 后端 Spring Boot 容器），两台完全同构、各自独立对外服务；**服务器不存源码**，运行目录仅 `docker-compose.yml` + `.env` |
 | 服务器 | 两台 **ARM64**（Linux，已装 Docker Engine + Compose v2） |
-| 数据库 | 外部**崖山 YashanDB（Oracle 模式）主备**（主 10.254.212.106 / 备 10.254.212.107:1688，库 `project_manager`，账号 `pm`）——两台指向同一套，驱动级 primary + TAF 高可用 |
+| 数据库 | 外部**崖山 YashanDB（Oracle 模式）主备**（主 10.254.212.106 / 备 10.254.212.107:1688，库 `PM`（Oracle 模式下即 schema 名，大写），账号 `pm`）——两台指向同一套，驱动级 primary + TAF 高可用 |
 | 附件存储 | **华为 OBS**（通用 S3 协议、忽略证书校验），桶私有、不匿名读；附件下载/预览一律经后端带 token 接口 |
 | 代码托管 / 发布 | 内网 **Gitea**（可选）：git 托管 + Release 资产分发；**未就绪前用 scp 传镜像包**，服务器升级 = `docker load` + 改 `IMAGE_TAG` + `compose up -d` |
 | 入口 | 上层网关负载均衡（用户自建），健康检查 **`/api/health`**（db:up 才在池内） |
@@ -79,7 +79,7 @@ IMAGE_TAG=v3.1.1
 # ---------- 崖山数据库 ----------
 YASHAN_MASTER_IP=10.254.212.106
 YASHAN_STANDBY_IP=10.254.212.107
-YASHAN_DB=project_manager
+YASHAN_DB=PM                   # Oracle 模式下的 schema 名（大写；勿写 project_manager）
 YASHAN_USER=pm                 # 必须用业务账号 pm；勿用 sys（会查 SYS.* 报 YAS-02012）
 YASHAN_PASSWORD=<业务账号密码>
 
@@ -161,7 +161,7 @@ WEB_PORT=8080
 
 ### A.1 部署形态选型（Docker vs 裸机 vs 编排）
 - 结论：**Docker Compose ×2**。原因：两台同构、升级/回滚成本低、现有 `deploy/docker/` 资产直接复用。
-- 备选：裸机 jar + 前端产物 + systemd/nginx（需另写一整套生产启动体系，`deploy/linux` 脚本为开发模式不可直上）；K8s/K3s（两台过重）。
+- 备选：裸机 jar + 前端产物 + systemd/nginx（需另写一整套生产启动体系，当时的 `deploy/linux` 脚本为开发模式、不可直上生产；**该脚本已于 v3.1.1 移除**）；K8s/K3s（两台过重）。
 - 细节对比见本仓库 git 历史（提交 `c78f43e` 前身文档）。
 
 ### A.2 附件存储路线（本地盘/NFS → 定稿 OBS）

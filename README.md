@@ -2,7 +2,7 @@
 
 面向单位内部的政府信息化项目全生命周期管理系统：**硬件项目 / 软件项目** 的立项 → 招投标/合同 → 实施 → 验收 → 质保运维全过程记录、阶段附件档案与资金付款跟踪。
 
-> 需求/流程/字段/统计口径的权威说明见 [`docs/政府信息化项目管理系统-设计方案.md`](docs/政府信息化项目管理系统-设计方案.md)（设计与实现同步稿，含 §0 修订记录与 §13 实现差异清单，随迭代更新）。`demo/` 为纯静态交互原型（Mock 数据）。**开发迭代进度见 [`ITERATION.md`](ITERATION.md)。**
+> 需求/流程/字段/统计口径的权威说明见 [`docs/政府信息化项目管理系统-设计方案.md`](docs/政府信息化项目管理系统-设计方案.md)（设计与实现同步稿，含 §0 修订记录与 §13 实现差异清单，随迭代更新）。**开发迭代进度见 [`ITERATION.md`](ITERATION.md)。**
 
 ## 技术栈
 
@@ -16,9 +16,10 @@
 ## 目录结构
 
 ```
-.
-├─ docs/         设计方案
-├─ demo/         静态原型（评审用，Mock 数据）
+. 
+├─ docs/         设计与部署文档
+├─ deploy/       部署资产（docker 生产镜像 / windows 开发脚本）
+├─ scripts/      发版打包 + 演示数据脚本
 ├─ frontend/     React 前端
 └─ backend/      Spring Boot 后端
 ```
@@ -27,7 +28,7 @@
 
 前置：JDK 17+、Node 18+、**崖山 YashanDB（Oracle 模式）主备库可达**（默认 10.254.212.106/.107:1688，见 [`deploy/README.md`](deploy/README.md)；启动脚本按平台分类）。
 
-**一键启动（Windows）**：先设置环境变量再双击根目录 `start-dev.cmd`（检查 1688 端口 → 启动后端与前端）；停止用 `stop-dev.cmd`。Linux 与 Docker 见 [`deploy/README.md`](deploy/README.md)。
+**一键启动（Windows）**：先设置环境变量再双击根目录 `start-dev.cmd`（检查 1688 端口 → 启动后端与前端）；停止用 `stop-dev.cmd`。Docker 方式见 [`deploy/README.md`](deploy/README.md)。
 
 或分步启动：
 
@@ -37,7 +38,7 @@
    # Windows
    set YASHAN_MASTER_IP=10.254.212.106
    set YASHAN_STANDBY_IP=10.254.212.107
-   set YASHAN_DB=project_manager
+   set YASHAN_DB=PM
    set YASHAN_USER=pm
    set YASHAN_PASSWORD=你的密码
    # Linux/macOS: export 同名变量
@@ -67,7 +68,7 @@
 
 预置登录账号（密码均 `123456`）：`admin`（管理员）/ `jingban01`（经办人）/ `lingdao01`（领导，只读）。
 
-> 启动脚本按平台分类（Windows / Linux），并支持 Docker 一体化部署（前后端打包，数据库为外部崖山）：
+> 本地开发用 Windows 一键脚本；生产用 Docker 一体化镜像（前后端打包，数据库为外部崖山）：
 > 见 [`deploy/README.md`](deploy/README.md)（含环境变量、建库说明）。
 > Git 协作的 SSH 配置见 [`docs/GITHUB-SSH-setup.md`](docs/GITHUB-SSH-setup.md)。
 

@@ -9,7 +9,7 @@
 | 定位 | 单位内部政府信息化项目全生命周期管理（硬件 / 软件两类项目） |
 | 前端 | React 18 + TypeScript + Vite + Ant Design 5（`frontend/`） |
 | 后端 | Java 17 + Spring Boot 3.3.5 + MyBatis-Plus + 自研迁移 Runner（`backend/`） |
-| 数据库 | 崖山 YashanDB（Oracle 模式）主备集群（主 10.254.212.106 / 备 10.254.212.107:1688，库 `project_manager`；v3.0 起，替代 MySQL 8 + Flyway） |
+| 数据库 | 崖山 YashanDB（Oracle 模式）主备集群（主 10.254.212.106 / 备 10.254.212.107:1688，库/schema `PM`，业务账号 `pm`；v3.0 起，替代 MySQL 8 + Flyway） |
 | 认证 | JWT + BCrypt，角色 ADMIN / MANAGER / VIEWER |
 | 需求基线 | `docs/政府信息化项目管理系统-设计方案.md`（设计与实现同步稿，Q1–Q15 处置状态见 §11） |
 | 仓库 | GitHub `ggbonds6/project-manager`（main 分支，全程 git 管理） |
@@ -205,10 +205,10 @@
 ## 运行方式速查
 
 ```bash
-# 一键启动：见 deploy/README（Windows: start-dev.cmd / 双击；Linux: deploy/linux/start-dev.sh；Docker: deploy/docker）
+# 一键启动：见 deploy/README（Windows: start-dev.cmd / 双击；Docker: deploy/docker；生产见 docs/部署与发布全流程手册.md）
 # 数据库：崖山 YashanDB（Oracle 模式）主备；后端连接用环境变量（见 README/deploy/README）：
 #   export YASHAN_MASTER_IP=10.254.212.106 YASHAN_STANDBY_IP=10.254.212.107
-#   export YASHAN_DB=project_manager YASHAN_USER=pm YASHAN_PASSWORD=xxx
+#   export YASHAN_DB=PM YASHAN_USER=pm YASHAN_PASSWORD=xxx
 cd backend  && mvn spring-boot:run      # :8080（自研 Runner 自动执行 db/migration-yashan 建表/种子）
 cd frontend && npm install && npm run dev  # :5173
 node scripts/seed-demo.mjs              # 可选：重置演示项目（总项目/子项目+三种合同形态）

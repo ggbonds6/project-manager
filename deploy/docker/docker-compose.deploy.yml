@@ -25,7 +25,7 @@ services:
       # JVM 参数（内存上限 + 时区，防长期运行内存膨胀；可用 .env 覆盖）
       JAVA_TOOL_OPTIONS: "${JAVA_TOOL_OPTIONS:--Xms256m -Xmx512m -Duser.timezone=Asia/Shanghai}"
       # 崖山主备（驱动级 primary + TAF），URL 含 ? & 需加引号
-      SPRING_DATASOURCE_URL: "jdbc:yasdb:primary://${YASHAN_MASTER_IP:-10.254.212.106}:1688,${YASHAN_STANDBY_IP:-10.254.212.107}:1688/${YASHAN_DB:-project_manager}?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2"
+      SPRING_DATASOURCE_URL: "jdbc:yasdb:primary://${YASHAN_MASTER_IP:-10.254.212.106}:1688,${YASHAN_STANDBY_IP:-10.254.212.107}:1688/${YASHAN_DB:-PM}?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2"
       SPRING_DATASOURCE_USERNAME: ${YASHAN_USER:-pm}
       SPRING_DATASOURCE_PASSWORD: ${YASHAN_PASSWORD:?必须在 .env 中设置 YASHAN_PASSWORD}
       JWT_SECRET: ${JWT_SECRET:-please-change-this-jwt-secret-in-production-0123456789}
