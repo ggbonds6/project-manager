@@ -234,6 +234,28 @@ export interface AttachmentItem {
   uploadTime?: string | null;
 }
 
+/** 后台上传任务（上传记录）：文件已受理，存储写入在后台进行 */
+export interface UploadTaskItem {
+  id: number;
+  projectId?: number | null;
+  bizType: string;
+  bizId: number;
+  attachType?: string | null;
+  fileName: string;
+  fileSize?: number;
+  fileExt?: string;
+  /** PENDING 已受理 | UPLOADING 写入存储中 | SUCCESS | FAILED */
+  status: 'PENDING' | 'UPLOADING' | 'SUCCESS' | 'FAILED';
+  /** 0~100 */
+  progress?: number;
+  errorMsg?: string | null;
+  /** 成功后关联的正式附件 id */
+  attachmentId?: number | null;
+  uploadUserId?: number | null;
+  createTime?: string | null;
+  finishTime?: string | null;
+}
+
 export interface LogItem {
   id: number;
   userId?: number | null;

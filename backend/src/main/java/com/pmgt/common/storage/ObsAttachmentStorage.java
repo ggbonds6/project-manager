@@ -4,6 +4,7 @@ import com.obs.services.ObsClient;
 import com.obs.services.ObsConfiguration;
 import com.obs.services.model.ObjectMetadata;
 import com.obs.services.model.ObsObject;
+import com.obs.services.model.PutObjectRequest;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -38,7 +39,9 @@ public class ObsAttachmentStorage implements AttachmentStorage {
         conf.setEndPoint(cfg.getEndpoint());
         conf.setPathStyle(true);
         conf.setValidateCertificate(false); // 忽略自签证书校验
-        conf.setSocketTimeout(60_000);
+        // 大文件推送耗时可能远超 SDK 默认 60s（同步上传时代超时失败的主因之一），放宽到 5 分钟；
+        // 建连仍保持较短，网络不通时可快速失败而非长时间挂起。
+        conf.setSocketTimeout(300_000);
         conf.setConnectionTimeout(15_000);
         this.client = new ObsClient(cfg.getAk(), cfg.getSk(), conf);
         this.bucket = cfg.getBucket();
@@ -54,12 +57,25 @@ public class ObsAttachmentStorage implements AttachmentStorage {
 
     @Override
     public void save(String relKey, InputStream in, long size) {
+        save(relKey, in, size, null);
+    }
+
+    @Override
+    public void save(String relKey, InputStream in, long size, ProgressCallback callback) {
+        String fullKey = key(relKey);
         try {
             ObjectMetadata md = new ObjectMetadata();
             md.setContentLength(size);
-            client.putObject(bucket, key(relKey), in, md);
+            PutObjectRequest request = new PutObjectRequest(bucket, fullKey, in);
+            request.setMetadata(md);
+            if (callback != null) {
+                // 用带进度监听的重载，后台上传任务据此回写进度条
+                request.setProgressListener(
+                        status -> callback.onProgress(status.getTransferredBytes(), status.getTotalBytes()));
+            }
+            client.putObject(request);
         } catch (Exception e) {
-            throw new RuntimeException("OBS 保存附件失败[" + key(relKey) + "]: " + e.getMessage(), e);
+            throw new RuntimeException("OBS 保存附件失败[" + fullKey + "]: " + e.getMessage(), e);
         }
     }
 

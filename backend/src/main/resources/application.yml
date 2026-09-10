@@ -35,6 +35,9 @@ mybatis-plus:
 
 app:
   upload-dir: ${UPLOAD_DIR:./uploads}
+  # 后台上传的本地暂存目录：文件先落这里并立即返回，后台线程再推送到最终存储，成功即删除。
+  # 建议指向容器本地盘（不要放附件卷，以免与正式附件混在一起）。
+  upload-tmp-dir: ${UPLOAD_TMP_DIR:./upload-tmp}
   # 附件存储：local（本地磁盘，默认） | obs（华为 OBS，S3 兼容 + path-style + 忽略证书校验）
   storage:
     type: ${APP_STORAGE_TYPE:local}

@@ -17,6 +17,12 @@ const XLSX_EXTS = new Set(['xls', 'xlsx']);
 const DOC_EXTS = new Set(['doc']); // 旧版 Word：内容嗅探（实为 docx 才渲染，真·doc 提示下载）
 const OFD_EXTS = new Set(['ofd']); // OFD 版式：@sharp9/ofdjs 首页 Canvas 试渲染
 
+/**
+ * 超过该大小先提示「预览可能较慢」，让用户选择下载还是继续在线预览。
+ * 原因：预览需要把文件完整取到浏览器（pdf/图片也要等），大文件在网络慢时表现为长时间空白。
+ */
+const LARGE_FILE_WARN_BYTES = 10 * 1024 * 1024;
+
 const DOCX_BASE_CSS = `.pm-office-body{font-family:'Microsoft YaHei','PingFang SC',sans-serif;color:#1f2329;}
 .pm-office-body table{border-collapse:collapse;margin:10px 0;width:100%;}
 .pm-office-body td,.pm-office-body th{border:1px solid #d0d4da;padding:4px 8px;font-size:13px;}
@@ -42,6 +48,8 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
   const [busy, setBusy] = useState(false);
   const [pdfLoaded, setPdfLoaded] = useState(false);
   const [full, setFull] = useState(false);
+  /** 大文件已被用户确认「仍要预览」 */
+  const [forcePreview, setForcePreview] = useState(false);
   const officeRef = useRef<HTMLDivElement | null>(null);
 
   const ext = (item?.fileExt || '').toLowerCase();
@@ -132,6 +140,7 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
     setPdfLoaded(false);
     setFull(false);
     setText(null);
+    setForcePreview(false);
     if (!item) return;
     setBusy(true);
     if (officeRef.current) officeRef.current.innerHTML = '';
@@ -213,6 +222,35 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
   const renderViewer = (large: boolean) => {
     if (!item) return null;
     const maxH = large ? 'calc(100vh - 140px)' : '65vh';
+
+    // 大文件先让用户选：直接下载，还是继续在线预览。
+    // 避免用户对着长时间空白等待，却不知道是文件大还是服务出问题了。
+    const sizeBytes = item.fileSize ?? 0;
+    const canPreview =
+      isImage || isPdf || MD_EXTS.has(ext) || TEXT_EXTS.has(ext) || isOfficeParsed;
+    if (canPreview && sizeBytes > LARGE_FILE_WARN_BYTES && !forcePreview) {
+      return (
+        <div style={{ textAlign: 'center', padding: '48px 24px' }}>
+          <Typography.Paragraph>
+            该文件较大（<b>{fmtFileSize(sizeBytes)}</b>），在线预览需先完整加载到浏览器，可能较慢。
+          </Typography.Paragraph>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+            建议直接下载后用本机软件打开；如确需在线查看，可点击「仍要预览」。
+          </Typography.Paragraph>
+          <Space>
+            <Button
+              type="primary"
+              icon={<DownloadOutlined />}
+              href={attachmentUrl(item.id)}
+              download={item.fileName}
+            >
+              下载文件
+            </Button>
+            <Button onClick={() => setForcePreview(true)}>仍要预览</Button>
+          </Space>
+        </div>
+      );
+    }
     const box: CSSProperties = {
       position: 'relative',
       maxHeight: maxH,
@@ -222,7 +260,13 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
     if (isImage) {
       return (
         <div style={{ textAlign: 'center', position: 'relative', minHeight: 240 }}>
-          {busy && <Spin style={{ marginTop: 80 }} />}
+          {busy && (
+            <div style={{ paddingTop: 80 }}>
+              <Spin
+                tip={`图片加载中${item.fileSize ? `（${fmtFileSize(item.fileSize)}）` : ''}…`}
+              />
+            </div>
+          )}
           <img
             src={attachmentUrl(item.id, 'inline')}
             alt={item.fileName}
@@ -244,7 +288,9 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
         <div style={box}>
           {!pdfLoaded && (
             <div style={{ textAlign: 'center', padding: 80 }}>
-              <Spin tip="PDF 加载中…" />
+              <Spin
+                tip={`PDF 加载中${item.fileSize ? `（${fmtFileSize(item.fileSize)}）` : ''}…大文件可能需要等待`}
+              />
             </div>
           )}
           <iframe
@@ -305,13 +351,13 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
           {busy && (
             <div style={{ textAlign: 'center', padding: 80 }}>
               <Spin
-                tip={
+                tip={`${
                   DOCX_EXTS.has(ext) || DOC_EXTS.has(ext)
-                    ? 'Word 解析中…'
+                    ? 'Word 解析中'
                     : OFD_EXTS.has(ext)
-                      ? 'OFD 解析中…'
-                      : 'Excel 解析中…'
-                }
+                      ? 'OFD 解析中'
+                      : 'Excel 解析中'
+                }${item.fileSize ? `（${fmtFileSize(item.fileSize)}）` : ''}…大文件可能需要等待`}
               />
             </div>
           )}

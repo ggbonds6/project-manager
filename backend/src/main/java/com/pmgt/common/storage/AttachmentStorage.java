@@ -19,6 +19,17 @@ public interface AttachmentStorage {
     void save(String relKey, InputStream in, long size);
 
     /**
+     * 保存对象并上报进度（后台上传任务据此回写进度条）。
+     * 默认忽略进度、直接委派 {@link #save(String, InputStream, long)}；
+     * 支持的实现应覆写以提供真实进度。
+     *
+     * @param callback 进度回调，可为 null
+     */
+    default void save(String relKey, InputStream in, long size, ProgressCallback callback) {
+        save(relKey, in, size);
+    }
+
+    /**
      * 打开对象输入流，调用方负责 close。
      * @throws FileNotFoundException 对象不存在
      */

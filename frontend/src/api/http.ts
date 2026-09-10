@@ -81,7 +81,25 @@ export const api = {
   del<T>(url: string, params?: object): Promise<T> {
     return http.delete(url, { params }) as Promise<T>;
   },
-  upload<T>(url: string, formData: FormData): Promise<T> {
-    return http.post(url, formData) as Promise<T>;
+  /**
+   * 上传文件。
+   *
+   * 注意：全局 axios timeout 是 30s，对大文件（100MB 级）远远不够——传输本身就可能超过 30s。
+   * 故这里默认放宽到 10 分钟，并支持 onProgress 上报真实传输进度。
+   * （服务端已改为「先暂存 + 立即返回任务」，真正写对象存储发生在后台，不占用本请求时长。）
+   */
+  upload<T>(
+    url: string,
+    formData: FormData,
+    opts?: { onProgress?: (percent: number) => void; timeoutMs?: number },
+  ): Promise<T> {
+    return http.post(url, formData, {
+      timeout: opts?.timeoutMs ?? 600000,
+      onUploadProgress: (e) => {
+        if (opts?.onProgress && e.total) {
+          opts.onProgress(Math.min(99, Math.round((e.loaded * 100) / e.total)));
+        }
+      },
+    }) as Promise<T>;
   },
 };

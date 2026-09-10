@@ -11,6 +11,7 @@ import {
   ProjectDetail,
   ProjectForm,
   ProjectListItem,
+  UploadTaskItem,
   UserOption,
 } from '@/types';
 
@@ -116,13 +117,20 @@ export const attachmentApi = {
   listByProject(projectId: number | string): Promise<AttachmentItem[]> {
     return api.get<AttachmentItem[]>(`/projects/${projectId}/attachments`);
   },
-  upload(params: {
-    projectId: number | string;
-    bizType: string;
-    bizId: number;
-    attachType?: string;
-    file: File;
-  }): Promise<AttachmentItem> {
+  /**
+   * 上传附件（后台上传）：返回上传任务，服务端受理后立即返回，
+   * 存储写入在后台进行——用 getUploadTask 轮询进度，完成后 attachmentId 即正式附件 id。
+   */
+  upload(
+    params: {
+      projectId: number | string;
+      bizType: string;
+      bizId: number;
+      attachType?: string;
+      file: File;
+    },
+    onProgress?: (percent: number) => void,
+  ): Promise<UploadTaskItem> {
     const form = new FormData();
     form.append('file', params.file);
     form.append('projectId', String(params.projectId));
@@ -131,7 +139,15 @@ export const attachmentApi = {
     if (params.attachType) {
       form.append('attachType', params.attachType);
     }
-    return api.upload<AttachmentItem>('/attachments/upload', form);
+    return api.upload<UploadTaskItem>('/attachments/upload', form, { onProgress });
+  },
+  /** 上传任务状态（轮询） */
+  getUploadTask(id: number): Promise<UploadTaskItem> {
+    return api.get<UploadTaskItem>(`/attachments/upload-tasks/${id}`);
+  },
+  /** 上传记录（按项目，倒序） */
+  listUploadTasks(projectId: number | string, limit = 30): Promise<UploadTaskItem[]> {
+    return api.get<UploadTaskItem[]>('/attachments/upload-tasks', { projectId, limit });
   },
   remove(id: number): Promise<void> {
     return api.del<void>(`/attachments/${id}`);

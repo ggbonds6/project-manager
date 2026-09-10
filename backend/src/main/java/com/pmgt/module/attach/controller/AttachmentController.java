@@ -7,9 +7,13 @@ import com.pmgt.common.security.AuthContext;
 import com.pmgt.common.security.RequireRole;
 import com.pmgt.common.security.Role;
 import com.pmgt.common.storage.AttachmentStorage;
+import com.pmgt.module.attach.dto.AttachmentUploadTaskVO;
 import com.pmgt.module.attach.dto.AttachmentVO;
 import com.pmgt.module.attach.entity.Attachment;
+import com.pmgt.module.attach.entity.AttachmentUploadTask;
 import com.pmgt.module.attach.mapper.AttachmentMapper;
+import com.pmgt.module.attach.mapper.AttachmentUploadTaskMapper;
+import com.pmgt.module.attach.service.AttachmentUploadService;
 import com.pmgt.module.log.service.OperationLogService;
 import com.pmgt.module.project.entity.Payment;
 import com.pmgt.module.project.entity.Project;
@@ -36,14 +40,11 @@ import java.io.FileNotFoundException;
 import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
-import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.UUID;
 import java.util.stream.Collectors;
 
 @RestController
@@ -69,6 +70,8 @@ public class AttachmentController {
     private final SysUserMapper userMapper;
     private final OperationLogService operationLogService;
     private final AttachmentStorage attachmentStorage;
+    private final AttachmentUploadService uploadService;
+    private final AttachmentUploadTaskMapper taskMapper;
 
     public AttachmentController(AttachmentMapper attachmentMapper,
                                 ProjectMapper projectMapper,
@@ -76,7 +79,9 @@ public class AttachmentController {
                                 PaymentMapper paymentMapper,
                                 SysUserMapper userMapper,
                                 OperationLogService operationLogService,
-                                AttachmentStorage attachmentStorage) {
+                                AttachmentStorage attachmentStorage,
+                                AttachmentUploadService uploadService,
+                                AttachmentUploadTaskMapper taskMapper) {
         this.attachmentMapper = attachmentMapper;
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
@@ -84,11 +89,21 @@ public class AttachmentController {
         this.userMapper = userMapper;
         this.operationLogService = operationLogService;
         this.attachmentStorage = attachmentStorage;
+        this.uploadService = uploadService;
+        this.taskMapper = taskMapper;
     }
 
+    /**
+     * 上传附件（后台上传）。
+     *
+     * <p>不再同步等待对象存储写完：文件先暂存到服务端本地，登记上传任务后<b>立即返回</b>任务信息，
+     * 真正的存储写入由后台线程完成。前端用返回的 {@code id} 轮询
+     * {@code GET /api/attachments/upload-tasks/{id}} 获取进度与结果，
+     * 因此大文件不会再因 Write 超时（nginx / 对象存储客户端 60s）而失败。
+     */
     @RequireRole({Role.ADMIN, Role.MANAGER})
     @PostMapping("/attachments/upload")
-    public R<AttachmentVO> upload(@RequestParam("file") MultipartFile file,
+    public R<AttachmentUploadTaskVO> upload(@RequestParam("file") MultipartFile file,
                                   @RequestParam Long projectId,
                                   @RequestParam String bizType,
                                   @RequestParam Long bizId,
@@ -109,31 +124,32 @@ public class AttachmentController {
         if (!UPLOADABLE_EXTS.contains(ext.toLowerCase(Locale.ROOT))) {
             throw new BizException(400, "不支持的文件类型: ." + ext + "（允许上传：" + ALLOWED_EXT_TEXT + "）");
         }
-        String storedName = UUID.randomUUID().toString().replace("-", "") + (ext.isEmpty() ? "" : "." + ext);
-        YearMonth ym = YearMonth.now();
-        String relKey = ym.getYear() + "/" + String.format("%02d", ym.getMonthValue()) + "/" + storedName;
-        try {
-            attachmentStorage.save(relKey, file.getInputStream(), file.getSize());
-        } catch (Exception e) {
-            throw new BizException(500, "文件保存失败: " + e.getMessage());
+        AttachmentUploadTask task = uploadService.submit(file, projectId, bizType, bizId, attachType,
+                ext, AuthContext.userId().orElse(null));
+        return R.ok(toTaskVO(task));
+    }
+
+    /** 上传记录：按项目查后台上传任务（前端展示进度与历史） */
+    @GetMapping("/attachments/upload-tasks")
+    public R<List<AttachmentUploadTaskVO>> listUploadTasks(@RequestParam Long projectId,
+                                                           @RequestParam(defaultValue = "30") Integer limit) {
+        int size = limit == null || limit <= 0 ? 30 : Math.min(limit, 200);
+        List<AttachmentUploadTask> tasks = taskMapper.selectList(
+                new LambdaQueryWrapper<AttachmentUploadTask>()
+                        .eq(AttachmentUploadTask::getProjectId, projectId)
+                        .orderByDesc(AttachmentUploadTask::getCreateTime)
+                        .last("LIMIT " + size));
+        return R.ok(tasks.stream().map(this::toTaskVO).toList());
+    }
+
+    /** 上传任务状态（轮询用）：前端据此更新进度条与最终成败 */
+    @GetMapping("/attachments/upload-tasks/{id}")
+    public R<AttachmentUploadTaskVO> getUploadTask(@PathVariable Long id) {
+        AttachmentUploadTask task = taskMapper.selectById(id);
+        if (task == null) {
+            throw new BizException(404, "上传任务不存在");
         }
-
-        Attachment att = new Attachment();
-        att.setBizType(bizType);
-        att.setBizId(bizId);
-        att.setAttachType(attachType);
-        att.setFileName(original);
-        att.setStoredName(storedName);
-        att.setFilePath(relKey);
-        att.setFileSize(file.getSize());
-        att.setFileExt(ext);
-        att.setUploadUserId(AuthContext.userId().orElse(null));
-        att.setUploadTime(LocalDateTime.now());
-        attachmentMapper.insert(att);
-
-        operationLogService.log("PROJECT", projectId, "ATTACH_UPLOAD",
-                "上传附件「" + original + "」(" + bizType + "#" + bizId + ")");
-        return R.ok(toVO(att));
+        return R.ok(toTaskVO(task));
     }
 
     /** 按归属查询附件（阶段卡片附件列表） */
@@ -269,6 +285,26 @@ public class AttachmentController {
             }
             default -> null;
         };
+    }
+
+    private AttachmentUploadTaskVO toTaskVO(AttachmentUploadTask t) {
+        AttachmentUploadTaskVO vo = new AttachmentUploadTaskVO();
+        vo.setId(t.getId());
+        vo.setProjectId(t.getProjectId());
+        vo.setBizType(t.getBizType());
+        vo.setBizId(t.getBizId());
+        vo.setAttachType(t.getAttachType());
+        vo.setFileName(t.getFileName());
+        vo.setFileSize(t.getFileSize());
+        vo.setFileExt(t.getFileExt());
+        vo.setStatus(t.getStatus());
+        vo.setProgress(t.getProgress());
+        vo.setErrorMsg(t.getErrorMsg());
+        vo.setAttachmentId(t.getAttachmentId());
+        vo.setUploadUserId(t.getUploadUserId());
+        vo.setCreateTime(t.getCreateTime());
+        vo.setFinishTime(t.getFinishTime());
+        return vo;
     }
 
     private AttachmentVO toVO(Attachment a) {
