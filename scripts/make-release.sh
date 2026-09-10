@@ -98,8 +98,14 @@ PM ${VER} 服务器部署步骤（${ARCH}，离线：只 load 不 build）
    cp .env.example .env && vi .env
    必填：YASHAN_PASSWORD / JWT_SECRET（两台相同）/ OBS 五项；确认 IMAGE_TAG=${VER}
    服务器附件统一 OBS：APP_STORAGE_TYPE=obs、APP_STORAGE_OBS_PREFIX=uploads
-   ★YASHAN_DB=PM、YASHAN_USER=pm 两项【保持默认不要改】（用 sys 会报表不存在，密码不符还会
-     因容器反复重试触发数据库锁定 YAS-02193 the account is locked）
+   ★YASHAN_DB=PM、YASHAN_USER=pm 两项【保持默认不要改】：
+     - 用 sys 会按 SYS schema 查表 → 报表不存在；
+     - 口令必须填【pm 用户】的，不是 sys 的（两者口令不同，是踩坑高发点）
+   ★口令禁止明文进仓库：只填在服务器本机 .env（已 gitignore）
+   改口令【无需重新构建镜像】（账号口令是运行时环境变量注入，不在镜像里）：
+     docker compose stop → vi .env → docker compose up -d
+   已出现 YAS-02193 the account is locked：先 stop 止血 → 改对口令 → 仍需 DBA 解锁
+     （YAS-02143=口令错；YAS-02193=账号被锁，后者多是前者反复重试所致）
    之后升级【不要】用 .env.example 覆盖 .env
 
 3) 加载镜像并启动（不加 --build）
