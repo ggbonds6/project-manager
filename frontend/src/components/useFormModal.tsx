@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react';
+import { ReactNode, useEffect, useState } from 'react';
 import { Form, Modal } from 'antd';
 import type { Rule } from 'antd/es/form';
 
@@ -34,8 +34,23 @@ export function useFormModal() {
     width?: number,
   ) => {
     setState({ title, fields, initial, onSave, width });
-    form.resetFields();
   };
+
+  /**
+   * 回显关键：必须等 state 更新、Form 用新的 initialValues 渲染之后再重置，
+   * 否则会重置成上一次的值（表现为"编辑时总显示第一次点开的数据"）。
+   *
+   * 原因：Form 实例在本 hook 中创建，跨多次打开是同一个 store；
+   * 而 rc-field-form 在 initialValues 变化时只更新内部记录，**不会自动填充已有字段**，
+   * 因此需要在渲染后手动 reset（清掉上次残留）+ setFieldsValue（填入本次值）。
+   */
+  useEffect(() => {
+    if (!state) {
+      return;
+    }
+    form.resetFields();
+    form.setFieldsValue(state.initial);
+  }, [state, form]);
 
   const close = () => setState(null);
 

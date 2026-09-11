@@ -23,16 +23,19 @@
 
 ```bash
 # ── 开发机：出发布包（镜像 + 编排 + .env 模板）──
-bash scripts/make-release.sh v3.1.1              # 产 dist/pm-release-v3.1.1/
-scp dist/pm-release-v3.1.1/pm-images-aarch64-v3.1.1.tar.gz  lhim@<服务器>:/home/lhim/pm/releases/
-scp dist/pm-release-v3.1.1/docker-compose.yml dist/pm-release-v3.1.1/.env.example lhim@<服务器>:/home/lhim/pm/app/
+bash scripts/make-release.sh v3.3.0              # 产 dist/pm-release-v3.3.0/
+scp dist/pm-release-v3.3.0/pm-images-aarch64-v3.3.0.tar.gz  lhim@<服务器>:/home/lhim/pm/releases/
+scp dist/pm-release-v3.3.0/docker-compose.yml dist/pm-release-v3.3.0/.env.example lhim@<服务器>:/home/lhim/pm/app/
 
 # ── 服务器：配 .env → load → up（不加 --build）──
 cd /home/lhim/pm/app && cp .env.example .env && vi .env    # 填 YASHAN_PASSWORD / JWT_SECRET / OBS 五项
-docker load -i /home/lhim/pm/releases/pm-images-aarch64-v3.1.1.tar.gz
+docker load -i /home/lhim/pm/releases/pm-images-aarch64-v3.3.0.tar.gz
 docker compose up -d
 docker compose ps && curl http://127.0.0.1:8080/api/health     # 期望 db:"up"
 ```
+
+> 💡 服务器上还可用 **`bash pm-upgrade.sh <镜像包>`** 一步完成「load → 自动切换 `.env` 的 `IMAGE_TAG` → 重启」，
+> 不需要手工改版本号（脚本随发布包下发，见 §1 与《部署与发布全流程手册.md》§4）。
 
 启动后：
 
@@ -41,7 +44,7 @@ docker compose ps && curl http://127.0.0.1:8080/api/health     # 期望 db:"up"
 - **附件存储**：生产统一 **华为 OBS**（`APP_STORAGE_TYPE=obs` + `APP_STORAGE_OBS_*`，对象置于桶内 `uploads/` 前缀下），
   详见《双机ARM服务器独立部署方案.md》；`APP_STORAGE_TYPE=local` 时用命名卷 `pm_uploads`
 
-**首次建库**：后端启动时自研迁移 Runner 自动执行 `db/migration-yashan/V1~V8` 完成建表与种子（幂等，已执行版本记入 `schema_version`），无需手工导库。
+**首次建库**：后端启动时自研迁移 Runner 自动执行 `db/migration-yashan/V1~V9` 完成建表与种子（幂等，已执行版本记入 `schema_version`），无需手工导库。
 
 > 内置账号：admin / jingban01 / lingdao01（密码均 123456）；生产务必先改密并覆盖 `JWT_SECRET`。
 
@@ -60,7 +63,26 @@ cd project-manager
 cp deploy/docker/.env.example deploy/docker/.env   # ⚠️ .env 必须与 docker-compose.yml 同目录
 #   编辑 .env：填 YASHAN_PASSWORD；本机测试建议 APP_STORAGE_TYPE=local、WEB_PORT=8088
 docker compose -f deploy/docker/docker-compose.yml up -d --build
+```
 
+### 2.1 改完代码一键重建（日常开发用这个）
+
+```bash
+bash scripts/dev-reload.sh              # 重建前后端并重启（默认）
+bash scripts/dev-reload.sh backend      # 只重建后端（改了 Java / 迁移 SQL）
+bash scripts/dev-reload.sh frontend     # 只重建前端（改了 tsx / ts / css）
+```
+
+脚本依次做：`docker compose build` → `up -d`（compose 检测到镜像变化会自动重建容器）→
+轮询 `/api/health`，就绪后打印访问地址与容器状态。
+
+- **不需要手动 `stop`**，也不需要重新生成发布包（发布包是发版才用的，见 §1）；
+- 只改一个端时用 `backend` / `frontend` 能省一半时间；
+- 首次构建或改了依赖（`pom.xml` / `package.json`）会明显变慢，属正常。
+
+### 2.2 查看状态与日志
+
+```bash
 docker compose -f deploy/docker/docker-compose.yml ps
 docker compose -f deploy/docker/docker-compose.yml logs -f backend
 ```
@@ -102,7 +124,7 @@ deploy\windows\stop-dev.cmd
 
 ## 5. 数据库版本与迁移
 
-- 崖山 YashanDB（Oracle 模式）；迁移脚本位于 `backend/src/main/resources/db/migration-yashan`（V1–V8），
+- 崖山 YashanDB（Oracle 模式）；迁移脚本位于 `backend/src/main/resources/db/migration-yashan`（V1–V9），
   由后端启动时自研 `YashanMigrationRunner` 顺序执行（替代 Flyway，崖山官方不支持 Flyway）。
 - 已执行版本记录在库表 `schema_version`；新增表结构 = 在该目录新增 `V{n}__xxx.sql` 即可。
 - 当前业务表：sys_user / dict_item / phase_template / project / project_phase / payment / contract /
