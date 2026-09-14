@@ -1,0 +1,20 @@
+# 密钥与本地配置
+.env
+
+# 运行产物
+work/
+out/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OCR 中间产物（渲染出的分页图片很占空间）
+*_pages/
+*.ocr.txt
