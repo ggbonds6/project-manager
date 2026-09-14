@@ -81,7 +81,8 @@ def check_ocr() -> bool:
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"{FAIL}OCR 加载失败：{type(exc).__name__}: {exc}")
-        print("       内网环境常见原因：RapidOCR 模型文件未提前放置（见 README §2.3）")
+        print("       内网环境常见原因：RapidOCR 模型文件未提前放置（见 README 离线安装一节）")
+        print("       用 Docker 部署时不会遇到该问题——镜像内已自带模型，构建期已自检")
         return False
 
 

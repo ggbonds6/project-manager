@@ -18,3 +18,7 @@ venv/
 # OCR 中间产物（渲染出的分页图片很占空间）
 *_pages/
 *.ocr.txt
+
+# 待测附件：可能含身份证号、社保等敏感信息，**一律不入库**
+samples/*
+!samples/README.md

@@ -29,7 +29,7 @@ from pm_ai import ocr_engine, pdf_utils  # noqa: E402
 from pm_ai.config import settings  # noqa: E402
 
 
-def process_one(path: Path, dpi: int, engine: str, force_ocr: bool) -> tuple[dict, str]:
+def process_one(path: Path, dpi: int, engine: str, force_ocr: bool, out_dir: Path) -> tuple[dict, str]:
     """处理单个文件，返回 (汇总行, 文本)。"""
     row = {
         "文件": path.name,
@@ -66,7 +66,8 @@ def process_one(path: Path, dpi: int, engine: str, force_ocr: bool) -> tuple[dic
                 return row, text
 
             row["类型"] = "scanned"
-            images = pdf_utils.render_pages(path, dpi=dpi)
+            # 渲染图落到输出目录（输入目录在 Docker 里是只读挂载）
+            images = pdf_utils.render_pages(path, dpi=dpi, out_dir=out_dir / "pages" / path.stem)
         else:
             row["类型"] = "image"
             images = [path]
@@ -92,7 +93,7 @@ def process_one(path: Path, dpi: int, engine: str, force_ocr: bool) -> tuple[dic
 def main() -> int:
     ap = argparse.ArgumentParser(description="批量 OCR / 文本提取")
     ap.add_argument("root", help="附件目录")
-    ap.add_argument("--out-dir", default="out/ocr", help="输出目录")
+    ap.add_argument("--out-dir", default="", help="输出目录，默认 <work_dir>/out")
     ap.add_argument("--dpi", type=int, default=0)
     ap.add_argument("--engine", default="rapid", choices=["rapid", "paddle"])
     ap.add_argument("--force-ocr", action="store_true")
@@ -104,7 +105,7 @@ def main() -> int:
         print(f"[FAIL] 不是目录：{root}")
         return 1
 
-    out_dir = Path(args.out_dir)
+    out_dir = Path(args.out_dir) if args.out_dir else settings.work_dir / "out"
     txt_dir = out_dir / "txt"
     txt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -121,7 +122,7 @@ def main() -> int:
 
     rows: list[dict] = []
     for i, path in enumerate(files, 1):
-        row, text = process_one(path, dpi, args.engine, args.force_ocr)
+        row, text = process_one(path, dpi, args.engine, args.force_ocr, out_dir)
         rows.append(row)
         (txt_dir / f"{path.stem}.ocr.txt").write_text(text, encoding="utf-8")
 

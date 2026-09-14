@@ -62,7 +62,8 @@ async def pdf_info(file: UploadFile = File(...)):
         return {
             "code": 0,
             "data": {
-                "file": path.name,
+                # 返回**原始文件名**，不要把内部的临时名（带 uuid 前缀）暴露给调用方
+                "file": Path(file.filename or path.name).name,
                 "pages": info.page_count,
                 "text_chars": info.text_chars,
                 "chars_per_page": round(info.chars_per_page, 1),

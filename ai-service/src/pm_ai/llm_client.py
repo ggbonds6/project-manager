@@ -43,18 +43,35 @@ def get_client() -> OpenAI:
     return _CLIENT
 
 
-def chat(prompt: str, system: str | None = None, temperature: float = 0.0) -> ChatResult:
+def chat(
+    prompt: str,
+    system: str | None = None,
+    temperature: float = 0.0,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+) -> ChatResult:
     """单轮对话。
 
     默认 `temperature=0`：字段抽取与审计相关任务需要**可复现**，
     不要让同一个输入每次给出不同答案。
+
+    `timeout` / `max_retries` 传 None 表示沿用客户端默认值（见 config 的 LLM_TIMEOUT）。
     """
     messages: list[dict[str, str]] = []
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    resp = get_client().chat.completions.create(
+    client = get_client()
+    options: dict[str, object] = {}
+    if timeout is not None:
+        options["timeout"] = timeout
+    if max_retries is not None:
+        options["max_retries"] = max_retries
+    if options:
+        client = client.with_options(**options)  # type: ignore[arg-type]
+
+    resp = client.chat.completions.create(
         model=settings.llm_model,
         messages=messages,  # type: ignore[arg-type]
         temperature=temperature,
@@ -69,10 +86,19 @@ def chat(prompt: str, system: str | None = None, temperature: float = 0.0) -> Ch
     )
 
 
-def ping() -> tuple[bool, str]:
-    """连通性自检：返回 (是否可用, 说明)。"""
+def ping(timeout: float = 15.0) -> tuple[bool, str]:
+    """连通性自检：返回 (是否可用, 说明)。
+
+    刻意用**短超时 + 不重试**：自检的目的是"快速告诉你通不通"，
+    而不是让用户对着终端等几分钟。推理服务在别的网段时尤其明显。
+    """
     try:
-        result = chat("回复两个字：正常", system="你是一个测试助手。")
+        result = chat(
+            "回复两个字：正常",
+            system="你是一个测试助手。",
+            timeout=timeout,
+            max_retries=0,
+        )
         return True, f"模型 {result.model} 连通，回复：{result.text[:40]}"
     except Exception as exc:  # noqa: BLE001 - 自检需要吞掉所有异常并报告
         return False, f"{type(exc).__name__}: {exc}"

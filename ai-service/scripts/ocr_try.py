@@ -15,7 +15,11 @@
     # 强行走 OCR（用于对比"文本层"与"OCR 结果"的差异）
     python scripts/ocr_try.py samples/合同.pdf --force-ocr
 
-⚠️ Windows 终端若中文乱码，先执行：chcp 65001
+    # 指定产物目录（默认 <work_dir>/ocr_try）
+    python scripts/ocr_try.py samples/合同.pdf --save --out-dir /app/work/out
+
+⚠️ **产物不写回输入目录**：渲染图与识别文本统一落到输出目录，
+   因为输入目录在 Docker 里是只读挂载，而且不该污染附件原件。
 """
 
 from __future__ import annotations
@@ -35,16 +39,20 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="单文件 OCR 效果试验")
     ap.add_argument("path", help="待识别的 PDF 或图片路径")
     ap.add_argument("--dpi", type=int, default=0, help="渲染 DPI，默认取配置（300）")
-    ap.add_argument("--save", action="store_true", help="把识别文本保存为同名 .txt")
+    ap.add_argument("--save", action="store_true", help="把识别文本保存为 .txt")
     ap.add_argument("--force-ocr", action="store_true", help="文本型 PDF 也强制走 OCR")
     ap.add_argument("--preview", type=int, default=30, help="预览前 N 行，0 表示全部")
     ap.add_argument("--engine", default="rapid", choices=["rapid", "paddle"])
+    ap.add_argument("--out-dir", default="", help="产物输出目录，默认 <work_dir>/ocr_try")
     args = ap.parse_args()
 
     path = Path(args.path)
     if not path.exists():
         print(f"[FAIL] 文件不存在：{path}")
         return 1
+
+    out_dir = Path(args.out_dir) if args.out_dir else settings.work_dir / "ocr_try"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     dpi = args.dpi or settings.ocr_dpi
     print("=" * 64)
@@ -67,12 +75,16 @@ def main() -> int:
             text = pdf_utils.extract_text(path)
             _show(text, args.preview)
             if args.save:
-                _save(path, text)
+                print(f"\n已保存：{_save(text, out_dir / f'{path.stem}.ocr.txt')}")
             return 0
 
     # ── 2) 渲染成图片 ─────────────────────────────────────────
     t0 = time.perf_counter()
-    images = pdf_utils.render_pages(path, dpi=dpi) if is_pdf else [path]
+    images = (
+        pdf_utils.render_pages(path, dpi=dpi, out_dir=out_dir / "pages" / path.stem)
+        if is_pdf
+        else [path]
+    )
     render_cost = time.perf_counter() - t0
     print(f"渲染 {len(images)} 页 @ {dpi} DPI，耗时 {render_cost:.1f}s")
 
@@ -95,8 +107,8 @@ def main() -> int:
     _show(merged.text, args.preview)
 
     if args.save:
-        _save(path, merged.text)
-        print(f"\n已保存：{path.with_suffix('.ocr.txt')}")
+        saved = _save(merged.text, out_dir / f"{path.stem}.ocr.txt")
+        print(f"\n已保存：{saved}")
         if len(images) > 1:
             print(f"分页图片保留在：{images[0].parent}（人工比对时可逐页看）")
 
@@ -115,8 +127,11 @@ def _show(text: str, preview: int) -> None:
         print(text)
 
 
-def _save(src: Path, text: str) -> None:
-    src.with_suffix(".ocr.txt").write_text(text, encoding="utf-8")
+def _save(text: str, dest: Path) -> Path:
+    """把识别文本写到 dest（自动建目录），返回写入路径。"""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(text, encoding="utf-8")
+    return dest
 
 
 if __name__ == "__main__":

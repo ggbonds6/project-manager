@@ -104,7 +104,7 @@ def summarize(rows: list[dict]) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="附件构成摸底（不需要模型）")
     ap.add_argument("root", help="附件目录")
-    ap.add_argument("--out", default="", help="Excel 输出路径，默认 <目录>/附件构成统计.xlsx")
+    ap.add_argument("--out", default="", help="Excel 输出路径，默认 <work_dir>/附件构成统计.xlsx")
     args = ap.parse_args()
 
     root = Path(args.root)
@@ -116,7 +116,9 @@ def main() -> int:
     summarize(rows)
 
     if rows:
-        out = Path(args.out) if args.out else root / "附件构成统计.xlsx"
+        # 产物一律落到 work_dir：输入目录可能是只读挂载（Docker），
+        # 而且也不该往用户的附件目录里写东西
+        out = Path(args.out) if args.out else settings.work_dir / "附件构成统计.xlsx"
         try:
             import pandas as pd
 

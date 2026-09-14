@@ -31,3 +31,13 @@ paddle = [
 
 [project.scripts]
 pm-ai = "pm_ai.api:run"
+
+# ── 打包配置（**必需**）────────────────────────────────────────
+# 本项目是 src 布局（源码在 src/pm_ai/），必须显式声明包发现路径，
+# 否则 `pip install -e .` 会装上但导入不到 pm_ai（脚本里手写 sys.path 才能跑）。
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────────────────────────
+# PM AI Service · 本地 / 内网验证环境
+#
+# 用法（在 ai-service/ 目录下）：
+#   cp .env.example .env && vi .env        # 填千问地址与密钥（首次）
+#   docker compose build                   # 构建（构建期会跑 OCR 自检）
+#   docker compose up -d                   # 启动
+#   docker compose logs -f ai-service      # 看日志
+#
+# 或直接用一键脚本：bash scripts/docker-verify.sh up
+#
+# 放附件：把 PDF/图片丢进 ./samples/，容器内路径为 /samples（只读）
+# 取结果：OCR 文本与汇总表写到 ./work/（容器内 /app/work）
+# ─────────────────────────────────────────────────────────────────
+name: pm-ai
+
+services:
+  ai-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pm-ai-service:local
+    container_name: pm-ai-service
+    restart: unless-stopped
+
+    # 配置全部来自 .env（与 docker-compose.yml 同目录）
+    env_file:
+      - .env
+
+    # 容器内固定 8100；宿主机端口由 .env 的 AI_PORT 决定
+    environment:
+      AI_HOST: 0.0.0.0
+      AI_PORT: "8100"
+      WORK_DIR: /app/work
+
+    ports:
+      - "${AI_PORT:-8100}:8100"
+
+    volumes:
+      # 待测附件（只读挂载，容器动不了你的原文件）
+      - ./samples:/samples:ro
+      # 产物持久化（OCR 文本、渲染图、汇总表）
+      - ./work:/app/work
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=5).status==200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
