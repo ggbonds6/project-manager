@@ -36,11 +36,21 @@ Qwen3 是混合推理模型，默认开启思考。思考内容放在 `reasoning
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 
 from openai import OpenAI
 
 from .config import settings
+
+
+@dataclass
+class ToolCall:
+    """模型发起的一次工具调用请求。"""
+    id: str
+    name: str
+    arguments: dict
+    raw_arguments: str = ""
 
 
 @dataclass
@@ -52,6 +62,7 @@ class ChatResult:
     reasoning: str = ""
     """思维链内容（Qwen3 等推理模型）。不展示给用户，用于诊断"为什么没答案"。"""
     finish_reason: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
     @property
     def is_truncated(self) -> bool:
@@ -61,6 +72,10 @@ class ChatResult:
     @property
     def has_text(self) -> bool:
         return bool(self.text.strip())
+
+    @property
+    def has_tool_calls(self) -> bool:
+        return bool(self.tool_calls)
 
 
 _CLIENT: OpenAI | None = None
@@ -82,16 +97,19 @@ def get_client() -> OpenAI:
     return _CLIENT
 
 
-def chat(
-    prompt: str,
-    system: str | None = None,
+def chat_messages(
+    messages: list[dict],
+    tools: list[dict] | None = None,
     temperature: float = 0.0,
     timeout: float | None = None,
     max_retries: int | None = None,
     max_tokens: int | None = None,
     enable_thinking: bool | None = None,
 ) -> ChatResult:
-    """单轮对话。
+    """带**完整消息列表**的调用（支持工具调用）。
+
+    与 `chat()` 的区别：这里可以传多条消息——包含 assistant 的 `tool_calls`
+    以及 `role="tool"` 的工具结果，供工具调用循环反复调用。
 
     :param timeout:         传 None 沿用客户端默认（config 的 `LLM_TIMEOUT`）
     :param max_tokens:      输出上限；None 取 `settings.llm_max_tokens`
@@ -99,11 +117,6 @@ def chat(
                             **只在为 False 时才附带参数**——服务端不支持该字段时
                             附带它会直接 400，所以非必要不传。
     """
-    messages: list[dict[str, str]] = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-
     client = get_client()
     options: dict[str, object] = {}
     if timeout is not None:
@@ -115,10 +128,15 @@ def chat(
 
     kwargs: dict = {
         "model": settings.llm_model,
-        "messages": messages,  # type: ignore[arg-type]
+        "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens if max_tokens is not None else settings.llm_max_tokens,
     }
+    if tools:
+        # tool_choice=auto：由模型自行决定是否调用工具。
+        # 强制调用会破坏"信息不足就直说"的场景（模型不得不编一个查询出来）。
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
 
     thinking = settings.llm_enable_thinking if enable_thinking is None else enable_thinking
     if not thinking:
@@ -130,6 +148,16 @@ def chat(
     msg = choice.message
     usage = getattr(resp, "usage", None)
 
+    calls: list[ToolCall] = []
+    for tc in (getattr(msg, "tool_calls", None) or []):
+        raw = getattr(tc.function, "arguments", "") or "{}"
+        try:
+            args = json.loads(raw)
+        except Exception:  # noqa: BLE001 - 参数不是合法 JSON 时按空参数处理
+            args = {}
+        calls.append(ToolCall(id=getattr(tc, "id", ""), name=tc.function.name,
+                              arguments=args, raw_arguments=raw))
+
     return ChatResult(
         text=(msg.content or "").strip(),
         model=resp.model,
@@ -138,6 +166,35 @@ def chat(
         # reasoning_content 不属于 OpenAI 标准字段，用 getattr 兼容其他模型
         reasoning=(getattr(msg, "reasoning_content", "") or "").strip(),
         finish_reason=choice.finish_reason or "",
+        tool_calls=calls,
+    )
+
+
+def chat(
+    prompt: str,
+    system: str | None = None,
+    temperature: float = 0.0,
+    timeout: float | None = None,
+    max_retries: int | None = None,
+    max_tokens: int | None = None,
+    enable_thinking: bool | None = None,
+) -> ChatResult:
+    """单轮对话（system + 一条用户消息的便捷封装）。
+
+    默认 `temperature=0`：字段抽取与审计相关任务需要**可复现**，
+    不要让同一个输入每次给出不同答案。
+    """
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    return chat_messages(
+        messages,
+        temperature=temperature,
+        timeout=timeout,
+        max_retries=max_retries,
+        max_tokens=max_tokens,
+        enable_thinking=enable_thinking,
     )
 
 

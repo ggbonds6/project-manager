@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>PM AI Service · 附件智能分析</title>
-  <!-- markdown 渲染库由页尾的 bootstrap 按需注入（本页不一定在 AI 服务的源上） -->
+<title>PM AI Service · 文档问答</title>
 <style>
   :root{
     --bg:#f4f6fa; --card:#fff; --line:#e3e8f0; --text:#1f2733; --muted:#6b7785;
@@ -12,224 +11,222 @@
     --ok:#0f9d58; --warn:#e8a33d; --danger:#d93025;
   }
   *{box-sizing:border-box}
+  html,body{height:100%}
   body{
     margin:0; background:var(--bg); color:var(--text);
     font:14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+    display:flex; flex-direction:column;
   }
   header{
     background:var(--card); border-bottom:1px solid var(--line);
-    padding:16px 24px; display:flex; align-items:center; justify-content:space-between;
-    position:sticky; top:0; z-index:10;
+    padding:14px 22px; display:flex; align-items:center; justify-content:space-between;
+    flex:none;
   }
-  header h1{font-size:16px; margin:0; font-weight:600; letter-spacing:.2px}
+  header h1{font-size:16px; margin:0; font-weight:600}
   header h1 span{color:var(--muted); font-weight:400; font-size:13px; margin-left:8px}
   #status{font-size:13px; color:var(--muted)}
   #status.ok{color:var(--ok)} #status.bad{color:var(--danger)}
-  main{max-width:960px; margin:0 auto; padding:24px 20px 80px}
-  .card{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:18px}
 
-  /* ── 上传区 ── */
-  .dropzone{
-    border:2px dashed #c8d3e2; border-radius:10px; padding:32px 16px; text-align:center;
-    cursor:pointer; transition:.15s; background:#fafbfd;
-  }
-  .dropzone:hover,.dropzone.over{border-color:var(--brand); background:#f0f6ff}
-  .dz-icon{font-size:30px; line-height:1}
-  .dz-title{margin-top:10px; font-size:15px; font-weight:500}
-  .dz-hint{color:var(--muted); font-size:12.5px; margin-top:6px}
-  .fileinfo{
-    margin-top:14px; padding:10px 14px; background:#f0f6ff; border-radius:8px;
-    font-size:13px; display:flex; justify-content:space-between; gap:12px;
-  }
-  .fileinfo b{font-weight:600}
-  .field{display:block; margin-top:16px}
-  .field>span{display:block; font-size:13px; color:var(--muted); margin-bottom:6px}
-  textarea{
-    width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
-    font:inherit; resize:vertical; color:var(--text);
-  }
-  textarea:focus{outline:none; border-color:var(--brand)}
-  .actions{margin-top:16px; display:flex; gap:10px}
-  button{
-    padding:9px 18px; border-radius:8px; border:1px solid transparent; cursor:pointer;
-    font:inherit; font-weight:500; background:var(--brand); color:#fff; transition:.15s;
-  }
-  button:hover:not(:disabled){background:var(--brand-dark)}
-  button:disabled{opacity:.45; cursor:not-allowed}
-  button.ghost{background:#fff; color:var(--text); border-color:var(--line)}
-  button.ghost:hover:not(:disabled){background:#f2f5f9; border-color:#c8d3e2}
+  .layout{flex:1; display:flex; min-height:0}
 
-  /* ── 进度 ── */
-  .progress{display:flex; align-items:center; gap:12px; font-size:14px}
-  .spinner{
-    width:18px; height:18px; border:2px solid #d7e0ec; border-top-color:var(--brand);
-    border-radius:50%; animation:spin .8s linear infinite; flex:none;
+  /* ── 左：文档库 ── */
+  .sidebar{
+    width:290px; flex:none; background:var(--card); border-right:1px solid var(--line);
+    display:flex; flex-direction:column; min-height:0;
   }
-  @keyframes spin{to{transform:rotate(360deg)}}
-  .progress small{display:block; color:var(--muted); font-size:12.5px; margin-top:2px}
+  .sidebar-head{padding:14px 16px 10px; border-bottom:1px solid var(--line)}
+  .sidebar-head .row{display:flex; align-items:center; justify-content:space-between}
+  .sidebar-head b{font-size:14px}
+  .sidebar-head .count{font-size:12.5px; color:var(--muted)}
+  .doc-list{flex:1; overflow-y:auto; padding:8px}
+  .doc-item{
+    border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin-bottom:7px;
+    cursor:pointer; transition:.12s; position:relative;
+  }
+  .doc-item:hover{border-color:#c8d3e2; background:#fafbfd}
+  .doc-item.on{border-color:var(--brand); background:#f0f6ff}
+  .doc-item .name{font-size:13px; font-weight:500; word-break:break-all; padding-right:20px}
+  .doc-item .sub{font-size:12px; color:var(--muted); margin-top:3px}
+  .doc-item .del{
+    position:absolute; right:6px; top:6px; border:none; background:transparent;
+    color:#b9c2ce; cursor:pointer; font-size:15px; line-height:1; padding:2px 4px;
+  }
+  .doc-item .del:hover{color:var(--danger)}
+  .sidebar-foot{padding:10px 12px; border-top:1px solid var(--line); font-size:12px; color:var(--muted)}
 
-  /* ── 元信息 ── */
-  .meta{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px}
-  .chip{
-    font-size:12.5px; padding:4px 10px; border-radius:20px;
-    background:#eef2f8; color:#41505f; white-space:nowrap;
+  /* ── 右：问答 ── */
+  .chat{flex:1; display:flex; flex-direction:column; min-width:0; min-height:0}
+  .messages{flex:1; overflow-y:auto; padding:20px 24px 8px}
+  .msg{max-width:820px; margin:0 auto 18px; display:flex; gap:10px}
+  .msg .avatar{
+    width:28px; height:28px; border-radius:6px; flex:none; display:flex;
+    align-items:center; justify-content:center; font-size:14px;
   }
-  .chip b{font-weight:600}
-  .chip.warn{background:#fdf4e3; color:#8a5b00}
-  .chip.bad{background:#fdeceb; color:#a3231b}
-  .notice{
-    padding:10px 14px; border-radius:8px; font-size:13px; margin-bottom:14px;
-    background:#fdf4e3; border-left:3px solid var(--warn); color:#7a5200;
+  .msg.user .avatar{background:#e7efff}
+  .msg.bot .avatar{background:#eef7f0}
+  .msg .body{flex:1; min-width:0}
+  .msg .bubble{
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:12px 15px;
   }
-  .notice.info{background:#eef4ff; border-left-color:var(--brand); color:#23457f}
-  .toolbar{display:flex; gap:8px; margin-bottom:12px}
+  .msg.user .bubble{background:#f0f6ff; border-color:#d6e4ff; white-space:pre-wrap}
+  .msg .who{font-size:12px; color:var(--muted); margin-bottom:5px}
 
-  /* ── markdown 输出 ── */
-  .markdown{border-top:1px solid var(--line); padding-top:16px; overflow-x:auto}
-  .markdown h3{
-    font-size:15px; margin:24px 0 10px; padding-left:10px;
-    border-left:3px solid var(--brand); line-height:1.4;
+  /* 工具调用轨迹 */
+  .trace{margin:0 0 8px; font-size:12.5px}
+  .trace summary{cursor:pointer; color:var(--muted); list-style:none; padding:2px 0}
+  .trace summary::-webkit-details-marker{display:none}
+  .trace summary::before{content:"▸ ";}
+  .trace[open] summary::before{content:"▾ ";}
+  .trace .item{
+    padding:4px 9px; margin:4px 0 0 10px; border-left:2px solid #d6e4ff;
+    color:#41505f; font-size:12px;
   }
-  .markdown h3:first-child{margin-top:0}
-  .markdown h1,.markdown h2{font-size:16px; margin:20px 0 10px}
-  .markdown table{border-collapse:collapse; width:100%; margin:12px 0; font-size:13.5px}
-  .markdown th,.markdown td{border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top}
+  .trace .item.err{border-left-color:#f3c0bc; color:#a3231b}
+  .trace code{background:#f0f3f8; padding:1px 4px; border-radius:3px}
+
+  /* markdown */
+  .markdown h1,.markdown h2,.markdown h3{font-size:15px; margin:16px 0 8px}
+  .markdown h3{padding-left:9px; border-left:3px solid var(--brand); line-height:1.4}
+  .markdown table{border-collapse:collapse; width:100%; margin:10px 0; font-size:13.5px}
+  .markdown th,.markdown td{border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top}
   .markdown th{background:#f7f9fc; font-weight:600; white-space:nowrap}
   .markdown tbody tr:nth-child(even){background:#fcfdff}
   .markdown blockquote{
-    margin:10px 0; padding:8px 14px; border-left:3px solid #c8d3e2;
+    margin:9px 0; padding:7px 13px; border-left:3px solid #c8d3e2;
     background:#fafbfd; color:#46525f;
   }
   .markdown code{background:#f0f3f8; padding:1px 5px; border-radius:4px; font-size:12.5px}
   .markdown ul,.markdown ol{padding-left:22px}
-  .markdown hr{border:none; border-top:1px solid var(--line); margin:18px 0}
-
-  /* 来源标记与置信度着色 —— 让"可疑项"一眼可见 */
+  .markdown p:first-child{margin-top:0}
+  .markdown p:last-child{margin-bottom:0}
   .src{
     display:inline-block; font-size:11.5px; padding:1px 6px; border-radius:4px;
     background:#e7efff; color:#2554a8; font-weight:600; white-space:nowrap;
   }
-  td.conf{font-weight:600; text-align:center; white-space:nowrap}
-  td.conf-high{color:var(--ok); background:#f0faf4}
-  td.conf-mid{color:#a86a00; background:#fdf7e8}
-  td.conf-low{color:var(--danger); background:#fdeeed}
-  .legend{font-size:12.5px; color:var(--muted); margin-top:10px; line-height:1.9}
-  .legend i{font-style:normal; padding:1px 6px; border-radius:4px; margin-right:4px}
+
+  /* 输入区 */
+  .composer{flex:none; border-top:1px solid var(--line); background:var(--card); padding:12px 24px 16px}
+  .composer-inner{max-width:820px; margin:0 auto}
+  .quick{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:9px; align-items:center}
+  .quick .lbl{font-size:12px; color:var(--muted)}
+  .quick button{
+    font-size:12px; padding:3px 10px; border-radius:14px; border:1px solid var(--line);
+    background:#fff; color:#41505f; cursor:pointer;
+  }
+  .quick button:hover{border-color:var(--brand); color:var(--brand-dark)}
+  .input-row{display:flex; gap:9px; align-items:flex-end}
+  textarea{
+    flex:1; padding:10px 12px; border:1px solid var(--line); border-radius:9px;
+    font:inherit; resize:none; min-height:44px; max-height:150px; color:var(--text);
+  }
+  textarea:focus{outline:none; border-color:var(--brand)}
+  button.primary{
+    padding:11px 20px; border-radius:9px; border:none; cursor:pointer;
+    font:inherit; font-weight:500; background:var(--brand); color:#fff; flex:none;
+  }
+  button.primary:hover:not(:disabled){background:var(--brand-dark)}
+  button.primary:disabled{opacity:.45; cursor:not-allowed}
+
+  .empty{text-align:center; color:var(--muted); padding:70px 20px; font-size:13.5px}
+  .notice{
+    padding:9px 13px; border-radius:8px; font-size:13px; margin:0 auto 14px;
+    background:#fdf4e3; border-left:3px solid var(--warn); color:#7a5200; max-width:820px;
+  }
+  .notice.info{background:#eef4ff; border-left-color:var(--brand); color:#23457f}
+  .notice.bad{background:#fdeceb; border-left-color:var(--danger); color:#a3231b}
+  .spin{
+    display:inline-block; width:13px; height:13px; border:2px solid #d7e0ec;
+    border-top-color:var(--brand); border-radius:50%; animation:spin .8s linear infinite;
+    vertical-align:-2px; margin-right:6px;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
 
 <header>
-  <h1>PM AI Service<span>附件智能分析</span></h1>
-  <div id="status">正在检查服务状态…</div>
+  <h1>PM AI Service<span>文档库 · 智能问答</span></h1>
+  <div id="status">正在连接…</div>
 </header>
 
-<main>
-  <!-- 上传 -->
-  <section class="card">
-    <div class="dropzone" id="dropzone">
-      <input type="file" id="fileInput" hidden
-             accept=".pdf,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp">
-      <div class="dz-icon">📄</div>
-      <div class="dz-title">点击选择文件，或拖拽到此处</div>
-      <div class="dz-hint">支持 PDF 与图片（png / jpg / tif 等）；文本型 PDF 直接取文本层，扫描件自动 OCR</div>
+<div class="layout">
+  <!-- 左：文档库 -->
+  <aside class="sidebar">
+    <div class="sidebar-head">
+      <div class="row">
+        <b>文档库</b>
+        <input type="file" id="fileInput" hidden
+               accept=".pdf,.png,.jpg,.jpeg,.bmp,.tif,.tiff,.webp" multiple>
+        <button class="primary" id="uploadBtn" style="padding:6px 13px;font-size:13px">上传文件</button>
+      </div>
+      <div class="count" id="docCount" style="margin-top:7px">加载中…</div>
     </div>
-
-    <div class="fileinfo" id="fileInfo" hidden></div>
-
-    <label class="field">
-      <span>特别关注点（可选）—— 留空则按文档类型自动判断应抽取的关键信息</span>
-      <textarea id="instruction" rows="2"
-        placeholder="例如：抽取合同约定的支付节点、各期比例与金额；列出所有涉及人员的姓名与身份证号"></textarea>
-    </label>
-
-    <div class="actions">
-      <button id="submitBtn" disabled>开始分析</button>
-      <button id="clearBtn" class="ghost">清空</button>
+    <div class="doc-list" id="docList"></div>
+    <div class="sidebar-foot">
+      点文档名可<b>限定提问范围</b>（再点取消）；不选则检索全部文档。
     </div>
-  </section>
+  </aside>
 
-  <!-- 进度 -->
-  <section class="card" id="progressCard" hidden>
-    <div class="progress">
-      <div class="spinner"></div>
-      <div>
-        <div id="progressText">正在处理…</div>
-        <small id="progressHint"></small>
+  <!-- 右：问答 -->
+  <section class="chat">
+    <div class="messages" id="messages">
+      <div class="empty" id="emptyTip">
+        先在左侧上传文件，然后在这里提问。<br>
+        例如："付款条款是怎么约定的？各期比例和金额是多少？"
+      </div>
+    </div>
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="quick">
+          <span class="lbl">快捷提问：</span>
+          <button data-q="这份文件的主要内容是什么？请分要点总结。">总结主要内容</button>
+          <button data-q="列出文件中所有的金额、比例、日期，并标注来源页码。">提取关键数字</button>
+          <button data-q="文件里涉及哪些单位和人员？各自承担什么角色？">相关方与人员</button>
+          <button data-q="付款条款是怎么约定的？各期比例、金额、条件与时间分别是什么？">付款条款</button>
+        </div>
+        <div class="input-row">
+          <textarea id="question" rows="1" placeholder="就文档内容提问…（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button class="primary" id="sendBtn">发送</button>
+        </div>
       </div>
     </div>
   </section>
-
-  <!-- 结果 -->
-  <section class="card" id="resultCard" hidden>
-    <div id="noticeBox"></div>
-    <div class="meta" id="meta"></div>
-    <div class="toolbar">
-      <button id="copyBtn" class="ghost">复制 Markdown</button>
-      <button id="downloadBtn" class="ghost">下载 .md</button>
-    </div>
-    <article class="markdown" id="output"></article>
-    <div class="legend" id="legend">
-      置信度分档：
-      <i style="background:#f0faf4;color:#0f9d58">≥0.90 明确</i>
-      <i style="background:#fdf7e8;color:#a86a00">0.60–0.89 需留意</i>
-      <i style="background:#fdeeed;color:#d93025">&lt;0.60 存疑</i>
-      ｜ <span class="src">P2</span> 表示该信息来自第 2 页
-      <br>
-      ⚠️ 置信度为<b>模型自评</b>，用于提示复核优先级，<b>不能替代人工核对</b>；
-      金额、日期、编号请务必对照原文。
-    </div>
-  </section>
-</main>
+</div>
 
 <script>
-/* ══════════════════════════════════════════════════════════════════
-   引导：先确定"后端在哪"，再启动主逻辑。
-
-   为什么需要这段：本页可能**不是**由 AI 服务本身提供的（例如被 IDE 预览、
-   或从本地文件打开），此时相对路径 /static/... 和 fetch('/health') 都会 404，
-   页面会卡在"正在检查服务状态…"——因为 marked 加载失败导致脚本直接抛错。
-   所以这里：
-     1) 同源且端口是 8100 → 直接用当前源；
-     2) 否则回退到 http://127.0.0.1:8100（后端已开 CORS）；
-     3) marked 从同一地址加载，成功/失败/超时都会启动主逻辑（失败则降级为纯文本展示）。
-   ══════════════════════════════════════════════════════════════════ */
+/* ── 引导：确定后端地址并加载渲染库 ───────────────────────────────
+   本页可能不在 AI 服务的源上（IDE 预览、本地打开文件），此时相对路径会 404，
+   所以先判定后端地址，再从同一地址加载 marked。                      */
 (function bootstrap() {
   var sameOrigin = location.protocol.indexOf('http') === 0 && location.port === '8100';
   var api = sameOrigin ? location.origin : 'http://127.0.0.1:8100';
   window.API_BASE = api;
 
   var started = false;
-  function start() {
-    if (started) return;
-    started = true;
-    main();
-  }
+  function start() { if (!started) { started = true; main(); } }
 
   var s = document.createElement('script');
   s.src = api + '/static/marked.min.js';
   s.onload = start;
-  s.onerror = start;          // 拿不到渲染库也要能用（降级为纯文本）
+  s.onerror = start;      // 拿不到渲染库也要能用，降级为纯文本
   document.head.appendChild(s);
-
-  setTimeout(start, 6000);    // 兜底：网络挂起时也必须启动，避免永久停在"检查中"
+  setTimeout(start, 6000);
 })();
 
 function main() {
-  const $ = id => document.getElementById(id);
   const API = window.API_BASE;
-  const dropzone = $('dropzone'), fileInput = $('fileInput'), fileInfo = $('fileInfo');
-  const submitBtn = $('submitBtn'), clearBtn = $('clearBtn'), instruction = $('instruction');
-  const progressCard = $('progressCard'), progressText = $('progressText'), progressHint = $('progressHint');
-  const resultCard = $('resultCard'), output = $('output'), meta = $('meta');
-  const noticeBox = $('noticeBox'), status = $('status');
+  const $ = id => document.getElementById(id);
+  const status = $('status'), docList = $('docList'), docCount = $('docCount');
+  const messages = $('messages'), emptyTip = $('emptyTip');
+  const question = $('question'), sendBtn = $('sendBtn'), fileInput = $('fileInput');
 
-  let currentFile = null, timer = null, lastMarkdown = '', lastFileName = '';
+  if (window.marked) marked.setOptions({ gfm: true, breaks: true });
 
-  // marked 可能加载失败（非同源且后端不可达时），这里做保护，避免脚本中断
-  if (window.marked) {
-    marked.setOptions({ gfm: true, breaks: true });
-  }
+  let docs = [];              // 文档元信息
+  let selected = new Set();   // 选中的 doc_id（限定提问范围）
+  let history = [];           // 发给后端的纯文本历史
+  let busy = false;
 
   // ── 服务状态 ──────────────────────────────────────────────
   status.textContent = `正在连接 ${API} …`;
@@ -240,166 +237,213 @@ function main() {
   }).catch(() => {
     status.className = 'bad';
     status.textContent = `连不上服务（${API}）`;
-    // 不要只说"不可达"，要给出可执行的下一步
-    noticeBox.innerHTML =
-      `<div class="notice" style="background:#fdeceb;border-left-color:#d93025;color:#a3231b">
-        <b>连不上 AI 服务：</b>${API}<br>
-        ① 确认容器在运行：在 <code>ai-service/</code> 下执行
-        <code>docker compose up -d</code>（或 <code>bash scripts/docker-verify.sh up</code>）；<br>
-        ② 直接打开 <a href="${API}/" target="_blank">${API}/</a> 访问本页面；
-        若你正从别处（如 IDE 预览）打开，页面会自动指向 ${API}。
-      </div>`;
-    resultCard.hidden = false;
+    addNotice(`连不上 AI 服务：${API}<br>① 确认容器在运行（在 ai-service/ 下执行 <code>docker compose up -d</code>）；`
+      + `② 也可直接打开 <a href="${API}/" target="_blank">${API}/</a>。`, 'bad', true);
   });
 
-  // ── 文件选择 ──────────────────────────────────────────────
-  function pick(file) {
-    if (!file) return;
-    currentFile = file;
-    const mb = (file.size / 1024 / 1024).toFixed(2);
-    fileInfo.hidden = false;
-    fileInfo.innerHTML = `<span>已选择：<b>${escapeHtml(file.name)}</b></span><span>${mb} MB</span>`;
-    submitBtn.disabled = false;
-    resultCard.hidden = true;
-    noticeBox.innerHTML = '';
+  // ── 文档库 ────────────────────────────────────────────────
+  function loadDocs() {
+    return fetch(API + '/documents').then(r => r.json()).then(d => {
+      docs = d.data || [];
+      const ids = new Set(docs.map(x => x.doc_id));
+      selected = new Set([...selected].filter(id => ids.has(id)));
+      renderDocs();
+    }).catch(() => { docCount.textContent = '读取文档库失败'; });
   }
 
-  dropzone.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', e => pick(e.target.files[0]));
-  ['dragenter', 'dragover'].forEach(ev => dropzone.addEventListener(ev, e => {
-    e.preventDefault(); dropzone.classList.add('over');
-  }));
-  ['dragleave', 'drop'].forEach(ev => dropzone.addEventListener(ev, e => {
-    e.preventDefault(); dropzone.classList.remove('over');
-  }));
-  dropzone.addEventListener('drop', e => pick(e.dataTransfer.files[0]));
-
-  clearBtn.addEventListener('click', () => {
-    currentFile = null; fileInput.value = ''; instruction.value = '';
-    fileInfo.hidden = true; resultCard.hidden = true; progressCard.hidden = true;
-    submitBtn.disabled = true;
-  });
-
-  // ── 提交 ─────────────────────────────────────────────────
-  submitBtn.addEventListener('click', async () => {
-    if (!currentFile) return;
-    submitBtn.disabled = true;
-    resultCard.hidden = true;
-    noticeBox.innerHTML = '';
-    progressCard.hidden = false;
-
-    let si = 0;
-    setStage(0);
-    timer = setInterval(() => { si = Math.min(si + 1, STAGES.length - 1); setStage(si); }, 12000);
-
-    const form = new FormData();
-    form.append('file', currentFile);
-    form.append('instruction', instruction.value || '');
-
-    try {
-      const resp = await fetch(API + '/analyze', { method: 'POST', body: form });
-      const json = await resp.json();
-      if (!resp.ok || json.code !== 0) {
-        throw new Error(json.detail || `请求失败（HTTP ${resp.status}）`);
-      }
-      render(json.data);
-    } catch (err) {
-      noticeBox.innerHTML = `<div class="notice" style="background:#fdeceb;border-left-color:#d93025;color:#a3231b">
-        <b>分析失败：</b>${escapeHtml(String(err.message || err))}</div>`;
-      resultCard.hidden = false;
-    } finally {
-      clearInterval(timer);
-      progressCard.hidden = true;
-      submitBtn.disabled = false;
+  function renderDocs() {
+    docCount.textContent = docs.length
+      ? `共 ${docs.length} 份` + (selected.size ? ` · 已选 ${selected.size} 份` : '（未选＝检索全部）')
+      : '还没有文档';
+    if (!docs.length) {
+      docList.innerHTML = '<div class="empty" style="padding:30px 10px;font-size:13px">'
+        + '暂无文档<br>点上方「上传文件」开始</div>';
+      return;
     }
-  });
+    docList.innerHTML = docs.map(d => `
+      <div class="doc-item ${selected.has(d.doc_id) ? 'on' : ''}" data-id="${d.doc_id}">
+        <button class="del" data-del="${d.doc_id}" title="删除">×</button>
+        <div class="name">${escapeHtml(d.filename)}</div>
+        <div class="sub">${d.pages} 页 · ${d.chars} 字${
+          d.avg_confidence != null ? ' · 识别 ' + d.avg_confidence : ''}</div>
+      </div>`).join('');
 
-  // 没有流式返回，用文案轮播说明"现在在干什么"，避免用户以为卡死
-  const STAGES = [
-    ['正在识别文档内容…', '文本型 PDF 很快；扫描件需逐页 OCR，可能持续数十秒'],
-    ['正在调用大模型分析…', '模型需通读原文并逐条标注来源与置信度'],
-    ['仍在分析中，请稍候…', '篇幅越长耗时越久，请勿关闭页面'],
-  ];
-
-  function setStage(i) {
-    const s = STAGES[Math.min(i, STAGES.length - 1)];
-    progressText.textContent = s[0];
-    progressHint.textContent = s[1];
-  }
-
-  // ── 渲染结果 ──────────────────────────────────────────────
-  function render(data) {
-    const d = data.doc || {}, llm = data.llm || {};
-    lastMarkdown = data.markdown || '';
-    lastFileName = (data.file || 'result').replace(/\.[^.]+$/, '');
-
-    // 提示条
-    let notes = '';
-    if (data.warning) {
-      notes += `<div class="notice"><b>提示：</b>${escapeHtml(data.warning)}</div>`;
-    }
-    if (data.truncated) {
-      notes += `<div class="notice"><b>注意：</b>${escapeHtml(data.truncate_note || '原文超长已截断')}</div>`;
-    }
-    const lowPages = (d.low_confidence_pages || []);
-    if (lowPages.length) {
-      notes += `<div class="notice"><b>识别质量偏低：</b>第 ${lowPages.join('、')} 页
-        识别置信度低于 0.85，请优先人工复核这几页。</div>`;
-    }
-    const emptyPages = (d.empty_pages || []);
-    if (emptyPages.length) {
-      notes += `<div class="notice"><b>空白页：</b>第 ${emptyPages.join('、')} 页未识别到文本。</div>`;
-    }
-    notes += `<div class="notice info">以下内容由大模型基于原文抽取生成，每条均标注来源页码与置信度。
-      <b>请对照原文核验后再使用</b>，尤其是金额、日期与编号。</div>`;
-    noticeBox.innerHTML = notes;
-
-    // 元信息
-    const kindMap = { text_pdf: '文本型 PDF', scanned: '扫描件', image: '图片' };
-    const chips = [];
-    chips.push(`<span class="chip">文件：<b>${escapeHtml(data.file || '-')}</b></span>`);
-    chips.push(`<span class="chip">类型：<b>${kindMap[d.kind] || d.kind || '-'}</b></span>`);
-    if (d.pages) chips.push(`<span class="chip">页数：<b>${d.pages}</b></span>`);
-    if (d.chars != null) chips.push(`<span class="chip">文本：<b>${d.chars}</b> 字</span>`);
-    if (d.avg_confidence != null) {
-      const v = d.avg_confidence;
-      const cls = v >= 0.9 ? 'chip' : 'chip warn';
-      chips.push(`<span class="${cls}">识别置信度：<b>${v}</b></span>`);
-    }
-    if (llm.model) chips.push(`<span class="chip">模型：<b>${escapeHtml(llm.model)}</b></span>`);
-    if (llm.elapsed != null) chips.push(`<span class="chip">总耗时：<b>${llm.elapsed}s</b></span>`);
-    if (llm.prompt_tokens) chips.push(`<span class="chip">tokens：${llm.prompt_tokens}+${llm.completion_tokens || 0}</span>`);
-    meta.innerHTML = chips.join('');
-
-    // markdown
-    // markdown 渲染；拿不到 marked 时降级为纯文本，保证内容至少可见
-    output.innerHTML = window.marked
-      ? sanitize(marked.parse(lastMarkdown))
-      : '<pre style="white-space:pre-wrap;font:inherit">' + escapeHtml(lastMarkdown) + '</pre>';
-    decorate(output);
-    resultCard.hidden = false;
-    resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
-  // 给置信度单元格着色、把 [P2] 变成小标签
-  function decorate(root) {
-    root.querySelectorAll('td').forEach(td => {
-      const raw = td.textContent.trim();
-      // [P1] / [P1,P2] → 标签
-      if (/\[P\d+(,\s*P\d+)*\]/.test(td.innerHTML)) {
-        td.innerHTML = td.innerHTML.replace(/\[(P\d+(?:,\s*P\d+)*)\]/g,
-          '<span class="src">$1</span>');
-      }
-      // 纯数字且落在 0–1 → 置信度着色
-      const m = raw.match(/^(0(?:\.\d+)?|1(?:\.0+)?)$/);
-      if (m) {
-        const v = parseFloat(raw);
-        td.classList.add('conf', v >= 0.9 ? 'conf-high' : v >= 0.6 ? 'conf-mid' : 'conf-low');
-      }
+    docList.querySelectorAll('.doc-item').forEach(el => {
+      el.addEventListener('click', e => {
+        if (e.target.dataset.del) return;
+        const id = el.dataset.id;
+        selected.has(id) ? selected.delete(id) : selected.add(id);
+        renderDocs();
+      });
+    });
+    docList.querySelectorAll('[data-del]').forEach(btn => {
+      btn.addEventListener('click', async e => {
+        e.stopPropagation();
+        const id = btn.dataset.del;
+        const doc = docs.find(x => x.doc_id === id);
+        if (!confirm(`删除「${doc ? doc.filename : id}」？`)) return;
+        await fetch(API + '/documents/' + id, { method: 'DELETE' });
+        loadDocs();
+      });
     });
   }
 
-  // LLM 输出为不可信内容，做基本清理（内网自用，仍避免脚本注入）
+  $('uploadBtn').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async e => {
+    const files = [...e.target.files];
+    fileInput.value = '';
+    for (const f of files) await uploadOne(f);
+    loadDocs();
+  });
+
+  async function uploadOne(file) {
+    addNotice(`<span class="spin"></span>正在上传并解析 <b>${escapeHtml(file.name)}</b>
+      （${(file.size / 1024 / 1024).toFixed(2)} MB）…<br>
+      扫描件需逐页 OCR，可能持续数十秒到数分钟，请勿关闭页面。`, 'info', true);
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const resp = await fetch(API + '/documents', { method: 'POST', body: form });
+      const json = await resp.json();
+      if (!resp.ok || json.code !== 0) throw new Error(json.detail || `HTTP ${resp.status}`);
+      const d = json.data;
+      addNotice(`✅ 已入库：<b>${escapeHtml(d.filename)}</b>　${d.pages} 页 · ${d.chars} 字`
+        + (d.avg_confidence != null ? ` · 识别置信度 ${d.avg_confidence}` : ''), 'info');
+    } catch (err) {
+      addNotice(`❌ <b>${escapeHtml(file.name)}</b> 入库失败：${escapeHtml(String(err.message || err))}`, 'bad');
+    }
+  }
+
+  function addNotice(html, kind, sticky) {
+    clearNotice();
+    const div = document.createElement('div');
+    div.className = 'notice' + (kind ? ' ' + kind : '');
+    div.id = 'notice';
+    div.innerHTML = html;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+    if (!sticky) setTimeout(clearNotice, 6000);
+  }
+  function clearNotice() { const n = $('notice'); if (n) n.remove(); }
+
+  // ── 问答 ─────────────────────────────────────────────────
+  async function ask(text) {
+    text = (text || '').trim();
+    if (busy || !text) return;
+    busy = true;
+    sendBtn.disabled = true;
+    if (emptyTip) emptyTip.style.display = 'none';
+
+    appendMsg('user', text);
+    history.push({ role: 'user', content: text });
+    question.value = '';
+    question.style.height = 'auto';
+
+    const pending = appendPending();
+    try {
+      const resp = await fetch(API + '/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: text,
+          doc_ids: selected.size ? [...selected] : null,
+          history: history.slice(-12),
+        }),
+      });
+      const json = await resp.json();
+      if (!resp.ok || json.code !== 0) throw new Error(json.detail || `HTTP ${resp.status}`);
+      pending.remove();
+      renderAnswer(json.data);
+      history.push({ role: 'assistant', content: json.data.answer || '' });
+    } catch (err) {
+      pending.remove();
+      appendMsg('bot', `> ⚠️ 请求失败：${escapeHtml(String(err.message || err))}`);
+    } finally {
+      busy = false;
+      sendBtn.disabled = false;
+      messages.scrollTop = messages.scrollHeight;
+    }
+  }
+
+  function appendMsg(role, text) {
+    const div = document.createElement('div');
+    div.className = 'msg ' + (role === 'user' ? 'user' : 'bot');
+    const who = role === 'user' ? { icon: '👤', label: '你' } : { icon: '🤖', label: '分析助手' };
+    div.innerHTML = `
+      <div class="avatar">${who.icon}</div>
+      <div class="body">
+        <div class="who">${who.label}</div>
+        <div class="bubble">${role === 'user' ? escapeHtml(text) : renderMd(text)}</div>
+      </div>`;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+    return div;
+  }
+
+  function appendPending() {
+    const div = document.createElement('div');
+    div.className = 'msg bot';
+    div.innerHTML = `
+      <div class="avatar">🤖</div>
+      <div class="body">
+        <div class="who">分析助手</div>
+        <div class="bubble"><span class="spin"></span>正在检索文档并分析…
+          （模型会自行调用检索 / 计算工具，可能需要几十秒）</div>
+      </div>`;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+    return div;
+  }
+
+  function renderAnswer(data) {
+    const llm = data.llm || {};
+    const trace = data.trace || [];
+    const div = document.createElement('div');
+    div.className = 'msg bot';
+
+    // 工具调用轨迹：默认折叠，展开可看"模型查了什么"
+    let traceHtml = '';
+    if (trace.length) {
+      const items = trace.map(t => `
+        <div class="item ${t.is_error ? 'err' : ''}">
+          <code>${escapeHtml(t.name)}</code>
+          ${escapeHtml(JSON.stringify(t.arguments))} → ${escapeHtml(t.brief)}
+          <span style="color:#9aa5b1">(${t.elapsed}s)</span>
+        </div>`).join('');
+      traceHtml = `<details class="trace">
+        <summary>模型调用工具 ${trace.length} 次 · 共 ${llm.rounds || '-'} 轮 · 耗时 ${llm.elapsed || '-'}s</summary>
+        ${items}</details>`;
+    }
+
+    const scope = (data.scope || []).map(s => escapeHtml(s.filename)).join('、');
+    div.innerHTML = `
+      <div class="avatar">🤖</div>
+      <div class="body">
+        <div class="who">分析助手${scope ? `　· 检索范围：${scope}` : ''}</div>
+        ${traceHtml}
+        <div class="bubble"><div class="markdown">${renderMd(data.answer || '')}</div></div>
+      </div>`;
+    messages.appendChild(div);
+
+    // 把 [文件名 P3] 之类的来源标记渲染成小标签
+    div.querySelectorAll('.markdown').forEach(root => {
+      root.querySelectorAll('td, li, p, blockquote, h3').forEach(el => {
+        if (/\[[^\]]*P\d+[^\]]*\]/.test(el.innerHTML)) {
+          el.innerHTML = el.innerHTML.replace(/\[([^\]]*P\d+[^\]]*)\]/g,
+            '<span class="src">$1</span>');
+        }
+      });
+    });
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  function renderMd(text) {
+    return window.marked
+      ? sanitize(marked.parse(text))
+      : '<pre style="white-space:pre-wrap;font:inherit">' + escapeHtml(text) + '</pre>';
+  }
+
+  // 模型输出属不可信内容，做基本清理（内网自用，仍避免脚本注入）
   function sanitize(html) {
     const doc = new DOMParser().parseFromString(html, 'text/html');
     doc.querySelectorAll('script,style,iframe,object,embed,link,meta,form,base')
@@ -420,25 +464,20 @@ function main() {
       ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
-  // ── 复制 / 下载 ───────────────────────────────────────────
-  $('copyBtn').addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(lastMarkdown);
-      $('copyBtn').textContent = '已复制 ✓';
-    } catch {
-      $('copyBtn').textContent = '复制失败';
-    }
-    setTimeout(() => { $('copyBtn').textContent = '复制 Markdown'; }, 1600);
+  // ── 输入 ─────────────────────────────────────────────────
+  sendBtn.addEventListener('click', () => ask(question.value));
+  question.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(question.value); }
+  });
+  question.addEventListener('input', () => {
+    question.style.height = 'auto';
+    question.style.height = Math.min(question.scrollHeight, 150) + 'px';
+  });
+  document.querySelectorAll('.quick button').forEach(b => {
+    b.addEventListener('click', () => ask(b.dataset.q));
   });
 
-  $('downloadBtn').addEventListener('click', () => {
-    const blob = new Blob([lastMarkdown], { type: 'text/markdown;charset=utf-8' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = (lastFileName || 'result') + '.分析结果.md';
-    a.click();
-    URL.revokeObjectURL(a.href);
-  });
+  loadDocs();
 }
 </script>
 </body>

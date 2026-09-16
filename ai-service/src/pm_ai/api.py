@@ -24,9 +24,11 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from . import __version__, analyze, llm_client, ocr_engine, pdf_utils
+from . import __version__, analyze, document, llm_client, ocr_engine, pdf_utils, qa
 from .config import settings
+from .store import store
 
 app = FastAPI(title="PM AI Service", version=__version__)
 
@@ -226,6 +228,76 @@ def ocr_file(
         raise HTTPException(status_code=400, detail=f"不支持的格式：{suffix}")
     finally:
         path.unlink(missing_ok=True)
+
+
+# ── 文档库：上传 / 列表 / 删除 ────────────────────────────────────
+#
+# 与 /ocr/file 的区别：/ocr/file 只识别并返回文本（不保存）；
+# /documents 会把解析结果**持久化**，作为后续问答的检索基础。
+# 它同时承担"解析"与"入库"两件事，扫描件可能耗时数十秒到数分钟。
+
+@app.post("/documents")
+def upload_document(file: UploadFile = File(...), dpi: int = Form(default=0)):
+    """上传文档 → 解析（文本层或 OCR）→ 入库，供问答与检索使用。"""
+    path = _save_tmp(file)
+    try:
+        _guard_size(file)
+        doc = document.read_document(path, dpi=dpi or None)
+        if doc.error:
+            raise HTTPException(status_code=400, detail=doc.error)
+        if not doc.text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="未从文件中提取到任何文本。若为扫描件，可能是清晰度过低；"
+                       "可提高 OCR_DPI 后重试。",
+            )
+        stored = store.save(
+            filename=Path(file.filename or path.name).name,
+            doc=doc,
+            size_bytes=file.size or path.stat().st_size,
+        )
+        return {"code": 0, "data": stored.meta()}
+    finally:
+        path.unlink(missing_ok=True)
+
+
+@app.get("/documents")
+def list_documents():
+    """列出已入库的文档（不含全文，避免响应过大）。"""
+    return {"code": 0, "data": store.list()}
+
+
+@app.delete("/documents/{doc_id}")
+def delete_document(doc_id: str):
+    """删除一份文档。"""
+    if not store.delete(doc_id):
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return {"code": 0, "data": {"deleted": doc_id}}
+
+
+# ── 问答：模型自行调用检索工具 ─────────────────────────────────────
+
+class ChatIn(BaseModel):
+    question: str
+    doc_ids: list[str] | None = None
+    """限定检索范围；为空则检索全部已上传文档。"""
+    history: list[dict] | None = None
+    """历史问答（只含 user/assistant 纯文本，见 qa.py）。"""
+
+
+@app.post("/chat")
+def chat_ask(payload: ChatIn):
+    """基于已上传文档回答问题。
+
+    模型会**自行调用工具**（检索段落、读整页、精确计算）收集依据，
+    再给出带来源标注的答案；返回的 `trace` 记录了它查了什么，便于核对。
+    """
+    result = qa.ask(
+        payload.question,
+        doc_ids=payload.doc_ids,
+        history=payload.history,
+    )
+    return {"code": 0, "data": result.to_dict()}
 
 
 def run() -> None:
