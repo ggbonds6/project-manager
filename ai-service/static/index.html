@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PM AI Service · 附件智能分析</title>
-<script src="/static/marked.min.js"></script>
+  <!-- markdown 渲染库由页尾的 bootstrap 按需注入（本页不一定在 AI 服务的源上） -->
 <style>
   :root{
     --bg:#f4f6fa; --card:#fff; --line:#e3e8f0; --text:#1f2733; --muted:#6b7785;
@@ -183,8 +183,41 @@
 </main>
 
 <script>
-(function () {
+/* ══════════════════════════════════════════════════════════════════
+   引导：先确定"后端在哪"，再启动主逻辑。
+
+   为什么需要这段：本页可能**不是**由 AI 服务本身提供的（例如被 IDE 预览、
+   或从本地文件打开），此时相对路径 /static/... 和 fetch('/health') 都会 404，
+   页面会卡在"正在检查服务状态…"——因为 marked 加载失败导致脚本直接抛错。
+   所以这里：
+     1) 同源且端口是 8100 → 直接用当前源；
+     2) 否则回退到 http://127.0.0.1:8100（后端已开 CORS）；
+     3) marked 从同一地址加载，成功/失败/超时都会启动主逻辑（失败则降级为纯文本展示）。
+   ══════════════════════════════════════════════════════════════════ */
+(function bootstrap() {
+  var sameOrigin = location.protocol.indexOf('http') === 0 && location.port === '8100';
+  var api = sameOrigin ? location.origin : 'http://127.0.0.1:8100';
+  window.API_BASE = api;
+
+  var started = false;
+  function start() {
+    if (started) return;
+    started = true;
+    main();
+  }
+
+  var s = document.createElement('script');
+  s.src = api + '/static/marked.min.js';
+  s.onload = start;
+  s.onerror = start;          // 拿不到渲染库也要能用（降级为纯文本）
+  document.head.appendChild(s);
+
+  setTimeout(start, 6000);    // 兜底：网络挂起时也必须启动，避免永久停在"检查中"
+})();
+
+function main() {
   const $ = id => document.getElementById(id);
+  const API = window.API_BASE;
   const dropzone = $('dropzone'), fileInput = $('fileInput'), fileInfo = $('fileInfo');
   const submitBtn = $('submitBtn'), clearBtn = $('clearBtn'), instruction = $('instruction');
   const progressCard = $('progressCard'), progressText = $('progressText'), progressHint = $('progressHint');
@@ -193,16 +226,30 @@
 
   let currentFile = null, timer = null, lastMarkdown = '', lastFileName = '';
 
-  marked.setOptions({ gfm: true, breaks: true });
+  // marked 可能加载失败（非同源且后端不可达时），这里做保护，避免脚本中断
+  if (window.marked) {
+    marked.setOptions({ gfm: true, breaks: true });
+  }
 
   // ── 服务状态 ──────────────────────────────────────────────
-  fetch('/health').then(r => r.json()).then(d => {
+  status.textContent = `正在连接 ${API} …`;
+  fetch(API + '/health').then(r => r.json()).then(d => {
     const c = d.config || {};
     status.textContent = `服务正常 · 模型 ${c.llm_model || '-'}`;
     status.className = 'ok';
   }).catch(() => {
-    status.textContent = '服务不可达';
     status.className = 'bad';
+    status.textContent = `连不上服务（${API}）`;
+    // 不要只说"不可达"，要给出可执行的下一步
+    noticeBox.innerHTML =
+      `<div class="notice" style="background:#fdeceb;border-left-color:#d93025;color:#a3231b">
+        <b>连不上 AI 服务：</b>${API}<br>
+        ① 确认容器在运行：在 <code>ai-service/</code> 下执行
+        <code>docker compose up -d</code>（或 <code>bash scripts/docker-verify.sh up</code>）；<br>
+        ② 直接打开 <a href="${API}/" target="_blank">${API}/</a> 访问本页面；
+        若你正从别处（如 IDE 预览）打开，页面会自动指向 ${API}。
+      </div>`;
+    resultCard.hidden = false;
   });
 
   // ── 文件选择 ──────────────────────────────────────────────
@@ -250,7 +297,7 @@
     form.append('instruction', instruction.value || '');
 
     try {
-      const resp = await fetch('/analyze', { method: 'POST', body: form });
+      const resp = await fetch(API + '/analyze', { method: 'POST', body: form });
       const json = await resp.json();
       if (!resp.ok || json.code !== 0) {
         throw new Error(json.detail || `请求失败（HTTP ${resp.status}）`);
@@ -325,7 +372,10 @@
     meta.innerHTML = chips.join('');
 
     // markdown
-    output.innerHTML = sanitize(marked.parse(lastMarkdown));
+    // markdown 渲染；拿不到 marked 时降级为纯文本，保证内容至少可见
+    output.innerHTML = window.marked
+      ? sanitize(marked.parse(lastMarkdown))
+      : '<pre style="white-space:pre-wrap;font:inherit">' + escapeHtml(lastMarkdown) + '</pre>';
     decorate(output);
     resultCard.hidden = false;
     resultCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -389,7 +439,7 @@
     a.click();
     URL.revokeObjectURL(a.href);
   });
-})();
+}
 </script>
 </body>
 </html>

@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -53,8 +55,10 @@ class OcrResult:
         return [line for line in self.lines if line.score < 0.8]
 
 
-_ENGINE: Any = None
-_ENGINE_NAME: str | None = None
+# 引擎实例缓存。**按线程隔离**：RapidOCR 在识别过程中会写实例内部状态，
+# 多线程共用同一个实例并不安全；用线程局部存储换安全性，
+# 代价是每个线程各加载一份模型（每份几十 MB，可以接受）。
+_LOCAL = threading.local()
 
 
 def _build_engine(name: str):
@@ -69,12 +73,14 @@ def _build_engine(name: str):
 
 
 def get_engine(name: str = "rapid"):
-    """获取（并缓存）OCR 引擎实例。"""
-    global _ENGINE, _ENGINE_NAME
-    if _ENGINE is None or _ENGINE_NAME != name:
-        _ENGINE = _build_engine(name)
-        _ENGINE_NAME = name
-    return _ENGINE
+    """获取（并缓存）**当前线程**的 OCR 引擎实例。"""
+    cache = getattr(_LOCAL, "engines", None)
+    if cache is None:
+        cache = {}
+        _LOCAL.engines = cache
+    if name not in cache:
+        cache[name] = _build_engine(name)
+    return cache[name]
 
 
 def _parse_rapid(raw) -> list[OcrLine]:
@@ -120,12 +126,35 @@ def ocr_image(path: str | Path, engine_name: str = "rapid") -> OcrResult:
     return OcrResult(lines=lines, elapsed=time.perf_counter() - started)
 
 
-def ocr_pages(image_paths: list[Path], engine_name: str = "rapid") -> tuple[OcrResult, list[OcrResult]]:
-    """逐页识别，返回 (合并结果, 每页结果)。"""
-    per_page: list[OcrResult] = []
+def ocr_pages(
+    image_paths: list[Path],
+    engine_name: str = "rapid",
+    workers: int | None = None,
+) -> tuple[OcrResult, list[OcrResult]]:
+    """逐页识别，返回 (合并结果, 每页结果)。
+
+    **并发识别，且顺序严格保持**（页码与结果一一对应）。
+
+    为什么值得并发：实测在 12 核机器上，`OMP_NUM_THREADS=4` 时**单页推理只用掉约 1/3 的
+    CPU**——串行处理多页会把其余核心白白闲置。25 页扫描件实测串行 OCR 需 109s。
+    `workers` 建议 ≈ CPU 核数 / `OMP_NUM_THREADS`。
+    """
+    paths = list(image_paths)
     started = time.perf_counter()
-    for img in image_paths:
-        per_page.append(ocr_image(img, engine_name))
+
+    if workers is None:
+        from .config import settings  # 局部导入，避免模块级循环依赖
+
+        workers = settings.ocr_workers
+    workers = max(1, min(workers, len(paths))) if paths else 1
+
+    if workers == 1:
+        per_page = [ocr_image(p, engine_name) for p in paths]
+    else:
+        # ThreadPoolExecutor.map 保证返回顺序与输入一致，页码不会错位
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            per_page = list(pool.map(lambda p: ocr_image(p, engine_name), paths))
+
     merged = OcrResult(
         lines=[line for page in per_page for line in page.lines],
         elapsed=time.perf_counter() - started,

@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -28,6 +29,18 @@ from . import __version__, analyze, llm_client, ocr_engine, pdf_utils
 from .config import settings
 
 app = FastAPI(title="PM AI Service", version=__version__)
+
+# 允许跨源访问。
+# 为什么需要：本服务常被**不同源**的页面调用——IDE 内置预览、主系统前端（8088）、
+# 或本地打开的 HTML 文件。没有 CORS 时浏览器会直接拦掉请求，页面表现为"连不上服务"。
+# 内网工具、无用户凭据、数据不出内网，因此放开来源；
+# 将来经 nginx 与主系统同源部署后，这段可以收紧甚至移除。
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 MAX_UPLOAD_MB = 300
 

@@ -71,6 +71,11 @@ class Settings:
 
     # ── OCR ───────────────────────────────────────────────────
     ocr_dpi: int = field(default_factory=lambda: _env_int("OCR_DPI", 300))
+    # OCR 并发页数。⚠️ 实测（开发机 12 核 / Docker Desktop，25 页扫描件）**并发反而更慢**：
+    #   1 路 93~104s ｜ 2 路 108s ｜ 3 路 139s。
+    # 因为 onnxruntime 自身已多线程（实测占约 6 核），多实例只会互相抢核、缓存颠簸。
+    # 故默认 1；换到核数明显更多的机器时可再实测调大。
+    ocr_workers: int = field(default_factory=lambda: _env_int("OCR_WORKERS", 1))
     # 判定扫描件的阈值：平均每页字符数低于此值即视为扫描件
     scanned_char_threshold: int = field(default_factory=lambda: _env_int("SCANNED_CHAR_THRESHOLD", 50))
 
@@ -92,6 +97,7 @@ class Settings:
             "llm_max_tokens": self.llm_max_tokens,
             "llm_enable_thinking": self.llm_enable_thinking,
             "ocr_dpi": self.ocr_dpi,
+            "ocr_workers": self.ocr_workers,
             "scanned_char_threshold": self.scanned_char_threshold,
             "work_dir": str(self.work_dir),
         }
