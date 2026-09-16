@@ -1,11 +1,17 @@
-"""HTTP 接口（FastAPI）。
+"""HTTP 接口（FastAPI）+ 简易前端页面。
 
-本期只做最小集，目的是"能验证 OCR 效果"：
-  GET  /health          服务与配置自检（含模型连通性）
-  POST /ocr/file        上传 PDF/图片，返回识别文本
-  POST /ocr/pdf-info    只看 PDF 是文本型还是扫描件（快速摸底用）
+接口清单：
+  GET  /                  简易前端（上传 → 分析 → markdown 结果）
+  GET  /health            服务与配置自检（?with_llm=true 附带模型连通性）
+  POST /analyze           **核心**：上传文件 → 抽取 → 返回带「来源 + 置信度」的 markdown
+  POST /ocr/file          只做识别，返回文本（含识别置信度、低置信行数）
+  POST /ocr/pdf-info      只判断 PDF 是文本型还是扫描件（摸底用）
 
-复杂能力（字段抽取、向量检索、问答）后续按需追加，接口保持向后兼容。
+## 一个容易踩的坑：阻塞接口不要写成 `async def`
+
+OCR 与大模型调用都是**同步阻塞**操作。若把它们放进 `async def` 且没有 `await`，
+会**阻塞整个事件循环**——一个人上传大文件，其他人全部卡住。
+因此这些接口一律用同步 `def`，由 FastAPI 自动丢进线程池执行。
 """
 
 from __future__ import annotations
@@ -15,14 +21,17 @@ import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
-from . import __version__, llm_client, ocr_engine, pdf_utils
+from . import __version__, analyze, llm_client, ocr_engine, pdf_utils
 from .config import settings
 
 app = FastAPI(title="PM AI Service", version=__version__)
 
 MAX_UPLOAD_MB = 300
+
+STATIC_DIR = Path(__file__).resolve().parents[2] / "static"
 
 
 def _save_tmp(upload: UploadFile) -> Path:
@@ -36,9 +45,36 @@ def _save_tmp(upload: UploadFile) -> Path:
     return dest
 
 
+def _guard_size(upload: UploadFile) -> None:
+    if upload.size and upload.size > MAX_UPLOAD_MB * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"文件超过 {MAX_UPLOAD_MB}MB")
+
+
+# ── 前端页面 ─────────────────────────────────────────────────────
+
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    """简易前端页面。"""
+    page = STATIC_DIR / "index.html"
+    if page.is_file():
+        return FileResponse(page)
+    return JSONResponse({
+        "code": 0,
+        "service": "pm-ai-service",
+        "version": __version__,
+        "hint": "前端页面未随镜像提供（static/index.html 不存在），可直接访问 /docs 使用接口。",
+    })
+
+
+# ── 自检 ────────────────────────────────────────────────────────
+
 @app.get("/health")
 def health(with_llm: bool = False) -> JSONResponse:
-    """服务自检。`with_llm=true` 时顺带探测大模型连通性（较慢）。"""
+    """服务自检。`with_llm=true` 时顺带探测大模型连通性（约 2s，失败约 15s）。"""
     payload = {
         "code": 0,
         "service": "pm-ai-service",
@@ -51,9 +87,35 @@ def health(with_llm: bool = False) -> JSONResponse:
     return JSONResponse(payload)
 
 
+# ── 核心：文件分析（抽取 + 来源标注 + 置信度）──────────────────────
+
+@app.post("/analyze")
+def analyze_file(
+    file: UploadFile = File(...),
+    instruction: str = Form(default=""),
+    dpi: int = Form(default=0),
+):
+    """上传文件 → 调用千问抽取 → 返回 markdown 结果。
+
+    输出中的每条信息都带**来源页码**与**置信度**（详见 `prompts.py` 的铁律）。
+    文件类型自动判断：文本型 PDF 走文本层，扫描件/图片走 OCR。
+    """
+    path = _save_tmp(file)
+    try:
+        _guard_size(file)
+        result = analyze.analyze(path, instruction=instruction, dpi=dpi or None)
+        payload = result.to_payload()
+        payload["file"] = Path(file.filename or path.name).name
+        return {"code": 0, "data": payload}
+    finally:
+        path.unlink(missing_ok=True)
+
+
+# ── 只看识别结果（不调模型）──────────────────────────────────────
+
 @app.post("/ocr/pdf-info")
-async def pdf_info(file: UploadFile = File(...)):
-    """快速判断 PDF 类型与规模——用于 A1 附件构成摸底。"""
+def pdf_info(file: UploadFile = File(...)):
+    """快速判断 PDF 类型与规模——用于附件构成摸底。"""
     path = _save_tmp(file)
     try:
         if path.suffix.lower() != ".pdf":
@@ -76,12 +138,12 @@ async def pdf_info(file: UploadFile = File(...)):
 
 
 @app.post("/ocr/file")
-async def ocr_file(
+def ocr_file(
     file: UploadFile = File(...),
     dpi: int = Form(default=0),
     force_ocr: bool = Form(default=False),
 ):
-    """识别 PDF 或图片。
+    """只识别，不调模型。
 
     - **文本型 PDF**：默认直接返回文本层（快、准），不跑 OCR；
     - **扫描件 / 图片**：渲染后用 OCR 识别；
@@ -89,9 +151,7 @@ async def ocr_file(
     """
     path = _save_tmp(file)
     try:
-        if file.size and file.size > MAX_UPLOAD_MB * 1024 * 1024:
-            raise HTTPException(status_code=413, detail=f"文件超过 {MAX_UPLOAD_MB}MB")
-
+        _guard_size(file)
         use_dpi = dpi or settings.ocr_dpi
         suffix = path.suffix.lower()
 
@@ -113,12 +173,14 @@ async def ocr_file(
                     },
                 }
 
-            images = pdf_utils.render_pages(path, dpi=use_dpi)
-            merged, per_page = ocr_engine.ocr_pages(images)
+            # 渲染图落到 work/（输入目录在容器里是只读挂载）
+            render_dir = settings.work_dir / "pages" / uuid.uuid4().hex
             try:
-                shutil.rmtree(images[0].parent if images else "", ignore_errors=True)
-            except Exception:  # noqa: BLE001 - 清理失败不影响结果
-                pass
+                images = pdf_utils.render_pages(path, dpi=use_dpi, out_dir=render_dir)
+                merged, per_page = ocr_engine.ocr_pages(images)
+            finally:
+                shutil.rmtree(render_dir, ignore_errors=True)
+
             return {
                 "code": 0,
                 "data": {

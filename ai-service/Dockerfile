@@ -33,6 +33,7 @@ RUN pip install --upgrade pip setuptools wheel \
     && pip install -e .
 
 COPY scripts/ ./scripts/
+COPY static/ ./static/
 
 # 构建期冒烟自检：确认打包正确 + OCR 真的能识别（失败会让构建中断）
 RUN python scripts/selfcheck_ocr.py

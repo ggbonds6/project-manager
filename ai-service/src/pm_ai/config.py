@@ -31,6 +31,14 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    """布尔环境变量：接受 1/true/yes/on（大小写不敏感）。"""
+    raw = _env(key).lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on", "y"}
+
+
 @dataclass
 class Settings:
     # ── 服务自身 ────────────────────────────────────────────────
@@ -43,6 +51,23 @@ class Settings:
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", ""))
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", "qwen"))
     llm_timeout: int = field(default_factory=lambda: _env_int("LLM_TIMEOUT", 300))
+    # 单次送给模型的最大字符数：中文约 1 字 ≈ 1 token，留足上下文余量。
+    # 超过则按页截断，并在提示词里**明确告知模型"你没看到全部"**，避免它当成全文。
+    llm_max_input_chars: int = field(
+        default_factory=lambda: _env_int("LLM_MAX_INPUT_CHARS", 20000)
+    )
+    # 输出上限。⚠️ 默认给得较大：Qwen3 的思维链会消耗大量额度，
+    # 设小了会出现"completion_tokens 撞上限、content 为空"（实测坑，详见 llm_client.py）。
+    llm_max_tokens: int = field(
+        default_factory=lambda: _env_int("LLM_MAX_TOKENS", 16384)
+    )
+    # 是否保留思维链。**默认 False** —— 实测（2026-09-16，6 页扫描件合同）：
+    # 开启思考时模型思考 30584 字、耗尽 16384 token 仍未给出答案（finish_reason=length，
+    # content 为空，耗时 4 分 55 秒）；关闭后完整产出全部章节且来源/置信度标注正常。
+    # 在"高约束抽取"这类任务上，思考模式不但慢，还会把最终答案挤掉。
+    llm_enable_thinking: bool = field(
+        default_factory=lambda: _env_bool("LLM_ENABLE_THINKING", False)
+    )
 
     # ── OCR ───────────────────────────────────────────────────
     ocr_dpi: int = field(default_factory=lambda: _env_int("OCR_DPI", 300))
@@ -63,6 +88,9 @@ class Settings:
             "llm_base_url": self.llm_base_url,
             "llm_model": self.llm_model,
             "llm_api_key": "已配置" if self.llm_api_key else "未配置",
+            "llm_max_input_chars": self.llm_max_input_chars,
+            "llm_max_tokens": self.llm_max_tokens,
+            "llm_enable_thinking": self.llm_enable_thinking,
             "ocr_dpi": self.ocr_dpi,
             "scanned_char_threshold": self.scanned_char_threshold,
             "work_dir": str(self.work_dir),

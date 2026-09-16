@@ -104,6 +104,13 @@ case "$MODE" in
     docker compose exec -T ai-service python scripts/batch_ocr.py /samples --out-dir /app/work/out "${@}"
     ;;
 
+  analyze)
+    # 命令行分析（与网页界面同一套逻辑）：
+    #   bash scripts/docker-verify.sh analyze /samples/xxx.pdf --instruction "..." --save
+    # 注意：脚本开头已 shift 掉子命令，这里**不能**再 shift，否则会吃掉第一个参数
+    docker compose exec -T ai-service python scripts/analyze_cli.py "$@"
+    ;;
+
   make-samples)
     # 先落到容器可写区（/samples 是只读挂载），再拷回宿主机 samples/
     mkdir -p samples

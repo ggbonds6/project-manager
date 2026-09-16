@@ -4,7 +4,34 @@
 本客户端就能接——vLLM、Ollama、各厂商一体机都符合。这样后续换模型/换部署方式时，
 上层抽取与问答代码零改动。
 
-本期（OCR 验证阶段）该模块仅用于**连通性自检**与后续抽取，不参与 OCR 本身。
+## ⚠️ Qwen3 系列思维链的两个坑（实测踩过，2026-09-16）
+
+**坑 1：思维链会吃光输出额度，导致 `content` 为空。**
+Qwen3 是混合推理模型，默认开启思考。思考内容放在 `reasoning_content`，
+`message.content` 才是最终答案。思考过长时**全部输出额度被思考耗尽**，
+`content` 返回空字符串——上层看起来就是"模型什么都没答"。
+实测：抽取一份 6 页合同 → `completion_tokens=8192`（正好撞上限）、`content` 为空、
+`finish_reason=length`、推理耗时 148s。
+
+对策：
+① `LLM_MAX_TOKENS` 默认放大到 16384（见 config.py）；
+② 保留 `reasoning` 字段用于诊断"为什么没答案"；
+③ `finish_reason == "length"` 时明确报"输出被截断"，而不是含糊地说"系统繁忙"。
+
+**坑 2：长时间思考会把最终答案挤掉——所以本项目默认关闭思考。**
+实测（2026-09-16，同一份 6 页扫描件合同）：
+
+| 配置 | 结果 |
+| --- | --- |
+| 开启思考 | 思考 30584 字 → 耗尽 16384 token → `finish_reason=length` →**最终答案为空**，耗时 4 分 55 秒 |
+| 关闭思考 | 完整产出「文件概要 / 关键信息 / 原文依据 / 存疑项」四节；来源标注（`[P1, P5]`）与置信度分档（0.95 / 0.60）正常；还主动标出了 OCR 可疑数字并给 0.60 |
+
+结论：在"高约束抽取"这类任务上，思考模式**不但慢，还会把答案挤没**。
+故默认 `LLM_ENABLE_THINKING=false`。若换到确实需要深度推理的任务（如合规性判断），
+可设 `true` 一试，但**务必同时把 `LLM_MAX_TOKENS` 调得更大**，并预期耗时显著上升。
+
+`temperature` 默认 0：字段抽取与审计相关任务需要**可复现**，
+不要让同一个输入每次给出不同答案。
 """
 
 from __future__ import annotations
@@ -18,10 +45,22 @@ from .config import settings
 
 @dataclass
 class ChatResult:
-    text: str
-    model: str
+    text: str = ""
+    model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reasoning: str = ""
+    """思维链内容（Qwen3 等推理模型）。不展示给用户，用于诊断"为什么没答案"。"""
+    finish_reason: str = ""
+
+    @property
+    def is_truncated(self) -> bool:
+        """是否因输出额度用尽被截断。"""
+        return self.finish_reason == "length"
+
+    @property
+    def has_text(self) -> bool:
+        return bool(self.text.strip())
 
 
 _CLIENT: OpenAI | None = None
@@ -49,13 +88,16 @@ def chat(
     temperature: float = 0.0,
     timeout: float | None = None,
     max_retries: int | None = None,
+    max_tokens: int | None = None,
+    enable_thinking: bool | None = None,
 ) -> ChatResult:
     """单轮对话。
 
-    默认 `temperature=0`：字段抽取与审计相关任务需要**可复现**，
-    不要让同一个输入每次给出不同答案。
-
-    `timeout` / `max_retries` 传 None 表示沿用客户端默认值（见 config 的 LLM_TIMEOUT）。
+    :param timeout:         传 None 沿用客户端默认（config 的 `LLM_TIMEOUT`）
+    :param max_tokens:      输出上限；None 取 `settings.llm_max_tokens`
+    :param enable_thinking: 是否开启思维链；None 取 `settings.llm_enable_thinking`。
+                            **只在为 False 时才附带参数**——服务端不支持该字段时
+                            附带它会直接 400，所以非必要不传。
     """
     messages: list[dict[str, str]] = []
     if system:
@@ -71,18 +113,31 @@ def chat(
     if options:
         client = client.with_options(**options)  # type: ignore[arg-type]
 
-    resp = client.chat.completions.create(
-        model=settings.llm_model,
-        messages=messages,  # type: ignore[arg-type]
-        temperature=temperature,
-    )
+    kwargs: dict = {
+        "model": settings.llm_model,
+        "messages": messages,  # type: ignore[arg-type]
+        "temperature": temperature,
+        "max_tokens": max_tokens if max_tokens is not None else settings.llm_max_tokens,
+    }
+
+    thinking = settings.llm_enable_thinking if enable_thinking is None else enable_thinking
+    if not thinking:
+        # vLLM 部署 Qwen3 时通过 chat_template_kwargs 关闭思考
+        kwargs["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+
+    resp = client.chat.completions.create(**kwargs)
     choice = resp.choices[0]
+    msg = choice.message
     usage = getattr(resp, "usage", None)
+
     return ChatResult(
-        text=(choice.message.content or "").strip(),
+        text=(msg.content or "").strip(),
         model=resp.model,
         prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
         completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+        # reasoning_content 不属于 OpenAI 标准字段，用 getattr 兼容其他模型
+        reasoning=(getattr(msg, "reasoning_content", "") or "").strip(),
+        finish_reason=choice.finish_reason or "",
     )
 
 
@@ -98,6 +153,7 @@ def ping(timeout: float = 15.0) -> tuple[bool, str]:
             system="你是一个测试助手。",
             timeout=timeout,
             max_retries=0,
+            enable_thinking=False,  # 自检不需要思考，快就好
         )
         return True, f"模型 {result.model} 连通，回复：{result.text[:40]}"
     except Exception as exc:  # noqa: BLE001 - 自检需要吞掉所有异常并报告

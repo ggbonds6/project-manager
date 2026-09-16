@@ -61,6 +61,16 @@ def extract_text(path: str | Path) -> str:
         return "\n".join(page.get_text() for page in doc)
 
 
+def extract_page_texts(path: str | Path) -> list[str]:
+    """**逐页**提取文本，返回每页文本的列表（index 0 = 第 1 页）。
+
+    为什么需要逐页：模型要标注"信息来自第几页"，就必须让它看到分页边界；
+    给一整坨扁平文本，模型无从判断页码，只能编造或放弃标注。
+    """
+    with fitz.open(Path(path)) as doc:
+        return [page.get_text() for page in doc]
+
+
 def render_pages(path: str | Path, dpi: int = 300, out_dir: str | Path | None = None) -> list[Path]:
     """把 PDF 每页渲染成 PNG。
 
