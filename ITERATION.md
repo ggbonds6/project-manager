@@ -9,9 +9,12 @@
 | 定位 | 单位内部政府信息化项目全生命周期管理（硬件 / 软件两类项目） |
 | 前端 | React 18 + TypeScript + Vite + Ant Design 5（`frontend/`） |
 | 后端 | Java 17 + Spring Boot 3.3.5 + MyBatis-Plus + 自研迁移 Runner（`backend/`） |
-| 数据库 | 崖山 YashanDB（Oracle 模式）主备集群（主 10.254.212.106 / 备 10.254.212.107:1688，库/schema `PM`，业务账号 `pm`；v3.0 起，替代 MySQL 8 + Flyway） |
+| 数据库 | 崖山 YashanDB（Oracle 模式）主备集群（主 10.254.212.106 / 备 10.254.212.107:1688，库/schema `PM`，业务账号 `pm`；v3.0 起，替代 MySQL 8 + Flyway）；迁移脚本 `db/migration-yashan/` **V1~V12** |
 | 认证 | JWT + BCrypt，角色 ADMIN / MANAGER / VIEWER |
+| 附件存储 | 抽象 `AttachmentStorage`：默认本地盘，可切**华为 OBS**（`app.storage.type`）；归属分四类 `PROJECT` / `PROJECT_PHASE` / `CONTRACT` / `PAYMENT` |
 | 需求基线 | `docs/政府信息化项目管理系统-设计方案.md`（设计与实现同步稿，Q1–Q15 处置状态见 §11） |
+| 脚本清单 | `scripts/README.md`（发版打包 / 演示数据 / 开发机数据库工具） |
+| 当前版本 | **v3.5.1**（2026-09-17） |
 | 仓库 | GitHub `ggbonds6/project-manager`（main 分支，全程 git 管理） |
 
 ---
@@ -141,6 +144,11 @@
 - **暂不支持类型策略**：doc(97-2003)/ppt/pptx/ofd/压缩包等统一提示"当前文件类型暂不支持在线预览，请下载后查看"。
 - **v1.7 试扩展**：OFD 试渲染（`@sharp9/ofdjs` 首页 Canvas，jszip 注入全局）；`.doc` 内容嗅探（zip 头 → docx-preview 渲染，真二进制 doc 提示下载）；均 try/catch 回落，PPT/PPTX 维持提示下载。
 
+### v1.7 — 附件预览试扩展（OFD / .doc）
+- 试集成 `@sharp9/ofdjs`：OFD 无浏览器原生支持，只能把首页渲染为 Canvas 充当前台预览；同时对 `.doc` 做**内容嗅探**（实为 docx 时才交给 docx-preview 渲染）。
+- 定位为**体验探索**：解析失败或不稳定时一律回落"请下载查看"，不影响其他格式的预览路径，本期不承诺 OFD 在线预览。
+- 结论：OFD 服务端提取生态远弱于 PDF；后续若要正式支持，建议单独评估（转图片 + OCR 作为保底）。
+
 ### v1.8 — 项目概览（README 式介绍 + 二级功能模块清单）
 - 新表 `project_overview`（Flyway V6，一项目一行）：`intro_md`（Markdown）、`modules_json`（两级清单 JSON）。
 - 后端：详情接口返回 `overview`；新增 `PUT /api/projects/{id}/overview`（ADMIN/MANAGER，操作留日志）。
@@ -161,6 +169,23 @@
   - 顶部：新增阶段、保存（批量保存整模板）、重命名、设为默认。
 - 说明：当前画布为**线性流程**（满足"拖节点编排顺序+节点配置"）；**并行/分支**留待 X6/LogicFlow 图形化 B/C 期（见 `docs/流程模板图形化评估.md`）。
 - **存储与加载评估**：本地 `backend/uploads`（UPLOAD_DIR 可改）；Docker 独立卷 `pm_uploads`；不入镜像/源码；内网规模"数据目录 vs 文件服务器"差异不大，已用等待态覆盖大文件加载，未来可切对象存储/CDN 仅改地址前缀。详见 `docs/附件与预览方案.md`。
+
+### v2.1 — 阶段说明 / 关键材料 / 画布布局（数据层）
+- 迁移 **V8**：`phase_template` 增 `guide`（阶段说明）与 `key_materials`（关键材料）；`project_phase` 同名字段做**创建项目时的快照**（与模板解耦，模板后续改动不影响已在跑的项目），项目详情阶段 VO 一并透出。
+- `phase_tpl` 增 `flow_json`（draw.io 式节点坐标 + 连线），为画布编辑预留；模板保存/复制同步这些字段；新增模板 `GET/{id}` 与 `PUT flow` 接口。
+
+### v2.2 — X6 画布编辑器 + 展示/折叠双视图
+- 流程模板画布改用 **AntV X6**：节点自由拖放、连线、点击节点配置（配置项新增 guide / key_materials），保存时按**连线拓扑与坐标**推定阶段顺序。
+- 新增「展示」视图（竖向排列 + 折叠查看说明/材料）；「列表」改为折叠卡片同显描述；项目详情「流程进展」的阶段卡片新增「阶段说明·关键材料」折叠区。
+
+### v2.3 — 去除画布，回归折叠阶段列表
+- **移除 X6 画布**及其代码与依赖：画布的复杂度（坐标/连线维护、小屏不可用、与阶段顺序双份真相）大于收益。
+- 流程模板只保留「Tab 多模板 + **折叠阶段列表**」：面板默认收起，展开显示 说明 / 做什么 / 关键材料 / 常用附件 / 操作；同时清理 SystemPage 里的旧模板遗留代码。
+- 新增 `scripts/demo-phase-guides.sql`：为内置 HW/SW 共 **20 个阶段**补齐「目的 / 主要工作 / 要点 / 完成标准 / 注意 / 关键材料」演示数据。
+
+### v2.4 — 阶段表单弹窗修复 + 画布遗留清理
+- 修复阶段表单弹窗布局：`useFormModal` 默认宽度加大、表单标签改短，并把提示说明移到输入框**下方**（原先被输入框遮挡）。
+- 阶段列表去掉"有说明"标签（信息冗余）；清理画布遗留代码/接口与 `phase_tpl.flow_json` 字段引用（含 `GET/{id}`、`saveFlow`）。
 
 ### v3.0 — 数据库国产化：MySQL → 崖山 YashanDB（Oracle 模式）
 - **背景**：按信创要求迁移至崖山（主备已部署 10.254.212.106/.107:1688）。方案见 `docs/崖山oracle模式迁移实施方案.md`、可行性分析见 `docs/数据库迁移可行性分析-崖山oracle模式.md`。
@@ -188,34 +213,94 @@
 - **文档**：`deploy/README` 重构为「生产 Docker（服务器）/ 本地 Docker 试跑 / Windows 源码模式」三段；《部署与发布全流程手册》与《双机ARM服务器独立部署方案》同步为"服务器不存源码"口径。
 - **产物**：arm64 镜像包（后端 + 前端）由开发机 buildx 产出，两台 aarch64 服务器通用。
 
+### v3.2.0 — 附件后台上传 + 大文件超时根治
+- **超时根因（三层默认值叠加）**：axios 全局 `timeout` 30s（**最先触发**）+ nginx `proxy_read_timeout` 60s + OBS 客户端 `socketTimeout` 60s → 大文件同步写对象存储必然超时。
+- **改为两段式（迁移 V9）**：`POST /attachments/upload` 先把文件暂存服务端（`app.upload-tmp-dir`）并登记任务后**立即返回**，后台线程池（2~4）再推存储并回写进度；新表 `attachment_upload_task` 即"上传记录"，新增 `GET /attachments/upload-tasks[/{id}]`；`AttachmentStorage.save` 增 `ProgressCallback`（OBS 用带 `ProgressListener` 的重载，本地按流计数）；服务启动把残留 `PENDING/UPLOADING` 任务标为失败（防前端无限轮询）。
+- **超时放宽**：上传 axios 10 分钟、nginx `client_body_timeout` / `proxy_*_timeout` 300s、OBS `socketTimeout` 300s。
+- **前端**：上传弹窗显示"传输进度 → 后台进度"两段并内置上传记录列表，可关闭不中断；预览 >10MB 先提示"较大、可能较慢"并给「下载 / 仍要预览」二选一，各加载态显示文件大小。
+- ⚠️ 上传响应结构由 `AttachmentItem` 变为 `UploadTaskItem`，**前后端必须同版本发布**。
+- **本机 local 模式"附件读不到"**：Docker 用的是独立命名卷 `docker_pm_uploads`，而历史 498 个附件在宿主机 `backend/uploads` → 用 `docker cp` 迁入卷。教训：先比对**容器内实际目录**与**数据实际所在**，别只盯配置文件。
+
+### v3.3.0 — 上传体验修复：上限提高 + 入口独立化 + 升级脚本切版本
+- **上限是"三处联动"**：`application.yml` `max-file-size` 100MB→**500MB**（请求 600MB）；nginx `client_max_body_size` 200m→**600m**（**必须 ≥ 后端 max-request-size**，否则 nginx 先 413）；前端预校验同步 500MB，避免大文件白传一趟。
+- `GlobalExceptionHandler` 补超限友好提示（原先落到通用 500「系统繁忙」），并在兜底分支识别异常链里的超限特征（Tomcat 会把 `FileSizeLimitExceeded` 包成 `IllegalStateException`，只写专用分支会漏）。
+- **入口独立化**：上传不再要求保持弹窗打开——新增全局 `UploadTaskProvider`（`store/uploadTask.tsx`）持有任务状态与轮询；`UploadTaskCenter`（按钮 + 弹窗，置于附件中心「上传附件」同级，带进行中角标）统一展示进度与历史，含**所属阶段标签**（后端 `upload-tasks` 批量补齐 `phaseName`）与**文件类型标签**、状态/进度/失败原因；`AttachmentUploadModal` 精简为"选文件 + 类别"即关窗。
+- **升级脚本**：`pm-upgrade.sh` 原先只 `load` + `up -d` 而不改 `.env` 的 `IMAGE_TAG` → 启动的还是旧镜像（**等于没升级，且不易察觉**）；改为从镜像包名解析版本、备份 `.env` → `.env.bak` 后写入。
+
+### v3.3.1 — 修复表单弹窗编辑回显错位 + 开发机一键重建脚本
+- **回显 bug（真实缺陷）**：`useFormModal.open()` 在 `setState` **之后同步**调 `form.resetFields()`——此刻 React 还没重渲染、Form 的 `initialValues` 仍是上一次的 → 重置回旧值；而 rc-field-form 在 `initialValues` 变化时**只更新内部记录、不自动填充已有字段** → 编辑时永远显示第一次点开的数据。
+  修复：把「`resetFields()` + `setFieldsValue(initial)`」移入 **`useEffect`（依赖 state）**，等 Form 以新 `initialValues` 渲染完再执行。**该 hook 有 4 处复用**（SystemPage 用户管理/基础字典、FlowTemplateDesigner、ProjectDetailPage 合同弹窗）一并修好。
+- **新增 `scripts/dev-reload.sh`**：开发机一键重建镜像 + 重启 + 轮询健康检查，支持 `all | backend | frontend`（只改一端时省一半时间）；与 `make-release.sh`（产发布包）/ `pm-upgrade.sh`（服务器升级）职责分离。
+
+### v3.4.0 — 合同管理 tab + 项目分工 tab
+- **合同管理**（一个（子）项目可签多份合同：施工主合同 / 第三方测评 / 方案评估 / 监理服务 / 项目设计 / 预算编制）
+  - 迁移 **V10**：`contract` 扩政府合同常见字段——合同类型、甲方、签订/生效/工期起止日期、合同状态、收款户名/开户行/账号、验收标准、质保期/质保金、结算金额（**乙方沿用 `vendor_name`**，不再另设 `party_b` 以免字段冗余）；新增字典 `CONTRACT_TYPE`(7 项)、`CONTRACT_STATUS`(5 项)。
+  - 前端用**折叠列表**：收起只露"一眼能判断"的信息（类型标签 / 状态标签 / 编号 / 合同金额 / 已付占比 / 乙方）；展开依次为 ①合同双方（甲乙方字号加大）②**付款账户**（黄底高亮、账号等宽字体，付款前必须核对）③金额·质保·验收标准 ④该合同的付款节点。
+- **项目分工**（模块 → 子模块）
+  - 迁移 V10 新建 `project_division`：`parent_id` 支持层级、负责方（甲/乙/双方）、甲乙负责人、计划开发/调试/上线日期、进度 0–100、状态、备注、排序号；新增字典 `DIVISION_STATUS`(4 项)。
+  - 前端用**树形表格**（负责方标签、甲乙负责人两行、三阶段计划、进度条、状态标签），操作列支持「编辑 / **加子模块** / 删除（级联）」；顶部统计 总数·已完成·进行中·风险。
+  - 后端 `ProjectDivision` 实体 + Mapper + Controller：列表返回**扁平结构**由前端组树（一次性拿全，展开无请求）；删除级联子模块并记日志；校验上级同项目且**防循环引用**。
+- 配色统一在 `frontend/src/config/tagDict.ts` 的 `*_TAGS`（与字典 code 一一对应，不落库）：`CONTRACT_TYPE_TAGS`（**施工合同给红色**，主合同视觉最突出）/ `CONTRACT_STATUS_TAGS` / `DIVISION_STATUS_TAGS` / `OWNER_SIDE_TAGS`。
+- 实测：V10 迁移执行成功（共 10 个脚本）；两个新字典就位；「数据采集模块 + 数据校验子模块」层级正确返回；合同新字段映射正常。
+
+### v3.5.0 — 资金/合同职责重划分 + 多合同结构修复（V11/V12）
+- **职责重划分**（原先两个 tab 都在讲合同：资金情况以合同为父节点折叠、合同管理也挂付款明细 → 重叠且各自不完整）：
+  **资金情况 = 以「付款」为主线**（一条记录 = 一笔付款）；**合同管理 = 合同登记 + 合同附件**。
+- **迁移 V11**：`payment` 补付款过程字段（`pay_method` 付款方式 / `handler` 经办人 / `invoice_no` 发票号 / `voucher_no` 记账凭证号 / `payee_name`·`payee_bank`·`payee_account` **收款账户快照**——合同账户可能中途变更，事后核对以付款当时为准）；新增字典 `PAY_METHOD`(5 项) 与 `PAY_REQUIRED_ATTACH`（报销所需附件清单，界面据此做**缺件提醒**，可在基础字典自行调整）；`ATTACH_TYPE` 扩 8 项（发票/付款审批单/法务意见书/合同会签表/授权委托书/履约保函/合同变更协议/供应商资质）；**历史合同附件归位**（`attach_type=CONTRACT` 且挂在项目/阶段上的统一改挂 `biz_type=CONTRACT` + `biz_id=合同id`）。
+- **🔴 修掉一个结构性缺陷（迁移 V12）**：原先"项目挂合同"靠 `project.contract_id` **单个指针** → **一个项目实际只能有一份合同**（再登记第二份会覆盖指针、把上一份变成孤儿，随后被 `cleanupOrphanContracts` **悄悄逻辑删除**，数据会丢）。V10 的"一个项目多合同"其实只做了一半（灌数据时暴露：9 个项目只留下 9 份合同）。
+  修复：新建 `project_contract` **关联表**作为权威关联（一个项目 N 份合同，一份合同 1 个项目），回填历史并**排除已逻辑删除的项目**；`project.contract_id` 保留但语义收窄为「主合同」指针，由新增的 `ContractLinkService.syncPrimaryContract` 自动指向 MAIN 类型合同（无 MAIN 取最早一份），使项目卡片/统计里既有的"合同金额"口径继续表示主合同；新增 `ContractLinkService` 统一承载「某项目可见哪些合同 / 某合同覆盖哪些项目 / 重建与解除关联 / 清孤儿合同」，并改造合同、付款、附件、项目、统计五处调用方（付款归属校验：多合同时**不允许"猜"**归属）。
+- **前端**：资金情况改为 **Table + 可展开行**（横向对比多笔付款需要列对齐；折叠项只承载关联信息，不与列里已展示的信息重复）；列含 **报销凭证 `n/4`**（未付灰 / 齐备绿 / 部分黄 / 全缺红 + Tooltip 列出缺哪几项），展开行为 付款明细与留痕（含"与计划差额"）+ **本次付款的收款账户快照** + **报销所需附件清单（缺件红标、逐项可直接上传）** + 已上传凭证；顶部加筛选（状态/合同/关键词）与**风险提示条**（未关联合同的付款、已付款但报销缺件）。合同管理把付款明细表换成**付款进度结论**（指向资金情况，去掉重复），新增**合同附件区**（按 合同正本 / 法务与审批 / 招标与投标 / 担保与保证 / 其他 分组展示 + 上传）；附件中心新增「合同：xxx」分组；付款登记表单补付款方式/经办人/发票号/凭证号/收款账户（**新增时默认从合同带入**）。
+- **演示数据**：`seed-demo.mjs` 重写为 v4——每核算单元 2~4 份合同（主合同 88% + 监理 2.5% + 测评 3.5% + 预算编制 1.2%）、主合同 **5 个付款里程碑**（30/40/20/7/3，含部分付款差额场景）、项目分工按 HW/SW 模板生成（含风险阻塞项）；`seed-attachments.mjs` 扩为三类附件并**故意让约 2/5 的已付款少传一类凭证**，用于验证缺件提醒。
+- ⚠️ **迁移踩坑（重要）**：V11 首跑失败在最后一行 `CREATE INDEX`——该索引 V1 已建（报 `YAS-02043 columns have been indexed`）；而 **Oracle/崖山 DDL 隐式提交、无回滚**，前面的 ALTER 与字典 INSERT 已落库但版本未登记，容器 `restart: unless-stopped` 又不断重试 → 后续每次都撞 `duplicate column`。
+  处置：**先 `docker compose stop` 止血** → 手工把已执行语句**回滚干净** → 重跑（等于顺便验证了每条语句）。
+- 实测：V11 / V12 均成功（共 12 个脚本）；同一核算单元返回 3~4 份合同（主合同排最前）；主合同指针与关联表一致（有效关联 25 条 = 合同 25 份）。
+
+### v3.5.1 — 修复 React #310 + 演示数据补全 + 死代码清理
+- **🔴 React #310（hook 顺序）**：v3.5.0 新加的 6 个 hook（`payNodeOrder`/`contractById` 两个 `useMemo`、三个筛选 `useState`、`filteredPayments` 的 `useMemo`）被放在组件里 `if (!detail) return …` **之后** → 首屏（loading）走提前 return 少调这些 hook，数据回来后多调 → 数量不一致，抛 `Rendered more hooks than during the previous render`。
+  修复：全部**前移到提前 return 之前**，并就地注释说明原因。自查口径：**"提前 return 之后"的 hook 数必须为 0**（该组件 34 个 hook 全在其前）。
+- **"数据库里合同缺字段"的排查结论**：`contract` 表 69 行中 `deleted = 0` 仅 25 行，缺字段的是 **V10 之前批次**留下的**逻辑删除旧行**。根因链：本系统删除一律是逻辑删除（审计留痕），而 `seed-demo.mjs` 走 API 删项目 → 旧行只被标记 `deleted=1` 不消失 → 反复重跑 seed 就越堆越多。
+  → 排查数据先按 `deleted = 0` 过滤；想从干净基线开始用新增的 `scripts/demo-reset.sql` **物理清空**后再重灌。
+- **演示数据补全**：合同补 `contractStatus`（按推进度自动给 DONE / CHANGED / ACTIVE）、`settleAmount`（结算后才有）、`remark` 与服务类合同的验收标准；新增 4 份「方案评估 · **待签订** · 无付款记录」合同（用于演示状态标签与"零付款节点"的合同）；核算单元合同数 2~4 → **2~5 份**。
+- **新增开发机工具**：`scripts/demo-reset.sql`（物理清空演示数据）；`scripts/db-sql.sh` + `scripts/jdbc/RunSql.java`（开发机无 yasql 客户端时手工查/改库，连接信息自动从容器环境变量或 `.env` 取，**口令不打印不落盘**）；`scripts/README.md`（11 个脚本的清单、用途与用法）。
+- **死代码清理**：前端显式跑 `tsc --noUnusedLocals --noUnusedParameters`（项目默认关着这两个检查）→ **16 处清零**；后端未使用导入 **8 处清零** + 删除死方法 `ContractController.normalize`；`seed-attachments.mjs` 删除只写不读的 `nameCache`。
+  ⚠️ 注意：机器扫描报出的另外 3 个"疑似死方法"（`versionOf`/`paymentBrief`/`toPhaseVO`）实为 **`this::method` 方法引用**，核对后保留——**删之前必须 grep 确认**。
+- **约定**：前端改动不再由 AI 起浏览器做端到端验证（做到 类型检查 + 构建 + 数据/接口核对 即收尾，交互效果由用户刷新页面确认）；不主动重建镜像，需要时先问。
+- 实测：清库重灌后 **29 份合同 / 77 笔付款 / 128 条项目分工 / 412 个附件**（阶段 217 · 合同 114 · 付款凭证 81）；`contract` 表 `deleted=1` 行数 0、在用合同字段缺失 0（仅 `settle_amount` 21 份为空——未结算，符合业务）；合同状态 ACTIVE 16 / DONE 6 / DRAFT 4 / CHANGED 3。
+
 ---
 
 ## 功能完成度
 
 | 功能 | 状态 | 说明 |
 | --- | --- | --- |
-| 登录 / 角色（三角色只读控制） | ✅ | admin/jingban01/lingdao01 |
+| 登录 / 角色（三角色只读控制） | ✅ | admin / jingban01（经办人）/ lingdao01（领导，只读） |
 | 项目管理（列表/卡片/筛选/分页/新建/编辑/删除） | ✅ | 删除仅管理员；列表为**可折叠树**（顶层展开子项目明细） |
-| **总项目 / 子项目体系** | ✅ | v1.3：`project.parent_id`，子项目独立进度/付款，总项目为汇总容器 |
-| **合同（每（子）项目独立）** | ✅ | v1.4 起口径：合同一律独立（同一承包商也分别登记）；管理员按合同录入金额，付款/凭证归属合同、与资金情况折叠面板联动 |
-| 阶段模板与自动生成阶段实例 | ✅ | HW9/SW11，按核算单元生成 |
+| **总项目 / 子项目体系** | ✅ | v1.3：`project.parent_id`，子项目独立进度/合同/付款，总项目为汇总容器 |
+| **合同管理（一个项目多份合同）** | ✅ | v3.5.0（**V12**）：`project_contract` 关联表为权威关联——施工主合同 / 监理服务 / 第三方测评 / 预算编制 / 方案评估各自独立签订；**v1.4 的"一份合同只挂一个(子)项目"规则保留**；政府合同常见字段（V10）与类型/状态字典+配色；`project.contract_id` 收窄为「主合同」指针 |
+| **合同附件** | ✅ | v3.5.0：`bizType=CONTRACT` **独立归属到具体合同**（合同正本 / 法务意见书 / 合同会签表 / 授权委托书 / 履约保函 / 中标通知书…），按业务分组展示与上传；历史挂在项目/阶段的合同类附件已由 V11 归位 |
+| **资金情况（以付款为主线）** | ✅ | v3.5.0（**V11**）：一条记录 = 一笔付款；付款过程留痕（付款方式 / 经办人 / 发票号 / 记账凭证号 / **收款账户快照**）；状态·合同·关键词筛选 + **风险提示条**（未关联合同的付款、已付款但凭证不齐） |
+| **报销凭证缺件提醒** | ✅ | v3.5.0：所需附件清单走字典 `PAY_REQUIRED_ATTACH`（可自行调整），界面按项显示已传/缺失，已付款缺件红标并可直接上传 |
+| **项目分工（模块 → 子模块）** | ✅ | v3.4.0（**V10**）：`project_division` 记录负责方（甲/乙/双方）、甲乙负责人、计划开发/调试/上线、进度 0–100、状态、备注；树形表格 + 级联删除 + 防循环引用 |
+| 阶段模板与自动生成阶段实例 | ✅ | HW 9 / SW 11，按核算单元生成；多套模板（`phase_tpl`） |
 | 阶段推进 + 整体进度自动计算 | ✅ | 权重口径见设计稿 §9 |
-| 项目详情五页签（流程/信息/资金/附件/日志） | ✅ | 附件按阶段展示与直达上传；资金页含合同面板 |
-| 付款记录 CRUD + 资金汇总 | ✅ | 管理员录入；凭证附件预览/全屏 |
+| 项目详情页签 | ✅ | 最多 **8 个**：流程进展 / 项目信息 / 子项目（仅容器）/ 资金情况 / 合同管理 / 项目分工 / 附件中心 / 操作日志（容器项目隐藏"流程进展""资金情况"） |
+| 付款记录 CRUD + 资金汇总 | ✅ | 管理员录入；凭证附件预览/全屏；与合同进度联动 |
 | 附件存储（本地盘 ↔ 华为 OBS） | ✅ | v3.1：`AttachmentStorage` 抽象，`app.storage.type=local\|obs`；切换对前端透明、元数据零迁移 |
-| 工作台（汇总/待办/验收/逾期/最近更新） | ✅ | v0.7，v1.3 口径=核算单元（叶子） |
+| 附件**后台上传** + 上传记录中心 | ✅ | v3.2.0（V9）：暂存服务端 + 登记任务即返回，后台线程池推存储；v3.3.0 入口独立为全局 `UploadTaskProvider` + `UploadTaskCenter`（可关窗不中断、带进度与历史） |
+| 附件上传/下载/在线预览/全屏/逻辑删除 | ✅ | 图片/pdf/文本内嵌；md 用 react-markdown、docx 用 docx-preview、xls/xlsx 用 SheetJS；doc/ppt/pptx/ofd 提示下载 |
+| 文件类型字典 / 上传白名单 / 大小上限 | ✅ | V5 FILE_TYPE 字典；后端白名单强校验；单文件 **500MB**（三处联动，见 v3.3.0） |
+| 工作台（汇总/待办/验收/逾期/最近更新） | ✅ | v0.7，v1.3 口径 = 核算单元（叶子） |
 | 项目统计（ECharts，筛选联动） | ✅ | 状态·类型构成、流程阶段分布、年度资金（预算/合同/实付，合同去重） |
 | 系统管理（用户/字典/阶段模板/日志） | ✅ | v0.8：仅管理员，写操作全留痕 |
-| 一键启动/停止 | ✅ | 按平台分类（`deploy/windows`、`deploy/linux`）+ Docker 一体化（`deploy/docker`）；根目录 `start-dev.cmd` 为 Windows 入口 |
-| 列表/附件筛选多选 | ✅ | v1.5：列表（类型/状态/年度）与附件中心（类别/归属）改为多选 |
-| 金额口径实时同步 | ✅ | v1.5：后端查询时实时汇总（合同+付款），列表/详情/资金页/统计口径一致 |
-| 部署方案 | ✅ | v3.0：Docker（backend+frontend nginx，数据库为**外部崖山主备**）、Linux/Win 分类脚本（检查 1688）、环境变量 YASHAN_* |
-| 文档维护约定 | ✅ | v1.1 起：每次迭代同步更新本文档、设计稿与 README（v1.5 已清理“待提交记录”半成品章节） |
-| 演示数据脚本 | ✅ | `node scripts/seed-demo.mjs`（父子+三类合同形态）、`seed-attachments.mjs` |
-| 附件上传/下载/在线预览/全屏/逻辑删除 | ✅ | v1.6：图片/pdf/文本内嵌；md 用 react-markdown、docx 用 docx-preview、xls/xlsx 用 SheetJS；doc/ppt/pptx/ofd 等提示下载；全屏支持 |
-| 文件类型字典 / 上传白名单 | ✅ | v1.6：V5 FILE_TYPE 字典 24 项；后端白名单强校验并提示允许清单 |
-| 附件存储与预览加载 | ✅ | v1.6：本地 backend/uploads / Docker 卷 pm_uploads；预览均带加载等待态，解析失败或不支持类型明确提示下载 |
-| 数据库国产化（崖山 Oracle 模式） | ✅ | v3.0：MySQL → 崖山 YashanDB 主备；自研 Runner 替代 Flyway；`db/migration-yashan/` V1~V8；主键 identity；驱动级 primary+TAF 高可用 |
+| 一键启动/停止 / 开发机重建 | ✅ | `deploy/windows`、`deploy/docker`、根目录 `start-dev.cmd`；**开发机一键重建** `scripts/dev-reload.sh`（v3.3.1） |
+| 列表/附件筛选多选 | ✅ | v1.5：列表（类型/状态/年度）与附件中心（类别/归属）多选 |
+| 金额口径实时同步 | ✅ | 后端查询时实时汇总（合同 + 付款），列表/详情/资金页/统计口径一致 |
+| 部署方案 | ✅ | v3.0~v3.1：Docker（backend + frontend nginx，数据库为**外部崖山主备**）；服务器**不存源码**，只放 compose + `.env`；发版 `make-release.sh` / 升级 `pm-upgrade.sh`（自动切 `IMAGE_TAG`） |
+| 数据库国产化（崖山 Oracle 模式） | ✅ | v3.0 起替代 MySQL + Flyway；自研 `YashanMigrationRunner`；`db/migration-yashan/` **V1~V12**；主键 identity；驱动级 primary + TAF 高可用 |
+| 演示数据脚本 | ✅ | `seed-demo.mjs`（父子项目 + 每核算单元 2~5 份合同 + 付款里程碑 + 项目分工）、`seed-attachments.mjs`（阶段/合同/付款三类附件，含缺件场景）、`demo-reset.sql`（物理清空，v3.5.1） |
+| 开发机数据库工具 | ✅ | v3.5.1：`scripts/db-sql.sh` + `scripts/jdbc/RunSql.java`（无 yasql 客户端时手工查/改库，口令不打印不落盘）；脚本清单见 `scripts/README.md` |
+| 文档维护约定 | ✅ | v1.1 起：每次迭代同步更新本文档（总表 **+ 各迭代明细**）、设计稿（§0/受影响章节/§13）、README；v3.5.1 起补：**每次迭代必须用演示数据体现新功能**、涉及脚本须同步 `scripts/README.md` |
+| 附件智能处理（OCR / 大模型抽取） | ⏸ 暂缓 | 独立服务 `ai-service/`（同仓库、独立构建与部署，需 GPU 机），见 `ai-service/README.md`；本期暂停开发 |
 | 设计稿 Q1–Q15 评审回写 | ⏳ 待办 | 待业务反馈 |
 
 ## 运行方式速查
@@ -225,22 +310,34 @@
 # 数据库：崖山 YashanDB（Oracle 模式）主备；后端连接用环境变量（见 README/deploy/README）：
 #   export YASHAN_MASTER_IP=10.254.212.106 YASHAN_STANDBY_IP=10.254.212.107
 #   export YASHAN_DB=PM YASHAN_USER=pm YASHAN_PASSWORD=xxx
-cd backend  && mvn spring-boot:run      # :8080（自研 Runner 自动执行 db/migration-yashan 建表/种子）
+cd backend  && mvn spring-boot:run         # :8080（自研 Runner 自动执行 db/migration-yashan 建库，现 V1~V12）
 cd frontend && npm install && npm run dev  # :5173
-node scripts/seed-demo.mjs              # 可选：重置演示项目（总项目/子项目+三种合同形态）
-node scripts/seed-attachments.mjs       # 可选：为各核算单元阶段补齐典型附件
+# Docker 本机（前端 nginx 对外端口见 deploy/docker/.env 的 WEB_PORT，本机约定 8088）
+
+# —— 演示数据（走真实 API；详见 scripts/README.md）——
+bash scripts/db-sql.sh scripts/demo-reset.sql   # 可选：物理清空演示数据（从干净基线开始）
+node scripts/seed-demo.mjs                      # 项目/合同/付款/分工（默认 http://127.0.0.1:8088）
+node scripts/seed-attachments.mjs               # 阶段/合同/付款三类附件
+
+# —— 开发机辅助 ——
+bash scripts/dev-reload.sh [all|backend|frontend]   # 重建镜像 + 重启（自测用；不主动执行，按需）
+bash scripts/db-sql.sh <sql文件>                    # 手工查/改库（无需 yasql 客户端）
+bash scripts/make-release.sh <版本>                 # 产发布包（发版）
 ```
+
+> ⚠️ 本系统删除一律是**逻辑删除**（`deleted = 1`），而 seed 走 API 删项目 → 反复重跑会堆积历史行；
+> 直接翻数据库时请先按 `deleted = 0` 过滤。
 
 ## 后续待办（Backlog）
 
-1. **设计稿 Q1–Q15 评审**：根据贵方反馈修订流程模板/字段/口径并回写文档。
-2. 附件体验增强：pdf/图片缩略图预览、批量上传/下载。
-3. 工程化：前端按路由代码分包（当前单包较大）、后端 profile（dev/prod）与部署脚本、数据库每日备份、操作日志导出。
-4. 阶段逾期自动标红提醒已具备基础版，可补充列表页逾期角标与全局提醒。
-
-> 更新约定：每次完成一个可验证的迭代后，须在本文件追加一行记录，**同步更新 [`docs/政府信息化项目管理系统-设计方案.md`](docs/政府信息化项目管理系统-设计方案.md)（版本头/§0 修订记录/受影响章节/§13 差异清单）与 README**，并在提交说明中引用对应验证结果。具体规则见设计文档 §14 维护约定。
-
----
+1. **设计稿 Q1–Q15 评审**：按业务反馈修订流程模板/字段/口径并回写文档。
+2. **合同与付款的勾稽校验**：各期付款合计 vs 合同金额、比例合计 100% 的自动核对提示；合同变更/结算流程化。
+3. **合同附件必传校验**：按合同类型规定必备件（如主合同必须有法务意见书、会签表、履约保函），缺失时提示或拦截。
+4. 附件体验增强：pdf/图片缩略图、批量上传与打包下载；OFD 在线预览单独评估（转图片 + OCR 保底）。
+5. **附件保留策略**：删除项目后附件元数据与物理文件的治理（当前刻意逻辑保留以便审计追溯）。
+6. 工程化：前端按路由代码分包（当前单包较大）、后端 profile（dev/prod）、数据库每日备份、操作日志导出。
+7. 阶段逾期提醒增强：已具备基础版，可补列表页逾期角标与全局提醒。
+8. **`ai-service`（附件智能处理）恢复开发**：PDF 读取 + OCR + 大模型抽取问答 → 结果回写主系统。
 
 ## 变更记录说明
 
