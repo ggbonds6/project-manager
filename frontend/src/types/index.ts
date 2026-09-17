@@ -193,6 +193,19 @@ export interface PaymentItem {
   paidDate?: string | null;
   status: string;
   remark?: string;
+  // ── 付款过程信息（V11）：资金情况以"付款"为主线 ──
+  /** 付款方式（字典 PAY_METHOD） */
+  payMethod?: string | null;
+  /** 经办人 */
+  handler?: string | null;
+  /** 发票号 */
+  invoiceNo?: string | null;
+  /** 记账凭证号 / 报销单号 */
+  voucherNo?: string | null;
+  /** 收款账户快照（付款当时核对用） */
+  payeeName?: string | null;
+  payeeBank?: string | null;
+  payeeAccount?: string | null;
 }
 
 export const PAYMENT_STATUS: Record<string, { text: string; color: string }> = {
@@ -267,6 +280,8 @@ export interface AttachmentItem {
   bizId: number;
   phaseId?: number | null;
   phaseName?: string | null;
+  /** bizType=CONTRACT 时由后端补齐合同名，便于附件中心按合同分组 */
+  bizName?: string | null;
   attachType?: string | null;
   fileName: string;
   fileSize?: number;
@@ -285,6 +300,8 @@ export interface UploadTaskItem {
   attachType?: string | null;
   /** 归属阶段名（bizType=PROJECT_PHASE 时由后端补齐，用于展示「所属阶段」标签） */
   phaseName?: string | null;
+  /** 归属合同名（bizType=CONTRACT 时由后端补齐，用于展示「所属合同」标签） */
+  bizName?: string | null;
   fileName: string;
   fileSize?: number;
   fileExt?: string;

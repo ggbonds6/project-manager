@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Button,
   Card,
   Col,
@@ -23,13 +24,15 @@ import {
   Tag,
   Timeline,
   Tooltip,
+  Typography,
   Avatar,
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import type { CollapseProps } from 'antd';
 import {
   ArrowLeftOutlined,
+  CheckCircleOutlined,
+  CloseCircleOutlined,
   DownloadOutlined,
   EditOutlined,
   EyeOutlined,
@@ -55,10 +58,15 @@ import { useUploadTasks } from '@/store/uploadTask';
 import { useDict } from '@/hooks/useOptions';
 import { fmtDate, fmtDateTime, fmtFileSize, fmtMoney } from '@/utils/format';
 import {
+  contractAttachGroupOf,
+  contractAttachGroupTitle,
+  CONTRACT_ATTACH_GROUPS,
   contractStatusTag,
   contractTypeTag,
   divisionStatusTag,
+  fileExtTag,
   ownerSideTag,
+  payMethodTag,
   payNodeTag,
   payStatusTag,
   phaseNameTag,
@@ -371,6 +379,9 @@ export default function ProjectDetailPage() {
   const { options: contractTypes } = useDict('CONTRACT_TYPE');
   const { options: contractStatuses } = useDict('CONTRACT_STATUS');
   const { options: divisionStatuses } = useDict('DIVISION_STATUS');
+  const { options: payMethods } = useDict('PAY_METHOD');
+  /** 报销/付款所需附件清单（字典可配置，界面据此做缺件提醒） */
+  const { options: payRequiredAtts } = useDict('PAY_REQUIRED_ATTACH');
 
   const canEdit = user?.role === 'ADMIN' || user?.role === 'MANAGER';
   // 付款金额按合同由管理员录入
@@ -439,7 +450,7 @@ export default function ProjectDetailPage() {
   const grouped = useMemo(() => {
     interface Group {
       title: string;
-      kind: 'PHASE' | 'PROJECT' | 'PARENT' | 'PAYMENT';
+      kind: 'PHASE' | 'PROJECT' | 'PARENT' | 'PAYMENT' | 'CONTRACT';
       bizType: string;
       bizId: number;
       phaseName?: string;
@@ -469,6 +480,13 @@ export default function ProjectDetailPage() {
               pay.planAmount ? `（计划 ${fmtMoney(pay.planAmount)} 元）` : ''
             }`
           : '付款凭证';
+      } else if (a.bizType === 'CONTRACT') {
+        // 合同附件（V11）：合同正本、法务意见、会签表、履约保函等
+        const c = contracts.find((ct) => ct.id === a.bizId);
+        key = `CONTRACT:${a.bizId}`;
+        kind = 'CONTRACT';
+        bizId = a.bizId;
+        title = `合同：${a.bizName || c?.name || '未知合同'}`;
       } else if (a.bizType === 'PROJECT' && a.phaseName === '总项目公用附件') {
         // 父级总项目公用附件（子项目共用查看）
         key = `PARENT:${a.bizId}`;
@@ -489,7 +507,7 @@ export default function ProjectDetailPage() {
       g.items.push(a);
     }
     const groups = [...map.values()];
-    const rank = { PHASE: 0, PROJECT: 1, PARENT: 2, PAYMENT: 3 } as const;
+    const rank = { PHASE: 0, CONTRACT: 1, PROJECT: 2, PARENT: 3, PAYMENT: 4 } as const;
     groups.sort((a, b) => {
       if (a.kind === 'PHASE' && b.kind === 'PHASE') {
         const ai = detail?.phases.findIndex((p) => p.id === a.bizId);
@@ -499,7 +517,7 @@ export default function ProjectDetailPage() {
       return rank[a.kind] - rank[b.kind];
     });
     return groups;
-  }, [attachments, detail, id, payments, isContainer]);
+  }, [attachments, detail, id, payments, isContainer, contracts]);
 
   // 附件中心筛选（类别 / 归属）
   const [attachTypeFilter, setAttachTypeFilter] = useState<string[]>([]);
@@ -925,57 +943,228 @@ export default function ProjectDetailPage() {
     </Row>
   );
 
+  /* ==================== 资金情况：以「付款」为主线 ====================
+   * 设计取舍（为什么是"表格 + 可展开行"而不是纯折叠卡片）：
+   *   ① 资金情况最常见的动作是"横向对比"——哪几笔还没付、金额对不对、日期排不排得过来；
+   *      表格列天然对齐，折叠卡片的标题区放不下这些需要对齐的信息；
+   *   ② 折叠项只承载**关联信息**（收款账户、报销附件、过程留痕），
+   *      不与列里已展示的基本信息重复，展开才有意义；
+   *   ③ 列宽固定，长文件名/长合同名不会把版面撑乱。
+   * 一条记录 = 一笔付款；合同只作为该笔付款的归属方出现（不再以合同为父节点组织）。
+   */
+
+  // 付款节点顺序：按字典顺序排，保证"预付款 → 到货款 → 初验 → 终验 → 质保"的可读顺序
+  const payNodeOrder = useMemo(() => {
+    const m = new Map<string, number>();
+    payNodes.forEach((n, i) => m.set(n.code, i));
+    return m;
+  }, [payNodes]);
+
+  const contractById = useMemo(() => {
+    const m = new Map<number, ContractItem>();
+    contracts.forEach((c) => {
+      if (c.id != null) m.set(c.id, c);
+    });
+    return m;
+  }, [contracts]);
+
+  /** 单笔付款的凭证附件 */
+  const payVouchersOf = (pay: PaymentItem) =>
+    attachments.filter((a) => a.bizType === 'PAYMENT' && a.bizId === pay.id);
+
+  /** 报销所需附件齐备情况（字典 PAY_REQUIRED_ATTACH 配置要求，界面据此提示补件） */
+  const payChecklistOf = (pay: PaymentItem) => {
+    const atts = payVouchersOf(pay);
+    return payRequiredAtts.map((r) => ({
+      code: r.code,
+      name: r.name,
+      items: atts.filter((a) => a.attachType === r.code),
+    }));
+  };
+
+  /** 缺件判断：只有"已付款"才要求凭证齐备；未付款缺件属正常，不算问题 */
+  const payMissingDocs = (pay: PaymentItem): string[] => {
+    if (pay.status === 'UNPAID' || payRequiredAtts.length === 0) return [];
+    const have = new Set(payVouchersOf(pay).map((a) => a.attachType));
+    return payRequiredAtts.filter((r) => !have.has(r.code)).map((r) => r.name);
+  };
+
+  // ── 筛选（工具条状态）──
+  const [payStatusSel, setPayStatusSel] = useState<string[]>([]);
+  const [payContractSel, setPayContractSel] = useState<number | null>(null);
+  const [payKeyword, setPayKeyword] = useState('');
+
+  const filteredPayments = useMemo(() => {
+    const kw = payKeyword.trim().toLowerCase();
+    return payments
+      .filter((p) => (payStatusSel.length ? payStatusSel.includes(p.status) : true))
+      .filter((p) => (payContractSel === null ? true : p.contractId === payContractSel))
+      .filter((p) => {
+        if (!kw) return true;
+        const c = p.contractId != null ? contractById.get(p.contractId) : undefined;
+        return [
+          p.nodeName,
+          p.conditionDesc,
+          p.handler,
+          p.invoiceNo,
+          p.voucherNo,
+          p.payeeName,
+          c?.name,
+          c?.vendorName,
+        ]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(kw));
+      })
+      .sort((a, b) => {
+        const ca = a.contractId ?? 0;
+        const cb = b.contractId ?? 0;
+        if (ca !== cb) return ca - cb;
+        const oa = payNodeOrder.get(a.nodeCode) ?? 99;
+        const ob = payNodeOrder.get(b.nodeCode) ?? 99;
+        if (oa !== ob) return oa - ob;
+        return (a.id ?? 0) - (b.id ?? 0);
+      });
+  }, [payments, payStatusSel, payContractSel, payKeyword, contractById, payNodeOrder]);
+
+  const filteredPaid = filteredPayments.reduce((s, p) => s + (p.paidAmount || 0), 0);
+  const unboundPays = payments.filter((p) => !p.contractId);
+  const riskyPays = payments.filter((p) => payMissingDocs(p).length > 0);
+
   const payColumns: ColumnsType<PaymentItem> = [
-    { title: '付款节点', dataIndex: 'nodeName', width: 110 },
+    {
+      title: '付款节点',
+      dataIndex: 'nodeName',
+      width: 200,
+      render: (_, p) => {
+        const n = p.nodeCode ? payNodeTag(p.nodeCode) : null;
+        return (
+          <div>
+            <Space size={6} wrap>
+              <b>{p.nodeName || p.nodeCode}</b>
+              {n ? (
+                <Tag color={n.color} style={{ marginInlineEnd: 0 }}>
+                  {n.text}
+                </Tag>
+              ) : null}
+            </Space>
+            {p.conditionDesc ? (
+              <div style={{ fontSize: 12, color: '#8c8c8c', marginTop: 2 }}>{p.conditionDesc}</div>
+            ) : null}
+          </div>
+        );
+      },
+    },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 100,
+      width: 96,
       render: (v: string) => {
         const m = PAYMENT_STATUS[v];
         return m ? <Tag color={m.color}>{m.text}</Tag> : v;
       },
     },
-    { title: '触发条件', dataIndex: 'conditionDesc', ellipsis: true },
     {
-      title: '计划金额(元)',
-      dataIndex: 'planAmount',
+      title: '实付 / 计划(元)',
+      key: 'amount',
+      width: 150,
       align: 'right',
-      width: 120,
-      render: fmtMoney,
+      render: (_, p) => (
+        <div>
+          <b style={{ fontSize: 15 }}>{fmtMoney(p.paidAmount || 0)}</b>
+          <div style={{ fontSize: 12, color: '#8c8c8c' }}>计划 {fmtMoney(p.planAmount || 0)}</div>
+        </div>
+      ),
     },
-    { title: '计划付款日期', dataIndex: 'planDate', width: 120, render: fmtDate },
     {
-      title: '实付金额(元)',
-      dataIndex: 'paidAmount',
-      align: 'right',
-      width: 120,
-      render: (v?: number) => <b>{fmtMoney(v || 0)}</b>,
+      title: '付款日期',
+      key: 'payDate',
+      width: 135,
+      render: (_, p) =>
+        p.paidDate ? (
+          fmtDate(p.paidDate)
+        ) : p.planDate ? (
+          <span style={{ color: '#8c8c8c' }}>计划 {fmtDate(p.planDate)}</span>
+        ) : (
+          <span style={{ color: '#bfbfbf' }}>—</span>
+        ),
     },
-    { title: '实付日期', dataIndex: 'paidDate', width: 120, render: fmtDate },
     {
-      title: '凭证附件',
-      key: 'att',
-      width: 250,
-      render: (_, row) => {
-        const atts = attachments.filter((a) => a.bizType === 'PAYMENT' && a.bizId === row.id);
-        if (!atts.length) return <span style={{ color: '#bfbfbf' }}>—</span>;
+      title: '付款方式',
+      dataIndex: 'payMethod',
+      width: 108,
+      render: (v?: string | null) => {
+        const m = payMethodTag(v);
+        return v ? <Tag color={m.color}>{m.text}</Tag> : <span style={{ color: '#bfbfbf' }}>—</span>;
+      },
+    },
+    {
+      title: '关联合同',
+      dataIndex: 'contractId',
+      width: 210,
+      ellipsis: true,
+      render: (v?: number | null) => {
+        const c = v != null ? contractById.get(v) : undefined;
+        if (!c) {
+          return (
+            <Tooltip title="该付款未关联合同，请核实付款依据">
+              <Tag color="warning">未关联合同</Tag>
+            </Tooltip>
+          );
+        }
+        const t = contractTypeTag(c.contractType);
         return (
-          <Space size={[4, 4]} wrap>
-            {atts.map((a) => (
-              <Tooltip key={a.id} title={a.fileName}>
-                <Button
-                  size="small"
-                  type="link"
-                  icon={<FileTextOutlined />}
-                  onClick={() => setPreviewAtt(a)}
-                  style={{ paddingLeft: 0 }}
-                >
-                  {a.fileName.length > 14 ? a.fileName.slice(0, 14) + '…' : a.fileName}
-                </Button>
-              </Tooltip>
-            ))}
+          <Space size={4} wrap>
+            <Tag color={t.color} style={{ marginInlineEnd: 0 }}>
+              {t.text}
+            </Tag>
+            <span title={c.name}>{c.name}</span>
           </Space>
+        );
+      },
+    },
+    {
+      title: '收款方',
+      key: 'payee',
+      width: 170,
+      ellipsis: true,
+      render: (_, p) => {
+        const c = p.contractId != null ? contractById.get(p.contractId) : undefined;
+        const name = p.payeeName || c?.vendorName;
+        return name || <span style={{ color: '#bfbfbf' }}>—</span>;
+      },
+    },
+    {
+      title: '报销凭证',
+      key: 'docs',
+      width: 110,
+      align: 'center',
+      render: (_, p) => {
+        const atts = payVouchersOf(p);
+        if (payRequiredAtts.length === 0) {
+          return atts.length ? (
+            <Tag color="blue">{atts.length} 个附件</Tag>
+          ) : (
+            <span style={{ color: '#bfbfbf' }}>—</span>
+          );
+        }
+        const miss = payMissingDocs(p);
+        const ok = payRequiredAtts.length - miss.length;
+        const color =
+          p.status === 'UNPAID' ? 'default' : miss.length === 0 ? 'success' : ok === 0 ? 'error' : 'warning';
+        return (
+          <Tooltip
+            title={
+              p.status === 'UNPAID'
+                ? '尚未付款；付款后需补齐报销附件'
+                : miss.length
+                  ? `缺：${miss.join('、')}`
+                  : '报销附件齐备'
+            }
+          >
+            <Tag color={color}>
+              {ok}/{payRequiredAtts.length}
+            </Tag>
+          </Tooltip>
         );
       },
     },
@@ -983,31 +1172,33 @@ export default function ProjectDetailPage() {
       title: '操作',
       key: 'op',
       width: 200,
+      fixed: 'right',
       render: (_, row) =>
         canManagePay || canEdit ? (
-          <Space size={4}>
+          <Space size={0}>
             {canManagePay && (
               <Button size="small" type="link" onClick={() => setPayModal({ open: true, item: row })}>
                 编辑
               </Button>
             )}
-            <Button
-              size="small"
-              type="link"
-              icon={<PaperClipOutlined />}
-              onClick={() =>
-                row.id &&
-                setUpload({
-                  open: true,
-                  bizType: 'PAYMENT',
-                  bizId: row.id,
-                  label: `付款凭证：${row.nodeName}`,
-                  fixedAttachType: 'PAY_VOUCHER',
-                })
-              }
-            >
-              凭证
-            </Button>
+            {canEdit && (
+              <Button
+                size="small"
+                type="link"
+                icon={<PaperClipOutlined />}
+                onClick={() =>
+                  row.id &&
+                  setUpload({
+                    open: true,
+                    bizType: 'PAYMENT',
+                    bizId: row.id,
+                    label: `付款凭证：${row.nodeName}`,
+                  })
+                }
+              >
+                凭证
+              </Button>
+            )}
             {canManagePay && (
               <Button
                 size="small"
@@ -1016,7 +1207,7 @@ export default function ProjectDetailPage() {
                 onClick={() => {
                   Modal.confirm({
                     title: '删除付款记录',
-                    content: `确定删除「${row.nodeName}」这条付款记录吗？`,
+                    content: `确定删除「${row.nodeName}」这条付款记录吗？（已上传的凭证附件不会被删除）`,
                     okButtonProps: { danger: true },
                     onOk: async () => {
                       await paymentApi.remove(row.id!);
@@ -1033,178 +1224,310 @@ export default function ProjectDetailPage() {
     },
   ];
 
-  // 付款明细按合同分组（每份合同一块，付款归属对应合同）
-  const renderPayTable = (rows: PaymentItem[], emptyText: string) => (
-    <Table<PaymentItem>
-      rowKey={(r) => r.id ?? `new-${r.nodeCode}-${r.contractId ?? 'none'}`}
-      columns={payColumns}
-      dataSource={rows}
-      pagination={false}
-      size="small"
-      locale={{ emptyText: <Empty description={emptyText} /> }}
-    />
-  );
-  const unboundPayments = payments.filter((p) => !p.contractId);
-
-  // 合同附件：与“附件中心”互通（类别=合同扫描件；项目级或“合同签订”阶段级均可，两处自动同步）
-  const contractPhaseIds = new Set(
-    (detail?.phases || []).filter((p) => p.phaseName === '合同签订').map((p) => p.id),
-  );
-  const contractAtts = attachments.filter(
-    (a) =>
-      a.attachType === 'CONTRACT' &&
-      ((a.bizType === 'PROJECT' && a.bizId === detail?.id) ||
-        (a.bizType === 'PROJECT_PHASE' && contractPhaseIds.has(a.bizId))),
-  );
-
-  // 折叠结构：每份合同 = 一个面板（父），其付款明细 = 面板内容（子）
-  const contractPanels: CollapseProps['items'] = contracts.map((c) => {
-    const rows = payments.filter((p) => p.contractId === c.id);
-    const paid = rows.reduce((s, p) => s + (p.paidAmount || 0), 0);
-    return {
-      key: String(c.id),
-      label: (
-        <Space wrap size={8}>
-          <b>{c.name}</b>
-          {c.contractNo ? <Tag>{c.contractNo}</Tag> : null}
-          {c.vendorName ? <Tag color="geekblue">{c.vendorName}</Tag> : null}
-          <span style={{ fontSize: 12 }}>
-            合同金额 <b>{fmtMoney(c.contractAmount)}</b> 元
-          </span>
-          <span style={{ fontSize: 12, color: '#1677ff' }}>已付 {fmtMoney(paid)} 元</span>
-          <span style={{ fontSize: 12, color: '#bfbfbf' }}>付款 {rows.length} 条</span>
-        </Space>
-      ),
-      extra: canManagePay ? (
-        <div onClick={(e) => e.stopPropagation()}>
-          <Space size={0}>
-            <Button size="small" type="link" onClick={() => openContractForm(c)}>
-              编辑合同
-            </Button>
-            <Popconfirm
-              title="删除该合同？"
-              onConfirm={async () => {
-                await contractApi.remove(c.id!);
-                message.success('合同已删除');
-                reload();
-              }}
+  /** 展开行：只放"关联信息"——付款明细留痕、收款账户、报销附件、已传凭证 */
+  const renderPayDetail = (p: PaymentItem) => {
+    const c = p.contractId != null ? contractById.get(p.contractId) : undefined;
+    const atts = payVouchersOf(p);
+    const checklist = payChecklistOf(p);
+    const miss = payMissingDocs(p);
+    const paid = p.paidAmount || 0;
+    const plan = p.planAmount || 0;
+    const diff = plan - paid;
+    return (
+      <div style={{ padding: '8px 12px 10px 44px', background: '#fafafa' }}>
+        <Row gutter={16}>
+          <Col span={13}>
+            <Descriptions size="small" column={2} bordered title="付款明细与留痕">
+              <Descriptions.Item label="计划金额">{fmtMoney(plan)} 元</Descriptions.Item>
+              <Descriptions.Item label="实付金额">
+                <b>{fmtMoney(paid)}</b> 元
+              </Descriptions.Item>
+              <Descriptions.Item label="计划付款日">{fmtDate(p.planDate) || '—'}</Descriptions.Item>
+              <Descriptions.Item label="实际付款日">{fmtDate(p.paidDate) || '—'}</Descriptions.Item>
+              <Descriptions.Item label="与计划差额">
+                {plan === 0 ? (
+                  <span style={{ color: '#bfbfbf' }}>—</span>
+                ) : diff === 0 ? (
+                  <Tag color="success">与计划一致</Tag>
+                ) : (
+                  <span style={{ color: '#fa8c16' }}>
+                    {diff > 0 ? '少付 ' : '多付 '}
+                    {fmtMoney(Math.abs(diff))} 元
+                  </span>
+                )}
+              </Descriptions.Item>
+              <Descriptions.Item label="付款进度">
+                {plan > 0 ? `${Math.round((paid / plan) * 100)}%` : '—'}
+              </Descriptions.Item>
+              <Descriptions.Item label="付款方式">{payMethodTag(p.payMethod).text}</Descriptions.Item>
+              <Descriptions.Item label="经办人">{p.handler || '—'}</Descriptions.Item>
+              <Descriptions.Item label="发票号">{p.invoiceNo || '—'}</Descriptions.Item>
+              <Descriptions.Item label="凭证/报销单号">{p.voucherNo || '—'}</Descriptions.Item>
+              <Descriptions.Item label="触发条件" span={2}>
+                {p.conditionDesc || '—'}
+              </Descriptions.Item>
+              <Descriptions.Item label="备注" span={2}>
+                {p.remark || '—'}
+              </Descriptions.Item>
+            </Descriptions>
+          </Col>
+          <Col span={11}>
+            {/* 收款账户：付款前必须核对，黄底高亮；付款记录保存的是"付款当时"的账户快照 */}
+            <Card
+              size="small"
+              title="本次付款的收款账户"
+              style={{ borderColor: '#ffe58f', background: '#fffbf0', marginBottom: 12 }}
             >
-              <Button size="small" type="link" danger>
-                删除
-              </Button>
-            </Popconfirm>
-          </Space>
-        </div>
-      ) : undefined,
-      children: (
-        <div>
-          <div style={{ marginBottom: 8, display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-            <span style={{ fontSize: 12, color: '#8c8c8c' }}>本合同付款明细</span>
-            {canManagePay && (
+              {p.payeeAccount || p.payeeName || p.payeeBank ? (
+                <Descriptions size="small" column={1} colon={false}>
+                  <Descriptions.Item label="收款户名">{p.payeeName || '—'}</Descriptions.Item>
+                  <Descriptions.Item label="开户银行">{p.payeeBank || '—'}</Descriptions.Item>
+                  <Descriptions.Item label="银行账号">
+                    <span style={{ fontFamily: 'monospace', fontWeight: 600 }}>{p.payeeAccount || '—'}</span>
+                  </Descriptions.Item>
+                </Descriptions>
+              ) : (
+                <div style={{ fontSize: 12, color: '#8c8c8c' }}>
+                  未记录本次付款的收款账户。
+                  {c && (c.payeeAccount || c.payeeName) ? (
+                    <div style={{ marginTop: 6 }}>
+                      合同登记的账户：{c.payeeName || '—'} / {c.payeeBank || '—'} /{' '}
+                      <span style={{ fontFamily: 'monospace' }}>{c.payeeAccount || '—'}</span>
+                      <div style={{ color: '#fa8c16', marginTop: 4 }}>
+                        建议在付款记录里留下账户快照——合同账户可能中途变更，事后核对以当时为准。
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </Card>
+
+            {/* 报销所需附件清单：缺件直接影响报账，红黄两档提示 */}
+            <Card
+              size="small"
+              title="报销所需附件"
+              style={{ borderColor: miss.length ? '#ffccc7' : undefined }}
+            >
+              {payRequiredAtts.length === 0 ? (
+                <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+                  尚未配置所需附件清单（字典 PAY_REQUIRED_ATTACH，可在「系统管理 → 基础字典」维护）
+                </span>
+              ) : (
+                <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                  {checklist.map((item) => {
+                    const uploaded = item.items.length > 0;
+                    const needPay = p.status !== 'UNPAID';
+                    return (
+                      <div
+                        key={item.code}
+                        style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}
+                      >
+                        {uploaded ? (
+                          <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                        ) : (
+                          <CloseCircleOutlined style={{ color: needPay ? '#ff4d4f' : '#bfbfbf' }} />
+                        )}
+                        <span>{item.name}</span>
+                        {uploaded ? (
+                          <Tag color="success" style={{ marginInlineEnd: 0 }}>
+                            {item.items.length} 份
+                          </Tag>
+                        ) : needPay ? (
+                          <Tag color="error" style={{ marginInlineEnd: 0 }}>
+                            缺失
+                          </Tag>
+                        ) : (
+                          <Tag style={{ marginInlineEnd: 0 }}>待补</Tag>
+                        )}
+                        {!uploaded && canEdit && p.id ? (
+                          <Button
+                            size="small"
+                            type="link"
+                            style={{ padding: 0, height: 'auto' }}
+                            onClick={() =>
+                              setUpload({
+                                open: true,
+                                bizType: 'PAYMENT',
+                                bizId: p.id!,
+                                label: `付款凭证：${p.nodeName}`,
+                                fixedAttachType: item.code,
+                              })
+                            }
+                          >
+                            上传
+                          </Button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </Space>
+              )}
+            </Card>
+          </Col>
+        </Row>
+
+        {/* 已上传凭证 */}
+        <div style={{ marginTop: 12 }}>
+          <div style={{ marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 12, color: '#8c8c8c' }}>已上传凭证（{atts.length}）</span>
+            {canEdit && p.id ? (
               <Button
                 size="small"
                 type="primary"
                 ghost
-                icon={<PlusOutlined />}
-                onClick={() => setPayModal({ open: true, item: null, contractId: c.id ?? null })}
+                icon={<UploadOutlined />}
+                onClick={() =>
+                  setUpload({
+                    open: true,
+                    bizType: 'PAYMENT',
+                    bizId: p.id!,
+                    label: `付款凭证：${p.nodeName}`,
+                  })
+                }
               >
-                登记本合同付款
+                上传凭证
               </Button>
-            )}
+            ) : null}
           </div>
-          {renderPayTable(rows, '本合同暂无付款记录')}
+          {atts.length ? (
+            <Space size={[10, 10]} wrap>
+              {atts.map((a) => (
+                <Space key={a.id} size={4}>
+                  <Tag color={fileExtTag(a.fileExt).color} style={{ marginInlineEnd: 0 }}>
+                    {fileExtTag(a.fileExt).text}
+                  </Tag>
+                  <Button
+                    size="small"
+                    type="link"
+                    icon={<FileTextOutlined />}
+                    onClick={() => setPreviewAtt(a)}
+                    style={{ paddingLeft: 0 }}
+                  >
+                    {a.fileName.length > 24 ? a.fileName.slice(0, 24) + '…' : a.fileName}
+                  </Button>
+                  {a.attachType ? <Tag>{attachTypeName(a.attachType)}</Tag> : null}
+                  <span style={{ fontSize: 12, color: '#bfbfbf' }}>{fmtFileSize(a.fileSize)}</span>
+                  <a href={attachmentUrl(a.id)} download={a.fileName}>
+                    <DownloadOutlined style={{ color: '#8c8c8c' }} />
+                  </a>
+                </Space>
+              ))}
+            </Space>
+          ) : (
+            <span style={{ fontSize: 12, color: '#bfbfbf' }}>暂无凭证附件</span>
+          )}
         </div>
-      ),
-    };
-  });
+      </div>
+    );
+  };
 
   const fundContent = (
     <div>
       {fundSummary}
-      <div style={{ marginBottom: 12 }}>
-        {canManagePay && (
-          <Space wrap>
-            <Button type="primary" icon={<PlusOutlined />} onClick={() => openContractForm(null)}>
-              登记合同
-            </Button>
-            <Button type="primary" ghost icon={<PlusOutlined />} onClick={() => setPayModal({ open: true, item: null })}>
-              新增付款记录
-            </Button>
-          </Space>
-        )}
-      </div>
-      <Card
-        size="small"
-        style={{ marginBottom: 12 }}
-        title={`合同附件（${contractAtts.length}）`}
-        extra={
-          canEdit ? (
-            <Button
-              size="small"
-              type="primary"
-              ghost
-              icon={<UploadOutlined />}
-              onClick={() =>
-                setUpload({
-                  open: true,
-                  bizType: 'PROJECT',
-                  bizId: detail.id,
-                  label: '合同扫描件（同步至资金情况）',
-                  fixedAttachType: 'CONTRACT',
-                })
-              }
-            >
-              上传合同附件
-            </Button>
-          ) : undefined
-        }
-      >
-        {contractAtts.length ? (
-          <Space size={[8, 8]} wrap>
-            {contractAtts.map((a) => (
-              <Space key={a.id} size={0}>
-                <Button
-                  size="small"
-                  type="link"
-                  icon={<FileTextOutlined />}
-                  onClick={() => setPreviewAtt(a)}
-                  style={{ paddingLeft: 0 }}
-                >
-                  {a.fileName.length > 18 ? a.fileName.slice(0, 18) + '…' : a.fileName}
-                </Button>
-                <a href={attachmentUrl(a.id)} download={a.fileName}>
-                  <DownloadOutlined style={{ color: '#8c8c8c' }} />
-                </a>
-              </Space>
-            ))}
-          </Space>
-        ) : (
-          <span style={{ fontSize: 12, color: '#bfbfbf' }}>暂无合同附件</span>
-        )}
-      </Card>
-      {contracts.length > 0 ? (
-        <Collapse
-          key={contracts.map((c) => String(c.id)).join('-')}
-          defaultActiveKey={contracts.map((c) => String(c.id))}
-          expandIconPosition="end"
-          items={contractPanels}
+
+      {(unboundPays.length > 0 || riskyPays.length > 0) && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={
+            <span style={{ fontSize: 13 }}>
+              {unboundPays.length > 0 && (
+                <span>
+                  有 <b>{unboundPays.length}</b> 笔付款未关联合同
+                </span>
+              )}
+              {unboundPays.length > 0 && riskyPays.length > 0 ? '；' : ''}
+              {riskyPays.length > 0 && (
+                <span>
+                  有 <b>{riskyPays.length}</b> 笔已付款的报销附件不齐
+                </span>
+              )}
+              ，请核实（展开对应行可查看缺哪几项）。
+            </span>
+          }
         />
-      ) : (
-        <Card size="small" style={{ marginBottom: 12 }}>
-          <Empty description="尚未登记合同" />
-        </Card>
       )}
-      {unboundPayments.length > 0 && (
-        <Card size="small" title={`未关联合同的付款记录（${unboundPayments.length}）`} style={{ marginTop: 12, borderColor: '#ffd666' }}>
-          {renderPayTable(unboundPayments, '')}
+
+      {/* 工具条：新增 / 筛选 */}
+      <div
+        style={{
+          marginBottom: 12,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 8,
+        }}
+      >
+        <Space wrap>
+          {canManagePay && (
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => setPayModal({ open: true, item: null })}>
+              登记付款
+            </Button>
+          )}
+          <Select
+            mode="multiple"
+            allowClear
+            placeholder="按状态筛选"
+            style={{ minWidth: 170 }}
+            value={payStatusSel}
+            onChange={setPayStatusSel}
+            options={Object.entries(PAYMENT_STATUS).map(([value, m]) => ({ value, label: m.text }))}
+          />
+          <Select
+            allowClear
+            placeholder="按合同筛选"
+            style={{ minWidth: 220 }}
+            value={payContractSel ?? undefined}
+            onChange={(v?: number) => setPayContractSel(v ?? null)}
+            options={contracts.map((c) => ({
+              value: c.id!,
+              label: c.name + (c.contractNo ? `（${c.contractNo}）` : ''),
+            }))}
+          />
+          <Input
+            allowClear
+            placeholder="搜节点 / 经办人 / 发票号"
+            style={{ width: 200 }}
+            value={payKeyword}
+            onChange={(e) => setPayKeyword(e.target.value)}
+          />
+        </Space>
+        <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+          共 {filteredPayments.length} 笔 · 实付合计{' '}
+          <b style={{ color: '#1677ff' }}>{fmtMoney(filteredPaid)}</b> 元
+        </span>
+      </div>
+
+      {payments.length === 0 ? (
+        <Card size="small">
+          <Empty description="尚未登记付款记录（付款需先有合同：合同管理 → 登记合同）" />
         </Card>
+      ) : filteredPayments.length === 0 ? (
+        <Card size="small">
+          <Empty description="没有符合筛选条件的付款记录" />
+        </Card>
+      ) : (
+        <Table<PaymentItem>
+          rowKey={(r) => r.id ?? `new-${r.nodeCode}-${r.contractId ?? 'none'}`}
+          columns={payColumns}
+          dataSource={filteredPayments}
+          pagination={false}
+          size="small"
+          scroll={{ x: 1300 }}
+          expandable={{
+            expandedRowRender: renderPayDetail,
+            // 默认收起：一屏能看全所有付款，需要核对哪笔再展开（展开内容较重）
+            defaultExpandedRowKeys: [],
+          }}
+        />
       )}
     </div>
   );
 
-  // ── V10：合同管理 tab ──────────────────────────────────────────
-  // 一个项目（含子项目）可签多份合同：施工主合同、第三方测评、方案评估、监理服务、预算编制等。
-  // 用**折叠列表**承载——收起时只露"一眼能判断"的信息，展开后才是明细。
+  // ── 合同管理 tab：只做"合同登记 + 合同附件" ──────────────────────
+  // 付款明细不在这里重复展示（挪到「资金情况」），此处只给合同级的付款进度结论。
   const contractManageContent = (
     <div>
       <div
@@ -1239,11 +1562,13 @@ export default function ProjectDetailPage() {
           items={contracts.map((c) => {
             const rows = payments.filter((p) => p.contractId === c.id);
             const paid = rows.reduce((s, p) => s + (p.paidAmount || 0), 0);
+            const paidCnt = rows.filter((p) => p.status === 'PAID' || (p.paidAmount || 0) > 0).length;
             const typeTag = contractTypeTag(c.contractType);
             const stateTag = contractStatusTag(c.contractStatus);
             const pct = c.contractAmount
               ? Math.min(100, Math.round((paid / c.contractAmount) * 100))
               : 0;
+            const cAtts = attachments.filter((a) => a.bizType === 'CONTRACT' && a.bizId === c.id);
             return {
               key: String(c.id),
               label: (
@@ -1261,6 +1586,9 @@ export default function ProjectDetailPage() {
                   {c.vendorName ? (
                     <span style={{ fontSize: 12, color: '#8c8c8c' }}>乙方：{c.vendorName}</span>
                   ) : null}
+                  <Tag color={cAtts.length ? 'blue' : 'default'} style={{ marginInlineEnd: 0 }}>
+                    附件 {cAtts.length}
+                  </Tag>
                 </Space>
               ),
               extra: canManagePay ? (
@@ -1326,7 +1654,7 @@ export default function ProjectDetailPage() {
                   {/* ② 付款账户 —— 单独成块、账号用等宽字体，付款前必须核对 */}
                   <Card
                     size="small"
-                    title="付款账户信息"
+                    title="合同付款账户"
                     style={{ marginBottom: 12, borderColor: '#ffe58f', background: '#fffbf0' }}
                   >
                     {c.payeeAccount || c.payeeName || c.payeeBank ? (
@@ -1369,31 +1697,111 @@ export default function ProjectDetailPage() {
                     </Descriptions.Item>
                   </Descriptions>
 
-                  {/* ④ 付款节点 */}
+                  {/* ④ 付款进度结论（明细在「资金情况」，此处不重复列表） */}
                   <div
                     style={{
-                      marginBottom: 8,
+                      marginBottom: 14,
+                      padding: '8px 12px',
+                      background: '#fafafa',
+                      borderRadius: 6,
                       display: 'flex',
                       justifyContent: 'space-between',
                       alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: 8,
                     }}
                   >
+                    <Space wrap size={16} style={{ fontSize: 12 }}>
+                      <span>
+                        付款节点 <b>{rows.length}</b> 个
+                      </span>
+                      <span>
+                        已付 <b style={{ color: '#1677ff' }}>{fmtMoney(paid)}</b> 元（{pct}%）
+                      </span>
+                      <span>
+                        待付{' '}
+                        <b style={{ color: '#fa541c' }}>
+                          {fmtMoney(Math.max((c.contractAmount || 0) - paid, 0))}
+                        </b>{' '}
+                        元
+                      </span>
+                      <span style={{ color: '#8c8c8c' }}>
+                        已付款 {paidCnt}/{rows.length} 笔
+                      </span>
+                    </Space>
                     <span style={{ fontSize: 12, color: '#8c8c8c' }}>
-                      付款节点：{rows.length} 条 · 已付 {fmtMoney(paid)} / {fmtMoney(c.contractAmount)} 元
+                      付款明细与报销凭证请到「资金情况」查看
                     </span>
-                    {canManagePay && (
-                      <Button
-                        size="small"
-                        type="primary"
-                        ghost
-                        icon={<PlusOutlined />}
-                        onClick={() => setPayModal({ open: true, item: null, contractId: c.id ?? null })}
-                      >
-                        登记付款
-                      </Button>
-                    )}
                   </div>
-                  {renderPayTable(rows, '本合同暂无付款记录')}
+
+                  {/* ⑤ 合同附件：合同正本 + 法务意见 / 会签表 / 授权委托 / 履约保函等关联件 */}
+                  <Card
+                    size="small"
+                    title={`合同附件（${cAtts.length}）`}
+                    extra={
+                      canEdit ? (
+                        <Button
+                          size="small"
+                          type="primary"
+                          ghost
+                          icon={<UploadOutlined />}
+                          onClick={() =>
+                            setUpload({
+                              open: true,
+                              bizType: 'CONTRACT',
+                              bizId: c.id!,
+                              label: c.name,
+                            })
+                          }
+                        >
+                          上传合同附件
+                        </Button>
+                      ) : undefined
+                    }
+                  >
+                    {cAtts.length ? (
+                      <div>
+                        {CONTRACT_ATTACH_GROUPS.map((g) => {
+                          const items = cAtts.filter((a) => contractAttachGroupOf(a.attachType) === g.key);
+                          if (!items.length) return null;
+                          return (
+                            <div key={g.key} style={{ marginBottom: 10 }}>
+                              <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 4 }}>
+                                {contractAttachGroupTitle(g.key)}（{items.length}）
+                              </div>
+                              <Space size={[10, 8]} wrap>
+                                {items.map((a) => (
+                                  <Space key={a.id} size={4}>
+                                    <Tag color={fileExtTag(a.fileExt).color} style={{ marginInlineEnd: 0 }}>
+                                      {fileExtTag(a.fileExt).text}
+                                    </Tag>
+                                    <Button
+                                      size="small"
+                                      type="link"
+                                      icon={<FileTextOutlined />}
+                                      onClick={() => setPreviewAtt(a)}
+                                      style={{ paddingLeft: 0 }}
+                                    >
+                                      {a.fileName.length > 24 ? a.fileName.slice(0, 24) + '…' : a.fileName}
+                                    </Button>
+                                    {a.attachType ? <Tag>{attachTypeName(a.attachType)}</Tag> : null}
+                                    <a href={attachmentUrl(a.id)} download={a.fileName}>
+                                      <DownloadOutlined style={{ color: '#8c8c8c' }} />
+                                    </a>
+                                  </Space>
+                                ))}
+                              </Space>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description="暂无合同附件（可上传合同正本、法务意见书、合同会签表、授权委托书、履约保函等）"
+                      />
+                    )}
+                  </Card>
 
                   {(c.scopeRemark || c.remark) && (
                     <div style={{ marginTop: 10, fontSize: 12, color: '#8c8c8c' }}>
@@ -1409,6 +1817,7 @@ export default function ProjectDetailPage() {
       )}
     </div>
   );
+
 
   // ── V10：项目分工 tab ──────────────────────────────────────────
   const divisionContent = (() => {
@@ -1627,11 +2036,18 @@ export default function ProjectDetailPage() {
                           open: true,
                           bizType: g.bizType,
                           bizId: g.bizId,
-                          label: g.kind === 'PHASE' ? (g.phaseName || '阶段') : g.kind === 'PARENT' ? '总项目公用附件' : isContainer ? '总项目公用附件' : '项目级附件',
+                          label:
+                            g.kind === 'PHASE'
+                              ? g.phaseName || '阶段'
+                              : g.kind === 'CONTRACT'
+                                ? g.title.replace(/^合同：/, '')
+                                : isContainer
+                                  ? '总项目公用附件'
+                                  : '项目级附件',
                         });
                       }}
                     >
-                      上传到此{ g.kind === 'PHASE' ? '阶段' : '' }
+                      上传到此{g.kind === 'PHASE' ? '阶段' : g.kind === 'CONTRACT' ? '合同' : ''}
                     </Button>
                   ) : null}
                 </Space>
@@ -1928,6 +2344,7 @@ export default function ProjectDetailPage() {
           initialNodeCode={payModal.nodeCode}
           nodeOptions={payNodes}
           contracts={contracts}
+          payMethods={payMethods}
           presetContractId={payModal.contractId ?? null}
           onCancel={() => setPayModal({ open: false, item: null })}
           onDone={reload}
@@ -1950,6 +2367,8 @@ interface PaymentModalProps {
   initialNodeCode?: string;
   nodeOptions: { code: string; name: string }[];
   contracts: ContractItem[];
+  /** 付款方式字典 */
+  payMethods: { code: string; name: string }[];
   /** 新增时预选（按合同登记） */
   presetContractId?: number | null;
   onCancel: () => void;
@@ -1968,6 +2387,14 @@ interface PaymentFormValues {
   paidDate?: Dayjs | null;
   status: string;
   remark?: string;
+  // ── 付款过程信息（V11）──
+  payMethod?: string;
+  handler?: string;
+  invoiceNo?: string;
+  voucherNo?: string;
+  payeeName?: string;
+  payeeBank?: string;
+  payeeAccount?: string;
 }
 
 function PaymentModal({
@@ -1977,6 +2404,7 @@ function PaymentModal({
   initialNodeCode,
   nodeOptions,
   contracts,
+  payMethods,
   presetContractId,
   onCancel,
   onDone,
@@ -1984,6 +2412,7 @@ function PaymentModal({
   const [form] = Form.useForm<PaymentFormValues>();
   const [saving, setSaving] = useState(false);
   const nodeCode = Form.useWatch('nodeCode', form);
+  const contractIdWatched = Form.useWatch('contractId', form);
 
   useEffect(() => {
     if (!open) return;
@@ -1999,12 +2428,35 @@ function PaymentModal({
         paidDate: item.paidDate ? dayjs(item.paidDate) : null,
         status: item.status,
         remark: item.remark,
+        payMethod: item.payMethod ?? undefined,
+        handler: item.handler ?? undefined,
+        invoiceNo: item.invoiceNo ?? undefined,
+        voucherNo: item.voucherNo ?? undefined,
+        payeeName: item.payeeName ?? undefined,
+        payeeBank: item.payeeBank ?? undefined,
+        payeeAccount: item.payeeAccount ?? undefined,
       });
     } else {
       form.resetFields();
       form.setFieldsValue({ status: 'UNPAID', paidAmount: 0, nodeCode: initialNodeCode, contractId: presetContractId ?? undefined });
     }
   }, [open, item, initialNodeCode, presetContractId, form]);
+
+  // 新增付款时，收款账户默认从所选合同带入（只是默认值，允许改——付款当时以实际为准）
+  useEffect(() => {
+    if (!open || item) return;
+    const c = contracts.find((x) => x.id === contractIdWatched);
+    if (!c) return;
+    const cur = form.getFieldsValue(['payeeName', 'payeeBank', 'payeeAccount']);
+    const empty = !cur.payeeName && !cur.payeeBank && !cur.payeeAccount;
+    if (empty && (c.payeeName || c.payeeBank || c.payeeAccount)) {
+      form.setFieldsValue({
+        payeeName: c.payeeName ?? undefined,
+        payeeBank: c.payeeBank ?? undefined,
+        payeeAccount: c.payeeAccount ?? undefined,
+      });
+    }
+  }, [open, item, contractIdWatched, contracts, form]);
 
   const submit = () => {
     form.validateFields().then(async (values) => {
@@ -2022,6 +2474,13 @@ function PaymentModal({
           paidAmount: values.paidAmount ?? 0,
           paidDate: values.paidDate ? values.paidDate.format('YYYY-MM-DD') : null,
           status: values.status,
+          payMethod: values.payMethod || undefined,
+          handler: values.handler || undefined,
+          invoiceNo: values.invoiceNo || undefined,
+          voucherNo: values.voucherNo || undefined,
+          payeeName: values.payeeName || undefined,
+          payeeBank: values.payeeBank || undefined,
+          payeeAccount: values.payeeAccount || undefined,
           remark: values.remark,
         };
         if (item?.id) {
@@ -2104,6 +2563,45 @@ function PaymentModal({
             options={Object.entries(PAYMENT_STATUS).map(([value, m]) => ({ value, label: m.text }))}
           />
         </Form.Item>
+
+        <div
+          style={{
+            margin: '4px 0 14px',
+            padding: '6px 10px',
+            background: '#fafafa',
+            borderRadius: 6,
+            fontSize: 12,
+            color: '#8c8c8c',
+          }}
+        >
+          以下为付款过程留痕（付款记录按"一笔款"存档，报销与事后核对都以这里为准）
+        </div>
+        <Form.Item label="付款方式" name="payMethod">
+          <Select
+            allowClear
+            placeholder="银行转账 / 支票 / 汇票…"
+            options={payMethods.map((d) => ({ value: d.code, label: d.name }))}
+          />
+        </Form.Item>
+        <Form.Item label="经办人" name="handler">
+          <Input placeholder="本项目付款经办人" />
+        </Form.Item>
+        <Form.Item label="发票号" name="invoiceNo">
+          <Input placeholder="如：04432100（多张可写主要发票号）" />
+        </Form.Item>
+        <Form.Item label="凭证/报销单号" name="voucherNo">
+          <Input placeholder="记账凭证号或报销单号" />
+        </Form.Item>
+        <Form.Item label="收款户名" name="payeeName">
+          <Input placeholder="默认带入合同账户，可按实际付款修改" />
+        </Form.Item>
+        <Form.Item label="收款开户行" name="payeeBank">
+          <Input />
+        </Form.Item>
+        <Form.Item label="收款账号" name="payeeAccount">
+          <Input style={{ fontFamily: 'monospace' }} />
+        </Form.Item>
+
         <Form.Item label="备注" name="remark">
           <Input.TextArea rows={2} />
         </Form.Item>

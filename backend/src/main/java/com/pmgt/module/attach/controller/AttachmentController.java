@@ -15,12 +15,15 @@ import com.pmgt.module.attach.mapper.AttachmentMapper;
 import com.pmgt.module.attach.mapper.AttachmentUploadTaskMapper;
 import com.pmgt.module.attach.service.AttachmentUploadService;
 import com.pmgt.module.log.service.OperationLogService;
+import com.pmgt.module.project.entity.Contract;
 import com.pmgt.module.project.entity.Payment;
 import com.pmgt.module.project.entity.Project;
 import com.pmgt.module.project.entity.ProjectPhase;
+import com.pmgt.module.project.mapper.ContractMapper;
 import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.project.mapper.ProjectMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
+import com.pmgt.module.project.service.ContractLinkService;
 import com.pmgt.module.system.entity.SysUser;
 import com.pmgt.module.system.mapper.SysUserMapper;
 import org.springframework.http.HttpHeaders;
@@ -41,6 +44,7 @@ import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -51,7 +55,7 @@ import java.util.stream.Collectors;
 @RequestMapping("/api")
 public class AttachmentController {
 
-    private static final Set<String> BIZ_TYPES = Set.of("PROJECT_PHASE", "PAYMENT", "PROJECT");
+    private static final Set<String> BIZ_TYPES = Set.of("PROJECT_PHASE", "PAYMENT", "PROJECT", "CONTRACT");
 
     /** 允许上传的文件扩展名（小写）。在线预览支持矩阵见 docs/附件与预览方案.md；
      *  暂不支持在线预览的类型（Word/Excel/PPT/OFD 等）仍允许上传，仅提供下载。 */
@@ -67,6 +71,8 @@ public class AttachmentController {
     private final ProjectMapper projectMapper;
     private final ProjectPhaseMapper phaseMapper;
     private final PaymentMapper paymentMapper;
+    private final ContractMapper contractMapper;
+    private final ContractLinkService contractLinkService;
     private final SysUserMapper userMapper;
     private final OperationLogService operationLogService;
     private final AttachmentStorage attachmentStorage;
@@ -77,6 +83,8 @@ public class AttachmentController {
                                 ProjectMapper projectMapper,
                                 ProjectPhaseMapper phaseMapper,
                                 PaymentMapper paymentMapper,
+                                ContractMapper contractMapper,
+                                ContractLinkService contractLinkService,
                                 SysUserMapper userMapper,
                                 OperationLogService operationLogService,
                                 AttachmentStorage attachmentStorage,
@@ -86,6 +94,8 @@ public class AttachmentController {
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
         this.paymentMapper = paymentMapper;
+        this.contractMapper = contractMapper;
+        this.contractLinkService = contractLinkService;
         this.userMapper = userMapper;
         this.operationLogService = operationLogService;
         this.attachmentStorage = attachmentStorage;
@@ -152,7 +162,20 @@ public class AttachmentController {
                 phaseNames.put(p.getId(), p.getPhaseName());
             }
         }
-        return R.ok(tasks.stream().map(t -> toTaskVO(t, phaseNames)).toList());
+        // 同理补齐合同名（bizType=CONTRACT 时展示「所属合同」）
+        Map<Long, String> contractNames = new java.util.HashMap<>();
+        List<Long> contractIds = tasks.stream()
+                .filter(t -> "CONTRACT".equals(t.getBizType()))
+                .map(AttachmentUploadTask::getBizId)
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (!contractIds.isEmpty()) {
+            for (Contract c : contractMapper.selectBatchIds(contractIds)) {
+                contractNames.put(c.getId(), c.getName());
+            }
+        }
+        return R.ok(tasks.stream().map(t -> toTaskVO(t, phaseNames, contractNames)).toList());
     }
 
     /** 上传任务状态（轮询用）：前端据此更新进度条与最终成败 */
@@ -162,7 +185,25 @@ public class AttachmentController {
         if (task == null) {
             throw new BizException(404, "上传任务不存在");
         }
-        return R.ok(toTaskVO(task));
+        return R.ok(toTaskVO(task, phaseNameOf(task), contractNameOf(task)));
+    }
+
+    /** 单条上传任务的阶段名（bizType=PROJECT_PHASE 时） */
+    private Map<Long, String> phaseNameOf(AttachmentUploadTask t) {
+        if (!"PROJECT_PHASE".equals(t.getBizType()) || t.getBizId() == null) {
+            return Map.of();
+        }
+        ProjectPhase p = phaseMapper.selectById(t.getBizId());
+        return p == null ? Map.of() : Map.of(p.getId(), p.getPhaseName());
+    }
+
+    /** 单条上传任务的合同名（bizType=CONTRACT 时） */
+    private Map<Long, String> contractNameOf(AttachmentUploadTask t) {
+        if (!"CONTRACT".equals(t.getBizType()) || t.getBizId() == null) {
+            return Map.of();
+        }
+        Contract c = contractMapper.selectById(t.getBizId());
+        return c == null ? Map.of() : Map.of(c.getId(), c.getName());
     }
 
     /** 按归属查询附件（阶段卡片附件列表） */
@@ -189,6 +230,16 @@ public class AttachmentController {
         Map<Long, String> phaseNames = phases.stream()
                 .collect(Collectors.toMap(ProjectPhase::getId, ProjectPhase::getPhaseName));
 
+        // 合同链（本项目 + 各级父项目共享的合同）：合同附件按合同 id 归属，
+        // 与 AttachmentUploadService 的校验一致，便于「合同管理」按合同分组展示。
+        Set<Long> contractIds = collectContractIds(pj);
+        Map<Long, String> contractNames = new HashMap<>();
+        if (!contractIds.isEmpty()) {
+            for (Contract c : contractMapper.selectBatchIds(contractIds)) {
+                contractNames.put(c.getId(), c.getName());
+            }
+        }
+
         LambdaQueryWrapper<Attachment> qw = new LambdaQueryWrapper<>();
         qw.and(w -> {
             w.eq(Attachment::getBizType, "PROJECT").eq(Attachment::getBizId, projectId);
@@ -200,6 +251,9 @@ public class AttachmentController {
                 w.or(o -> o.eq(Attachment::getBizType, "PAYMENT").in(Attachment::getBizId,
                         payments.stream().map(Payment::getId).toList()));
             }
+            if (!contractIds.isEmpty()) {
+                w.or(o -> o.eq(Attachment::getBizType, "CONTRACT").in(Attachment::getBizId, contractIds));
+            }
         });
         qw.orderByDesc(Attachment::getUploadTime);
 
@@ -210,6 +264,8 @@ public class AttachmentController {
             if ("PROJECT_PHASE".equals(a.getBizType())) {
                 vo.setPhaseId(a.getBizId());
                 vo.setPhaseName(phaseNames.get(a.getBizId()));
+            } else if ("CONTRACT".equals(a.getBizType())) {
+                vo.setBizName(contractNames.get(a.getBizId()));
             }
             vos.add(vo);
         }
@@ -301,10 +357,11 @@ public class AttachmentController {
     }
 
     private AttachmentUploadTaskVO toTaskVO(AttachmentUploadTask t) {
-        return toTaskVO(t, Map.of());
+        return toTaskVO(t, Map.of(), Map.of());
     }
 
-    private AttachmentUploadTaskVO toTaskVO(AttachmentUploadTask t, Map<Long, String> phaseNames) {
+    private AttachmentUploadTaskVO toTaskVO(AttachmentUploadTask t, Map<Long, String> phaseNames,
+                                            Map<Long, String> contractNames) {
         AttachmentUploadTaskVO vo = new AttachmentUploadTaskVO();
         vo.setId(t.getId());
         vo.setProjectId(t.getProjectId());
@@ -313,6 +370,8 @@ public class AttachmentController {
         vo.setAttachType(t.getAttachType());
         if ("PROJECT_PHASE".equals(t.getBizType())) {
             vo.setPhaseName(phaseNames.get(t.getBizId()));
+        } else if ("CONTRACT".equals(t.getBizType())) {
+            vo.setBizName(contractNames.get(t.getBizId()));
         }
         vo.setFileName(t.getFileName());
         vo.setFileSize(t.getFileSize());
@@ -351,5 +410,11 @@ public class AttachmentController {
             return "";
         }
         return name.substring(i + 1);
+    }
+
+    /** 沿项目向上收集合同链（本项目 + 各级父项目共享的合同）。
+     *  V12 起由 {@link ContractLinkService} 统一维护（项目可挂多份合同）。 */
+    private Set<Long> collectContractIds(Project pj) {
+        return contractLinkService.visibleContractIds(pj.getId());
     }
 }

@@ -21,6 +21,8 @@ public class AttachmentUploadTaskVO {
     private String fileExt;
     /** 归属阶段名（bizType=PROJECT_PHASE 时填，便于前端展示「所属阶段」标签） */
     private String phaseName;
+    /** 归属合同名（bizType=CONTRACT 时填，便于前端展示「所属合同」标签） */
+    private String bizName;
     /** PENDING | UPLOADING | SUCCESS | FAILED */
     private String status;
     private Integer progress;

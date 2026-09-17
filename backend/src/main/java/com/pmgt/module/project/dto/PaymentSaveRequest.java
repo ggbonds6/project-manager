@@ -27,4 +27,17 @@ public class PaymentSaveRequest {
     private LocalDate paidDate;
     private String status;
     private String remark;
+
+    /** 付款方式(字典 PAY_METHOD) */
+    private String payMethod;
+    /** 经办人 */
+    private String handler;
+    /** 发票号 */
+    private String invoiceNo;
+    /** 记账凭证号 / 报销单号 */
+    private String voucherNo;
+    /** 收款账户快照（新增时前端默认从合同带入） */
+    private String payeeName;
+    private String payeeBank;
+    private String payeeAccount;
 }

@@ -12,6 +12,7 @@ import com.pmgt.module.project.entity.Payment;
 import com.pmgt.module.project.entity.Project;
 import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.project.mapper.ProjectMapper;
+import com.pmgt.module.project.service.ContractLinkService;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -35,17 +36,22 @@ public class PaymentController {
 
     private final PaymentMapper paymentMapper;
     private final ProjectMapper projectMapper;
+    private final ContractLinkService contractLinkService;
     private final OperationLogService operationLogService;
 
-    public PaymentController(PaymentMapper paymentMapper, ProjectMapper projectMapper, OperationLogService operationLogService) {
+    public PaymentController(PaymentMapper paymentMapper, ProjectMapper projectMapper,
+                             ContractLinkService contractLinkService,
+                             OperationLogService operationLogService) {
         this.paymentMapper = paymentMapper;
         this.projectMapper = projectMapper;
+        this.contractLinkService = contractLinkService;
         this.operationLogService = operationLogService;
     }
 
     /**
-     * 项目(子项目)付款列表：= 该项目自身登记付款 + 其合同链（含父项目共享合同）上的付款，
-     * 保证“子项目各自合同 / 父级共享合同”两种口径都能看到对应里程碑。
+     * 项目(子项目)付款列表：= 该项目自身登记付款 + 其**可见合同链**（自身多份合同 +
+     * 父级总项目共享合同）上的付款，保证"子项目各有主合同/监理/测评合同"与
+     * "父级共享合同"两种口径都能看到对应里程碑。
      */
     @GetMapping("/projects/{projectId}/payments")
     public R<List<PaymentVO>> listByProject(@PathVariable Long projectId) {
@@ -53,7 +59,7 @@ public class PaymentController {
         if (pj == null) {
             throw new BizException(404, "项目不存在");
         }
-        Set<Long> contractIds = collectContractIds(pj);
+        Set<Long> contractIds = contractLinkService.visibleContractIds(projectId);
         LambdaQueryWrapper<Payment> qw = new LambdaQueryWrapper<>();
         if (contractIds.isEmpty()) {
             qw.eq(Payment::getProjectId, projectId);
@@ -116,33 +122,30 @@ public class PaymentController {
         return R.ok();
     }
 
-    /** 解析合同：请求指定 > 项目自身 contract_id > 父项目共享合同；否则报错 */
+    /**
+     * 解析付款归属合同：
+     * ① 请求显式指定 → 校验必须是该项目**可见**的合同（防张冠李戴）；
+     * ② 未指定 → 取项目主合同（project.contract_id，由 ContractLinkService 维护）；
+     * ③ 仍没有 → 若该项目可见合同只有一份则用它；多份则要求明确选择。
+     */
     private Long resolveContractId(PaymentSaveRequest req, Project pj) {
+        Set<Long> visible = contractLinkService.visibleContractIds(pj.getId());
         if (req.getContractId() != null) {
+            if (!visible.isEmpty() && !visible.contains(req.getContractId())) {
+                throw new BizException(400, "所选合同不属于该项目，请重新选择");
+            }
             return req.getContractId();
         }
-        Project cur = pj;
-        while (cur != null) {
-            if (cur.getContractId() != null) {
-                return cur.getContractId();
-            }
-            cur = cur.getParentId() == null ? null : projectMapper.selectById(cur.getParentId());
+        if (pj.getContractId() != null) {
+            return pj.getContractId();
+        }
+        if (visible.size() == 1) {
+            return visible.iterator().next();
+        }
+        if (visible.size() > 1) {
+            throw new BizException(400, "该项目有多份合同，请在付款记录中明确选择所属合同");
         }
         throw new BizException(400, "该项目尚未登记/关联合同，请先创建合同并关联后再登记付款");
-    }
-
-    /** 沿项目向上收集合同链（自身+父级共享合同） */
-    private Set<Long> collectContractIds(Project pj) {
-        Set<Long> ids = new LinkedHashSet<>();
-        Project cur = pj;
-        int depth = 0;
-        while (cur != null && depth++ < 8) {
-            if (cur.getContractId() != null) {
-                ids.add(cur.getContractId());
-            }
-            cur = cur.getParentId() == null ? null : projectMapper.selectById(cur.getParentId());
-        }
-        return ids;
     }
 
     private void apply(Payment p, PaymentSaveRequest req) {
@@ -163,5 +166,22 @@ public class PaymentController {
         p.setPaidDate(req.getPaidDate());
         p.setStatus(status);
         p.setRemark(req.getRemark());
+        // 付款过程信息（V11）：资金情况以"付款"为主线，这些字段是付款留痕
+        p.setPayMethod(normalize(req.getPayMethod()));
+        p.setHandler(req.getHandler());
+        p.setInvoiceNo(req.getInvoiceNo());
+        p.setVoucherNo(req.getVoucherNo());
+        p.setPayeeName(req.getPayeeName());
+        p.setPayeeBank(req.getPayeeBank());
+        p.setPayeeAccount(req.getPayeeAccount());
+    }
+
+    /** 付款方式：空串归一为 null；非法值不拦（字典可扩展），仅做去空格 */
+    private String normalize(String v) {
+        if (v == null) {
+            return null;
+        }
+        String t = v.trim();
+        return t.isEmpty() ? null : t;
     }
 }

@@ -13,6 +13,8 @@ public class AttachmentVO {
     /** bizType=PROJECT_PHASE 时附带阶段名，便于附件中心按阶段分组 */
     private Long phaseId;
     private String phaseName;
+    /** bizType=CONTRACT 时附带合同名，便于附件中心按合同分组 */
+    private String bizName;
     private String attachType;
     private String fileName;
     private Long fileSize;

@@ -9,6 +9,7 @@ import com.pmgt.module.project.mapper.ContractMapper;
 import com.pmgt.module.project.mapper.PaymentMapper;
 import com.pmgt.module.project.mapper.ProjectMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
+import com.pmgt.module.project.service.ContractLinkService;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -40,15 +41,18 @@ public class StatsService {
     private final ProjectPhaseMapper phaseMapper;
     private final PaymentMapper paymentMapper;
     private final ContractMapper contractMapper;
+    private final ContractLinkService contractLinkService;
 
     public StatsService(ProjectMapper projectMapper,
                         ProjectPhaseMapper phaseMapper,
                         PaymentMapper paymentMapper,
-                        ContractMapper contractMapper) {
+                        ContractMapper contractMapper,
+                        ContractLinkService contractLinkService) {
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
         this.paymentMapper = paymentMapper;
         this.contractMapper = contractMapper;
+        this.contractLinkService = contractLinkService;
     }
 
     // ==================== 概览卡 ====================
@@ -120,12 +124,17 @@ public class StatsService {
             int y = p.getApproveDate() != null ? p.getApproveDate().getYear() : Year.now().getValue();
             acc.computeIfAbsent(y, bucket)[0] = acc.get(y)[0].add(zero(p.getBudgetAmount()));
         }
-        // 合同金额/已付：按合同覆盖的首个子项目立项年归集一次
+        // 合同金额/已付：按合同覆盖的项目立项年归集一次（V12 起走 project_contract 关联表，
+        // 一个项目的监理/测评等副合同也能正确归到该项目所属年度）
         List<Contract> contracts = contractMapper.selectList(new LambdaQueryWrapper<Contract>()
                 .orderByAsc(Contract::getId));
+        Map<Long, Project> leafById = leaves.stream()
+                .filter(p -> p.getId() != null)
+                .collect(Collectors.toMap(Project::getId, p -> p, (a, b) -> a));
         for (Contract c : contracts) {
-            Integer year = leaves.stream()
-                    .filter(p -> p.getContractId() != null && p.getContractId().equals(c.getId()))
+            Integer year = contractLinkService.projectIdsOfContract(c.getId()).stream()
+                    .map(leafById::get)
+                    .filter(java.util.Objects::nonNull)
                     .filter(p -> p.getApproveDate() != null)
                     .map(p -> p.getApproveDate().getYear())
                     .min(Integer::compareTo)
@@ -297,7 +306,12 @@ public class StatsService {
 
         BigDecimal paidTotal = BigDecimal.ZERO;
         if (!leafIds.isEmpty()) {
-            List<Long> contractIds = projects.stream().map(Project::getContractId).filter(Objects::nonNull).distinct().toList();
+            // V12 起合同与项目是多对多，付款可能挂在该项目的任何一份合同上（主合同/监理/测评…），
+            // 故汇总时按关联表取全部合同 id，而不是只看 project.contract_id（主合同指针）。
+            List<Long> contractIds = leafIds.stream()
+                    .flatMap(pid -> contractLinkService.contractIdsOfProject(pid).stream())
+                    .distinct()
+                    .toList();
             LambdaQueryWrapper<Payment> qw = new LambdaQueryWrapper<>();
             qw.and(w -> {
                 w.in(Payment::getProjectId, leafIds);

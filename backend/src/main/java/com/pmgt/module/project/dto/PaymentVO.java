@@ -27,6 +27,15 @@ public class PaymentVO {
     private String remark;
     private LocalDateTime updateTime;
 
+    /** 付款过程信息（V11） */
+    private String payMethod;
+    private String handler;
+    private String invoiceNo;
+    private String voucherNo;
+    private String payeeName;
+    private String payeeBank;
+    private String payeeAccount;
+
     public static PaymentVO from(Payment p) {
         PaymentVO vo = new PaymentVO();
         vo.setId(p.getId());
@@ -42,6 +51,13 @@ public class PaymentVO {
         vo.setStatus(p.getStatus());
         vo.setRemark(p.getRemark());
         vo.setUpdateTime(p.getUpdateTime());
+        vo.setPayMethod(p.getPayMethod());
+        vo.setHandler(p.getHandler());
+        vo.setInvoiceNo(p.getInvoiceNo());
+        vo.setVoucherNo(p.getVoucherNo());
+        vo.setPayeeName(p.getPayeeName());
+        vo.setPayeeBank(p.getPayeeBank());
+        vo.setPayeeAccount(p.getPayeeAccount());
         return vo;
     }
 }

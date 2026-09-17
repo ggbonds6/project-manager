@@ -6,10 +6,11 @@ import { useDict } from '@/hooks/useOptions';
 import { fmtDateTime, fmtFileSize } from '@/utils/format';
 import { fileExtTag } from '@/config/tagDict';
 
-/** 归属类型展示名（PROJECT_PHASE 用阶段名，其余用固定文案） */
+/** 归属类型展示名（PROJECT_PHASE 用阶段名、CONTRACT 用合同名，其余用固定文案） */
 const BIZ_LABEL: Record<string, string> = {
   PROJECT: '项目级',
   PAYMENT: '付款凭证',
+  CONTRACT: '合同附件',
 };
 
 const STATUS_META: Record<string, { color: string; text: string }> = {
@@ -101,7 +102,7 @@ export default function UploadTaskCenter({ block }: Props) {
             renderItem={(t) => {
               const meta = STATUS_META[t.status] ?? { color: 'default', text: t.status };
               const extTag = fileExtTag(t.fileExt);
-              const bizText = t.phaseName || BIZ_LABEL[t.bizType] || t.bizType;
+              const bizText = t.phaseName || t.bizName || BIZ_LABEL[t.bizType] || t.bizType;
               const atName = attachTypeName(t.attachType);
               const running = t.status === 'PENDING' || t.status === 'UPLOADING';
               return (

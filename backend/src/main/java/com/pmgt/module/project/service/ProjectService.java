@@ -20,9 +20,11 @@ import com.pmgt.module.project.dto.ProjectVO;
 import com.pmgt.module.project.entity.Project;
 import com.pmgt.module.project.entity.ProjectOverview;
 import com.pmgt.module.project.entity.ProjectPhase;
+import com.pmgt.module.project.entity.ProjectDivision;
 import com.pmgt.module.project.entity.Payment;
 import com.pmgt.module.project.entity.Contract;
 import com.pmgt.module.project.mapper.ProjectMapper;
+import com.pmgt.module.project.mapper.ProjectDivisionMapper;
 import com.pmgt.module.project.mapper.ProjectOverviewMapper;
 import com.pmgt.module.project.mapper.ProjectPhaseMapper;
 import com.pmgt.module.project.mapper.PaymentMapper;
@@ -63,6 +65,8 @@ public class ProjectService {
     private final ProjectPhaseMapper phaseMapper;
     private final PaymentMapper paymentMapper;
     private final ContractMapper contractMapper;
+    private final ContractLinkService contractLinkService;
+    private final ProjectDivisionMapper divisionMapper;
     private final PhaseTemplateMapper templateMapper;
     private final PhaseTplMapper tplMapper;
     private final SysUserMapper userMapper;
@@ -74,6 +78,8 @@ public class ProjectService {
                           ProjectPhaseMapper phaseMapper,
                           PaymentMapper paymentMapper,
                           ContractMapper contractMapper,
+                          ContractLinkService contractLinkService,
+                          ProjectDivisionMapper divisionMapper,
                           PhaseTemplateMapper templateMapper,
                           PhaseTplMapper tplMapper,
                           SysUserMapper userMapper,
@@ -84,6 +90,8 @@ public class ProjectService {
         this.phaseMapper = phaseMapper;
         this.paymentMapper = paymentMapper;
         this.contractMapper = contractMapper;
+        this.contractLinkService = contractLinkService;
+        this.divisionMapper = divisionMapper;
         this.templateMapper = templateMapper;
         this.tplMapper = tplMapper;
         this.userMapper = userMapper;
@@ -427,17 +435,19 @@ public class ProjectService {
         }
         phaseMapper.delete(new LambdaQueryWrapper<ProjectPhase>().eq(ProjectPhase::getProjectId, pj.getId()));
         paymentMapper.delete(new LambdaQueryWrapper<Payment>().eq(Payment::getProjectId, pj.getId()));
+        // 项目分工随项目一并清理（含子模块——按 project_id 一把删，层级自然覆盖）
+        divisionMapper.delete(new LambdaQueryWrapper<ProjectDivision>().eq(ProjectDivision::getProjectId, pj.getId()));
+        // 解除项目↔合同关联（V12），随后由 cleanupOrphanContracts 决定合同是否成为孤儿
+        contractLinkService.unlinkProject(pj.getId());
         projectMapper.deleteById(pj.getId());
         operationLogService.log("PROJECT", pj.getId(), "DELETE",
                 "删除项目「" + pj.getName() + "」(" + pj.getCode() + ")" + (pj.getParentId() != null ? "（子项目）" : ""));
     }
 
     private void cleanupOrphanContracts() {
-        Set<Long> covered = projectMapper.selectList(new LambdaQueryWrapper<Project>()
-                        .eq(Project::getDeleted, 0))
-                .stream().map(Project::getContractId)
-                .filter(java.util.Objects::nonNull)
-                .collect(Collectors.toSet());
+        // V12 起"项目挂哪些合同"以 project_contract 关联表为准（一个项目可挂多份合同），
+        // 不能再只看 project.contract_id——否则副主合同（监理/测评等）会被误判成孤儿删掉。
+        Set<Long> covered = contractLinkService.allLinkedContractIds();
         List<Contract> all = contractMapper.selectList(null);
         for (Contract c : all) {
             if (!covered.contains(c.getId())) {

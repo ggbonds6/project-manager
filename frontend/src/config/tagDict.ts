@@ -173,3 +173,38 @@ export const OWNER_SIDE_TAGS: Record<string, TagMeta> = {
 
 export const ownerSideTag = (code?: string | null): TagMeta =>
   (code && OWNER_SIDE_TAGS[code]) || { text: code || '-', color: 'default' };
+
+/* ---------- 付款方式 → 颜色组（与 V11 字典 PAY_METHOD 一致） ---------- */
+export const PAY_METHOD_TAGS: Record<string, TagMeta> = {
+  TRANSFER: { text: '银行转账', color: 'blue' },
+  CHECK: { text: '支票', color: 'gold' },
+  DRAFT: { text: '银行汇票', color: 'purple' },
+  OFFSET: { text: '冲抵/抵扣', color: 'orange' },
+  OTHER: { text: '其他', color: 'default' },
+};
+
+export const payMethodTag = (code?: string | null): TagMeta =>
+  (code && PAY_METHOD_TAGS[code]) || { text: code || '未填', color: 'default' };
+
+/* ---------- 合同附件分组（合同管理 tab / 附件中心按此归类） ----------
+ * 说明：入库仍是 attach_type 字典 code，这里只定义"合同类附件"的展示分组与顺序，
+ * 用于把合同相关附件按业务含义归类，而不是散成一堆文件名。
+ */
+export const CONTRACT_ATTACH_GROUPS: { key: string; title: string; types: string[] }[] = [
+  { key: 'body', title: '合同正本', types: ['CONTRACT', 'CONTRACT_CHANGE'] },
+  { key: 'review', title: '法务与审批', types: ['LEGAL_OPINION', 'COUNTERSIGN', 'AUTHORIZATION', 'PAY_APPROVAL', 'APPROVAL'] },
+  { key: 'bid', title: '招标与投标', types: ['BID_DOC', 'EVAL_RECORD', 'WIN_NOTICE', 'SUPPLIER_QUAL'] },
+  { key: 'bond', title: '担保与保证', types: ['PERFORMANCE_BOND'] },
+  { key: 'other', title: '其他', types: [] },
+];
+
+export const contractAttachGroupOf = (attachType?: string | null): string => {
+  const t = (attachType || '').toUpperCase();
+  for (const g of CONTRACT_ATTACH_GROUPS) {
+    if (g.types.includes(t)) return g.key;
+  }
+  return 'other';
+};
+
+export const contractAttachGroupTitle = (key: string): string =>
+  CONTRACT_ATTACH_GROUPS.find((g) => g.key === key)?.title || '其他';
