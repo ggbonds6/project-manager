@@ -42,7 +42,7 @@ import {
 import dayjs, { Dayjs } from 'dayjs';
 import { useNavigate, useParams } from 'react-router-dom';
 import './flow.css';
-import { attachmentApi, attachmentUrl, contractApi, paymentApi, projectApi } from '@/api/project';
+import { attachmentApi, attachmentUrl, contractApi, divisionApi, paymentApi, projectApi } from '@/api/project';
 import ProjectFormModal from '@/components/ProjectFormModal';
 import PhaseEditModal from '@/components/PhaseEditModal';
 import AttachmentUploadModal from '@/components/AttachmentUploadModal';
@@ -54,7 +54,17 @@ import { useAuth } from '@/store/auth';
 import { useUploadTasks } from '@/store/uploadTask';
 import { useDict } from '@/hooks/useOptions';
 import { fmtDate, fmtDateTime, fmtFileSize, fmtMoney } from '@/utils/format';
-import { payNodeTag, payStatusTag, phaseNameTag, projectStatusTag, projectTypeTag } from '@/config/tagDict';
+import {
+  contractStatusTag,
+  contractTypeTag,
+  divisionStatusTag,
+  ownerSideTag,
+  payNodeTag,
+  payStatusTag,
+  phaseNameTag,
+  projectStatusTag,
+  projectTypeTag,
+} from '@/config/tagDict';
 import {
   AttachmentItem,
   ContractItem,
@@ -66,6 +76,7 @@ import {
   PROJECT_STATUS,
   PROJECT_TYPES,
   ProjectDetail,
+  ProjectDivisionItem,
   ProjectForm,
   ProjectListItem,
 } from '@/types';
@@ -79,6 +90,7 @@ export default function ProjectDetailPage() {
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [payments, setPayments] = useState<PaymentItem[]>([]);
   const [contracts, setContracts] = useState<ContractItem[]>([]);
+  const [divisions, setDivisions] = useState<ProjectDivisionItem[]>([]);
   const [attachments, setAttachments] = useState<AttachmentItem[]>([]);
   const [logs, setLogs] = useState<LogItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -107,10 +119,33 @@ export default function ProjectDetailPage() {
     openContractModal(
       editing ? `编辑合同：${editing.name}` : '登记本项目合同（每个项目独立签订）',
       [
-        { name: 'name', label: '合同名称', el: <Input placeholder="如：XX 子项目合同" />, rules: [{ required: true }] },
+        { name: 'name', label: '合同名称', el: <Input placeholder="如：数据库一体机采购合同" />, rules: [{ required: true }] },
+        {
+          name: 'contractType',
+          label: '合同类型',
+          el: (
+            <Select
+              allowClear
+              placeholder="施工合同 / 第三方测评 / 方案评估 / 监理服务…"
+              options={contractTypes.map((d) => ({ value: d.code, label: d.name }))}
+            />
+          ),
+        },
         { name: 'contractNo', label: '合同编号', el: <Input /> },
-        { name: 'vendorName', label: '供应商', el: <Input placeholder="供应商相同也各自登记合同" /> },
-        { name: 'vendorContact', label: '联系人/电话', el: <Input /> },
+        {
+          name: 'contractStatus',
+          label: '合同状态',
+          el: (
+            <Select
+              allowClear
+              placeholder="待签订 / 履行中 / 已完成…"
+              options={contractStatuses.map((d) => ({ value: d.code, label: d.name }))}
+            />
+          ),
+        },
+        { name: 'partyA', label: '甲方（建设单位）', el: <Input placeholder="如：XX市卫生健康委员会" /> },
+        { name: 'vendorName', label: '乙方（承接单位）', el: <Input placeholder="供应商 / 承接单位" /> },
+        { name: 'vendorContact', label: '乙方联系人 / 电话', el: <Input /> },
         {
           name: 'contractAmount',
           label: '合同金额(元)',
@@ -119,28 +154,82 @@ export default function ProjectDetailPage() {
         },
         { name: 'bidAmount', label: '中标金额(元)', el: <InputNumber min={0} precision={2} style={{ width: '100%' }} /> },
         { name: 'changeAmount', label: '变更金额(元)', el: <InputNumber precision={2} style={{ width: '100%' }} /> },
-        { name: 'scopeRemark', label: '范围/备注', el: <Input.TextArea rows={2} /> },
+        { name: 'settleAmount', label: '结算金额(元)', el: <InputNumber precision={2} style={{ width: '100%' }} /> },
+        { name: 'warrantyAmount', label: '质保金(元)', el: <InputNumber precision={2} style={{ width: '100%' }} /> },
+        { name: 'signDate', label: '签订日期', el: <DatePicker style={{ width: '100%' }} /> },
+        { name: 'effectiveDate', label: '生效日期', el: <DatePicker style={{ width: '100%' }} /> },
+        { name: 'startDate', label: '工期开始', el: <DatePicker style={{ width: '100%' }} /> },
+        { name: 'endDate', label: '工期结束', el: <DatePicker style={{ width: '100%' }} /> },
+        { name: 'payeeName', label: '收款户名', el: <Input /> },
+        { name: 'payeeBank', label: '收款开户行', el: <Input /> },
+        { name: 'payeeAccount', label: '收款账号', el: <Input /> },
+        {
+          name: 'acceptanceStandard',
+          label: '验收标准',
+          el: <Input.TextArea rows={2} placeholder="如：按招标文件及国家现行标准，由采购人组织专家验收" />,
+        },
+        { name: 'warrantyMonths', label: '质保期(月)', el: <InputNumber min={0} style={{ width: '100%' }} /> },
+        { name: 'scopeRemark', label: '范围说明', el: <Input.TextArea rows={2} /> },
+        { name: 'remark', label: '备注', el: <Input.TextArea rows={2} /> },
       ],
       {
         name: editing?.name,
+        contractType: editing?.contractType ?? undefined,
         contractNo: editing?.contractNo,
+        contractStatus: editing?.contractStatus ?? undefined,
+        partyA: editing?.partyA,
         vendorName: editing?.vendorName,
         vendorContact: editing?.vendorContact,
         contractAmount: editing?.contractAmount ?? undefined,
         bidAmount: editing?.bidAmount ?? undefined,
         changeAmount: editing?.changeAmount ?? 0,
+        settleAmount: editing?.settleAmount ?? undefined,
+        warrantyAmount: editing?.warrantyAmount ?? undefined,
+        // DatePicker 的值必须是 dayjs 对象
+        signDate: editing?.signDate ? dayjs(editing.signDate) : undefined,
+        effectiveDate: editing?.effectiveDate ? dayjs(editing.effectiveDate) : undefined,
+        startDate: editing?.startDate ? dayjs(editing.startDate) : undefined,
+        endDate: editing?.endDate ? dayjs(editing.endDate) : undefined,
+        payeeName: editing?.payeeName,
+        payeeBank: editing?.payeeBank,
+        payeeAccount: editing?.payeeAccount,
+        acceptanceStandard: editing?.acceptanceStandard,
+        warrantyMonths: editing?.warrantyMonths ?? undefined,
         scopeRemark: editing?.scopeRemark,
+        remark: editing?.remark,
       },
       async (values) => {
+        // DatePicker 交出 Dayjs，后端要 ISO 日期字符串
+        const d = (v: unknown): string | undefined =>
+          v && dayjs.isDayjs(v) ? (v as Dayjs).format('YYYY-MM-DD') : undefined;
+        const str = (v: unknown): string | undefined => (v ? String(v) : undefined);
+        const num = (v: unknown): number | undefined =>
+          v === undefined || v === null || v === '' ? undefined : Number(v);
+
         const data = {
           name: String(values.name),
-          contractNo: values.contractNo ? String(values.contractNo) : undefined,
-          vendorName: values.vendorName ? String(values.vendorName) : undefined,
-          vendorContact: values.vendorContact ? String(values.vendorContact) : undefined,
+          contractType: str(values.contractType),
+          contractNo: str(values.contractNo),
+          contractStatus: str(values.contractStatus),
+          partyA: str(values.partyA),
+          vendorName: str(values.vendorName),
+          vendorContact: str(values.vendorContact),
           contractAmount: Number(values.contractAmount),
-          bidAmount: values.bidAmount === undefined || values.bidAmount === null ? undefined : Number(values.bidAmount),
+          bidAmount: num(values.bidAmount),
           changeAmount: Number(values.changeAmount ?? 0),
-          scopeRemark: values.scopeRemark ? String(values.scopeRemark) : undefined,
+          settleAmount: num(values.settleAmount),
+          warrantyAmount: num(values.warrantyAmount),
+          signDate: d(values.signDate),
+          effectiveDate: d(values.effectiveDate),
+          startDate: d(values.startDate),
+          endDate: d(values.endDate),
+          payeeName: str(values.payeeName),
+          payeeBank: str(values.payeeBank),
+          payeeAccount: str(values.payeeAccount),
+          acceptanceStandard: str(values.acceptanceStandard),
+          warrantyMonths: num(values.warrantyMonths),
+          scopeRemark: str(values.scopeRemark),
+          remark: str(values.remark),
         };
         if (editing?.id) {
           await contractApi.update(editing.id, data);
@@ -150,6 +239,126 @@ export default function ProjectDetailPage() {
         message.success('合同已保存');
         reload();
       },
+      800,
+    );
+  };
+
+  // 项目分工登记/编辑（V10）
+  const { open: openDivisionModal, el: divisionModalEl } = useFormModal();
+  const openDivisionForm = (editing: ProjectDivisionItem | null, presetParentId?: number | null) => {
+    // 上级候选：排除自身及其所有后代，避免形成环（后端也会再校验一次）
+    const excluded = new Set<number>();
+    const collect = (pid?: number | null) => {
+      divisions
+        .filter((x) => (x.parentId ?? null) === (pid ?? null))
+        .forEach((c) => {
+          if (c.id) {
+            excluded.add(c.id);
+            collect(c.id);
+          }
+        });
+    };
+    if (editing?.id) {
+      excluded.add(editing.id);
+      collect(editing.id);
+    }
+    const parentOptions = divisions
+      .filter((d) => d.id && !excluded.has(d.id))
+      .map((d) => ({ value: d.id as number, label: (d.parentId ? '　└ ' : '') + d.name }));
+
+    openDivisionModal(
+      editing ? `编辑分工：${editing.name}` : '新增项目分工',
+      [
+        {
+          name: 'name',
+          label: '模块 / 子模块名称',
+          el: <Input placeholder="如：数据采集模块 / 数据校验子模块" />,
+          rules: [{ required: true }],
+        },
+        {
+          name: 'parentId',
+          label: '上级模块',
+          el: <Select allowClear placeholder="不选则为顶层模块" options={parentOptions} />,
+        },
+        {
+          name: 'ownerSide',
+          label: '负责方',
+          el: (
+            <Select
+              allowClear
+              placeholder="甲方 / 乙方 / 双方"
+              options={[
+                { value: 'OWNER', label: '甲方' },
+                { value: 'VENDOR', label: '乙方' },
+                { value: 'BOTH', label: '双方' },
+              ]}
+            />
+          ),
+        },
+        { name: 'ownerName', label: '甲方负责人', el: <Input /> },
+        { name: 'vendorOwner', label: '乙方负责人', el: <Input /> },
+        { name: 'planDevDate', label: '计划开发完成', el: <DatePicker style={{ width: '100%' }} /> },
+        { name: 'planTestDate', label: '计划调试完成', el: <DatePicker style={{ width: '100%' }} /> },
+        { name: 'planOnlineDate', label: '计划上线', el: <DatePicker style={{ width: '100%' }} /> },
+        {
+          name: 'progress',
+          label: '当前进度(%)',
+          el: <InputNumber min={0} max={100} style={{ width: '100%' }} />,
+        },
+        {
+          name: 'status',
+          label: '状态',
+          el: (
+            <Select
+              allowClear
+              options={divisionStatuses.map((d) => ({ value: d.code, label: d.name }))}
+            />
+          ),
+        },
+        { name: 'sortNo', label: '排序号', el: <InputNumber style={{ width: '100%' }} /> },
+        { name: 'remark', label: '备注', el: <Input.TextArea rows={2} /> },
+      ],
+      {
+        name: editing?.name,
+        parentId: editing?.parentId ?? presetParentId ?? undefined,
+        ownerSide: editing?.ownerSide ?? undefined,
+        ownerName: editing?.ownerName,
+        vendorOwner: editing?.vendorOwner,
+        planDevDate: editing?.planDevDate ? dayjs(editing.planDevDate) : undefined,
+        planTestDate: editing?.planTestDate ? dayjs(editing.planTestDate) : undefined,
+        planOnlineDate: editing?.planOnlineDate ? dayjs(editing.planOnlineDate) : undefined,
+        progress: editing?.progress ?? 0,
+        status: editing?.status ?? undefined,
+        sortNo: editing?.sortNo ?? 0,
+        remark: editing?.remark,
+      },
+      async (values) => {
+        const d = (v: unknown): string | undefined =>
+          v && dayjs.isDayjs(v) ? (v as Dayjs).format('YYYY-MM-DD') : undefined;
+        const data: ProjectDivisionItem = {
+          projectId: Number(id),
+          name: String(values.name),
+          parentId: values.parentId ? Number(values.parentId) : null,
+          ownerSide: values.ownerSide ? String(values.ownerSide) : undefined,
+          ownerName: values.ownerName ? String(values.ownerName) : undefined,
+          vendorOwner: values.vendorOwner ? String(values.vendorOwner) : undefined,
+          planDevDate: d(values.planDevDate),
+          planTestDate: d(values.planTestDate),
+          planOnlineDate: d(values.planOnlineDate),
+          progress: values.progress === undefined || values.progress === null ? 0 : Number(values.progress),
+          status: values.status ? String(values.status) : undefined,
+          sortNo: values.sortNo === undefined || values.sortNo === null ? 0 : Number(values.sortNo),
+          remark: values.remark ? String(values.remark) : undefined,
+        };
+        if (editing?.id) {
+          await divisionApi.update(editing.id, data);
+        } else {
+          await divisionApi.create(data);
+        }
+        message.success('分工已保存');
+        reload();
+      },
+      680,
     );
   };
 
@@ -158,6 +367,10 @@ export default function ProjectDetailPage() {
   const { options: sources } = useDict('PROJECT_SOURCE');
   const { options: attachTypes } = useDict('ATTACH_TYPE');
   const { options: payNodes } = useDict('PAY_NODE');
+  // V10：合同类型 / 合同状态 / 分工状态（配色见 config/tagDict.ts 对应 *_TAGS）
+  const { options: contractTypes } = useDict('CONTRACT_TYPE');
+  const { options: contractStatuses } = useDict('CONTRACT_STATUS');
+  const { options: divisionStatuses } = useDict('DIVISION_STATUS');
 
   const canEdit = user?.role === 'ADMIN' || user?.role === 'MANAGER';
   // 付款金额按合同由管理员录入
@@ -169,16 +382,18 @@ export default function ProjectDetailPage() {
     if (!id) return;
     setLoading(true);
     try {
-      const [d, ps, cs, as, ls] = await Promise.all([
+      const [d, ps, cs, dv, as, ls] = await Promise.all([
         projectApi.detail(id),
         paymentApi.listByProject(id),
         contractApi.listByProject(id),
+        divisionApi.listByProject(id),
         attachmentApi.listByProject(id),
         projectApi.logs(id),
       ]);
       setDetail(d);
       setPayments(ps);
       setContracts(cs);
+      setDivisions(dv);
       setAttachments(as);
       setLogs(ls);
     } finally {
@@ -987,6 +1202,360 @@ export default function ProjectDetailPage() {
     </div>
   );
 
+  // ── V10：合同管理 tab ──────────────────────────────────────────
+  // 一个项目（含子项目）可签多份合同：施工主合同、第三方测评、方案评估、监理服务、预算编制等。
+  // 用**折叠列表**承载——收起时只露"一眼能判断"的信息，展开后才是明细。
+  const contractManageContent = (
+    <div>
+      <div
+        style={{
+          marginBottom: 12,
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 8,
+        }}
+      >
+        <Space>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => openContractForm(null)}>
+            登记合同
+          </Button>
+          <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+            一个项目可签多份合同（施工主合同、第三方测评、方案评估、监理服务、预算编制…）
+          </span>
+        </Space>
+        <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+          共 {contracts.length} 份 · 合同总额{' '}
+          <b>{fmtMoney(contracts.reduce((s, c) => s + (c.contractAmount || 0), 0))}</b> 元
+        </span>
+      </div>
+
+      {contracts.length === 0 ? (
+        <Empty description="尚未登记合同" />
+      ) : (
+        <Collapse
+          defaultActiveKey={contracts.length ? [String(contracts[0].id)] : []}
+          items={contracts.map((c) => {
+            const rows = payments.filter((p) => p.contractId === c.id);
+            const paid = rows.reduce((s, p) => s + (p.paidAmount || 0), 0);
+            const typeTag = contractTypeTag(c.contractType);
+            const stateTag = contractStatusTag(c.contractStatus);
+            const pct = c.contractAmount
+              ? Math.min(100, Math.round((paid / c.contractAmount) * 100))
+              : 0;
+            return {
+              key: String(c.id),
+              label: (
+                <Space wrap size={8}>
+                  <b>{c.name}</b>
+                  <Tag color={typeTag.color}>{typeTag.text}</Tag>
+                  {c.contractStatus ? <Tag color={stateTag.color}>{stateTag.text}</Tag> : null}
+                  {c.contractNo ? <Tag>{c.contractNo}</Tag> : null}
+                  <span style={{ fontSize: 12 }}>
+                    合同金额 <b>{fmtMoney(c.contractAmount)}</b> 元
+                  </span>
+                  <span style={{ fontSize: 12, color: '#1677ff' }}>
+                    已付 {fmtMoney(paid)} 元（{pct}%）
+                  </span>
+                  {c.vendorName ? (
+                    <span style={{ fontSize: 12, color: '#8c8c8c' }}>乙方：{c.vendorName}</span>
+                  ) : null}
+                </Space>
+              ),
+              extra: canManagePay ? (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <Space size={0}>
+                    <Button size="small" type="link" onClick={() => openContractForm(c)}>
+                      编辑
+                    </Button>
+                    <Popconfirm
+                      title="删除该合同？"
+                      description="付款记录不会被删除，但会解除与该合同的关联。"
+                      onConfirm={async () => {
+                        await contractApi.remove(c.id!);
+                        message.success('合同已删除');
+                        reload();
+                      }}
+                    >
+                      <Button size="small" type="link" danger>
+                        删除
+                      </Button>
+                    </Popconfirm>
+                  </Space>
+                </div>
+              ) : undefined,
+              children: (
+                <div>
+                  {/* ① 合同双方 —— 最要紧的信息放最上面 */}
+                  <Row gutter={16} style={{ marginBottom: 12 }}>
+                    <Col span={12}>
+                      <Card size="small" title="合同双方">
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ color: '#8c8c8c', fontSize: 12 }}>甲方（建设单位）</div>
+                          <div style={{ fontWeight: 600, fontSize: 15 }}>{c.partyA || '—'}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: '#8c8c8c', fontSize: 12 }}>乙方（承接单位）</div>
+                          <div style={{ fontWeight: 600, fontSize: 15 }}>{c.vendorName || '—'}</div>
+                          {c.vendorContact ? (
+                            <span style={{ fontSize: 12, color: '#8c8c8c' }}>{c.vendorContact}</span>
+                          ) : null}
+                        </div>
+                      </Card>
+                    </Col>
+                    <Col span={12}>
+                      <Card size="small" title="关键时间">
+                        <Descriptions column={1} size="small" colon={false}>
+                          <Descriptions.Item label="签订日期">
+                            {fmtDate(c.signDate) || '—'}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="生效日期">
+                            {fmtDate(c.effectiveDate) || '—'}
+                          </Descriptions.Item>
+                          <Descriptions.Item label="工期">
+                            {c.startDate || c.endDate
+                              ? `${fmtDate(c.startDate) || '—'} ~ ${fmtDate(c.endDate) || '—'}`
+                              : '—'}
+                          </Descriptions.Item>
+                        </Descriptions>
+                      </Card>
+                    </Col>
+                  </Row>
+
+                  {/* ② 付款账户 —— 单独成块、账号用等宽字体，付款前必须核对 */}
+                  <Card
+                    size="small"
+                    title="付款账户信息"
+                    style={{ marginBottom: 12, borderColor: '#ffe58f', background: '#fffbf0' }}
+                  >
+                    {c.payeeAccount || c.payeeName || c.payeeBank ? (
+                      <Descriptions column={3} size="small">
+                        <Descriptions.Item label="收款户名">{c.payeeName || '—'}</Descriptions.Item>
+                        <Descriptions.Item label="开户银行">{c.payeeBank || '—'}</Descriptions.Item>
+                        <Descriptions.Item label="银行账号">
+                          <span style={{ fontFamily: 'monospace', fontWeight: 600, fontSize: 14 }}>
+                            {c.payeeAccount || '—'}
+                          </span>
+                        </Descriptions.Item>
+                      </Descriptions>
+                    ) : (
+                      <span style={{ color: '#bfbfbf' }}>未填写收款账户信息</span>
+                    )}
+                  </Card>
+
+                  {/* ③ 金额 / 质保 / 验收标准 */}
+                  <Descriptions bordered size="small" column={4} style={{ marginBottom: 14 }}>
+                    <Descriptions.Item label="合同金额">
+                      <b>{fmtMoney(c.contractAmount)}</b> 元
+                    </Descriptions.Item>
+                    <Descriptions.Item label="中标金额">
+                      {c.bidAmount ? `${fmtMoney(c.bidAmount)} 元` : '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="变更金额">
+                      {c.changeAmount ? `${fmtMoney(c.changeAmount)} 元` : '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="结算金额">
+                      {c.settleAmount ? `${fmtMoney(c.settleAmount)} 元` : '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="质保金">
+                      {c.warrantyAmount ? `${fmtMoney(c.warrantyAmount)} 元` : '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="质保期">
+                      {c.warrantyMonths ? `${c.warrantyMonths} 个月` : '—'}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="验收标准" span={2}>
+                      {c.acceptanceStandard || '—'}
+                    </Descriptions.Item>
+                  </Descriptions>
+
+                  {/* ④ 付款节点 */}
+                  <div
+                    style={{
+                      marginBottom: 8,
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+                      付款节点：{rows.length} 条 · 已付 {fmtMoney(paid)} / {fmtMoney(c.contractAmount)} 元
+                    </span>
+                    {canManagePay && (
+                      <Button
+                        size="small"
+                        type="primary"
+                        ghost
+                        icon={<PlusOutlined />}
+                        onClick={() => setPayModal({ open: true, item: null, contractId: c.id ?? null })}
+                      >
+                        登记付款
+                      </Button>
+                    )}
+                  </div>
+                  {renderPayTable(rows, '本合同暂无付款记录')}
+
+                  {(c.scopeRemark || c.remark) && (
+                    <div style={{ marginTop: 10, fontSize: 12, color: '#8c8c8c' }}>
+                      {c.scopeRemark ? <div>范围说明：{c.scopeRemark}</div> : null}
+                      {c.remark ? <div>备注：{c.remark}</div> : null}
+                    </div>
+                  )}
+                </div>
+              ),
+            };
+          })}
+        />
+      )}
+    </div>
+  );
+
+  // ── V10：项目分工 tab ──────────────────────────────────────────
+  const divisionContent = (() => {
+    // 后端返回扁平列表，这里组装成 Table 的树形数据（模块 → 子模块）
+    const build = (pid: number | null): ProjectDivisionItem[] =>
+      divisions
+        .filter((d) => (d.parentId ?? null) === pid)
+        .map((d) => {
+          const kids = build(d.id ?? null);
+          return kids.length ? { ...d, children: kids } : { ...d };
+        });
+    const treeData = build(null);
+
+    const countBy = (s: string) => divisions.filter((d) => d.status === s).length;
+
+    const columns: ColumnsType<ProjectDivisionItem> = [
+      { title: '模块 / 子模块', dataIndex: 'name', key: 'name', width: 240 },
+      {
+        title: '负责方',
+        dataIndex: 'ownerSide',
+        key: 'ownerSide',
+        width: 90,
+        render: (v?: string | null) => {
+          if (!v) return '—';
+          const m = ownerSideTag(v);
+          return <Tag color={m.color}>{m.text}</Tag>;
+        },
+      },
+      {
+        title: '负责人（甲 / 乙）',
+        key: 'owners',
+        width: 150,
+        render: (_, r) => (
+          <div style={{ fontSize: 12 }}>
+            <div>甲：{r.ownerName || '—'}</div>
+            <div>乙：{r.vendorOwner || '—'}</div>
+          </div>
+        ),
+      },
+      {
+        title: '计划（开发 / 调试 / 上线）',
+        key: 'plan',
+        width: 200,
+        render: (_, r) => (
+          <div style={{ fontSize: 12 }}>
+            <div>开发：{fmtDate(r.planDevDate) || '—'}</div>
+            <div>调试：{fmtDate(r.planTestDate) || '—'}</div>
+            <div>上线：{fmtDate(r.planOnlineDate) || '—'}</div>
+          </div>
+        ),
+      },
+      {
+        title: '进度',
+        dataIndex: 'progress',
+        key: 'progress',
+        width: 150,
+        render: (v?: number | null) => (
+          <Progress percent={v ?? 0} size="small" status={v === 100 ? 'success' : 'active'} />
+        ),
+      },
+      {
+        title: '状态',
+        dataIndex: 'status',
+        key: 'status',
+        width: 100,
+        render: (v?: string | null) => {
+          if (!v) return '—';
+          const m = divisionStatusTag(v);
+          return <Tag color={m.color}>{m.text}</Tag>;
+        },
+      },
+      { title: '备注', dataIndex: 'remark', key: 'remark', ellipsis: true },
+      {
+        title: '操作',
+        key: 'op',
+        width: 170,
+        render: (_, r) => (
+          <Space size={0}>
+            <Button size="small" type="link" onClick={() => openDivisionForm(r, null)}>
+              编辑
+            </Button>
+            <Button size="small" type="link" onClick={() => openDivisionForm(null, r.id ?? null)}>
+              加子模块
+            </Button>
+            <Popconfirm
+              title="删除该分工？"
+              description="其下的子模块会一并删除。"
+              onConfirm={async () => {
+                await divisionApi.remove(r.id!);
+                message.success('已删除');
+                reload();
+              }}
+            >
+              <Button size="small" type="link" danger>
+                删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        ),
+      },
+    ];
+
+    return (
+      <div>
+        <div
+          style={{
+            marginBottom: 12,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 8,
+          }}
+        >
+          <Space>
+            <Button type="primary" icon={<PlusOutlined />} onClick={() => openDivisionForm(null, null)}>
+              新增分工
+            </Button>
+            <span style={{ fontSize: 12, color: '#8c8c8c' }}>
+              按「模块 → 子模块」登记：谁负责、计划什么时候完成、现在到哪一步
+            </span>
+          </Space>
+          <Space size={14} style={{ fontSize: 12 }}>
+            <span>
+              共 <b>{divisions.length}</b> 项
+            </span>
+            <span style={{ color: '#52c41a' }}>已完成 {countBy('DONE')}</span>
+            <span style={{ color: '#1677ff' }}>进行中 {countBy('DOING')}</span>
+            <span style={{ color: '#ff4d4f' }}>风险 {countBy('RISK')}</span>
+          </Space>
+        </div>
+        {divisions.length === 0 ? (
+          <Empty description="尚未登记项目分工" />
+        ) : (
+          <Table
+            rowKey="id"
+            size="small"
+            columns={columns}
+            dataSource={treeData}
+            pagination={false}
+            defaultExpandAllRows
+          />
+        )}
+      </div>
+    );
+  })();
+
   const attachContent = (() => {
     const visible = grouped.filter((g) => {
       if (attachTypeFilter?.length && !g.items.some((it) => !!it.attachType && attachTypeFilter.includes(it.attachType)))
@@ -1305,6 +1874,16 @@ export default function ProjectDetailPage() {
           ...(isContainer
             ? []
             : [{ key: 'fund', label: '资金情况', children: fundContent }]),
+          {
+            key: 'contracts',
+            label: `合同管理（${contracts.length}）`,
+            children: contractManageContent,
+          },
+          {
+            key: 'divisions',
+            label: `项目分工（${divisions.length}）`,
+            children: divisionContent,
+          },
           { key: 'attach', label: '附件中心', children: attachContent },
           { key: 'log', label: '操作日志', children: logContent },
         ]}
@@ -1356,6 +1935,7 @@ export default function ProjectDetailPage() {
       )}
       {previewAtt && <AttachmentPreviewModal item={previewAtt} onClose={() => setPreviewAtt(null)} />}
       {contractModalEl}
+      {divisionModalEl}
     </div>
   );
 }

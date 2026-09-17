@@ -215,6 +215,48 @@ export interface ContractItem {
   planAmount?: number | null;
   scopeRemark?: string | null;
   remark?: string | null;
+  // ── V10 新增：政府合同常见字段 ──
+  /** 合同类型（字典 CONTRACT_TYPE）：MAIN 施工合同 / TEST 第三方测评 / … */
+  contractType?: string | null;
+  /** 甲方（建设单位） */
+  partyA?: string | null;
+  signDate?: string | null;
+  effectiveDate?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  /** 合同状态（字典 CONTRACT_STATUS） */
+  contractStatus?: string | null;
+  payeeName?: string | null;
+  payeeBank?: string | null;
+  payeeAccount?: string | null;
+  acceptanceStandard?: string | null;
+  warrantyMonths?: number | null;
+  warrantyAmount?: number | null;
+  settleAmount?: number | null;
+  createTime?: string | null;
+  updateTime?: string | null;
+}
+
+/** 项目分工（V10）：模块 / 子模块的负责方、负责人、计划时间与进度 */
+export interface ProjectDivisionItem {
+  id?: number;
+  projectId: number;
+  /** 父级分工 id（空 = 顶层模块），用于"模块 → 子模块"层级 */
+  parentId?: number | null;
+  name: string;
+  /** 负责方：OWNER 甲方 / VENDOR 乙方 / BOTH 双方 */
+  ownerSide?: string | null;
+  ownerName?: string | null;
+  vendorOwner?: string | null;
+  planDevDate?: string | null;
+  planTestDate?: string | null;
+  planOnlineDate?: string | null;
+  /** 当前进度 0-100 */
+  progress?: number | null;
+  /** 状态（字典 DIVISION_STATUS）：TODO/DOING/DONE/RISK */
+  status?: string | null;
+  remark?: string | null;
+  sortNo?: number | null;
   createTime?: string | null;
   updateTime?: string | null;
 }

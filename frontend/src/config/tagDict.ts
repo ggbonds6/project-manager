@@ -126,3 +126,50 @@ export const FILE_TYPE_TAGS: Record<string, TagMeta> = {
 
 export const fileExtTag = (ext?: string | null): TagMeta =>
   FILE_TYPE_TAGS[(ext || '').toLowerCase()] || { text: (ext || 'FILE').toUpperCase().slice(0, 6), color: 'default' };
+
+/* ---------- 合同类型 → 颜色组（与 V10 字典 CONTRACT_TYPE 一致） ---------- */
+export const CONTRACT_TYPE_TAGS: Record<string, TagMeta> = {
+  MAIN: { text: '施工合同', color: 'red' }, // 主合同，视觉上最突出
+  TEST: { text: '第三方测评', color: 'purple' },
+  EVAL: { text: '方案评估', color: 'geekblue' },
+  SUPERVISE: { text: '监理服务', color: 'cyan' },
+  DESIGN: { text: '项目设计', color: 'blue' },
+  BUDGET: { text: '预算编制', color: 'gold' },
+  OTHER: { text: '其他', color: 'default' },
+};
+
+export const contractTypeTag = (code?: string | null): TagMeta =>
+  (code && CONTRACT_TYPE_TAGS[code]) || { text: code || '未分类', color: 'default' };
+
+/* ---------- 合同状态 → 颜色组（与 V10 字典 CONTRACT_STATUS 一致） ---------- */
+export const CONTRACT_STATUS_TAGS: Record<string, TagMeta> = {
+  DRAFT: { text: '待签订', color: 'default' },
+  ACTIVE: { text: '履行中', color: 'processing' },
+  DONE: { text: '已完成', color: 'success' },
+  CHANGED: { text: '已变更', color: 'warning' },
+  TERMINATED: { text: '已终止', color: 'error' },
+};
+
+export const contractStatusTag = (code?: string | null): TagMeta =>
+  (code && CONTRACT_STATUS_TAGS[code]) || { text: code || '-', color: 'default' };
+
+/* ---------- 分工状态 → 颜色组（与 V10 字典 DIVISION_STATUS 一致） ---------- */
+export const DIVISION_STATUS_TAGS: Record<string, TagMeta> = {
+  TODO: { text: '未开始', color: 'default' },
+  DOING: { text: '进行中', color: 'processing' },
+  DONE: { text: '已完成', color: 'success' },
+  RISK: { text: '风险阻塞', color: 'error' },
+};
+
+export const divisionStatusTag = (code?: string | null): TagMeta =>
+  (code && DIVISION_STATUS_TAGS[code]) || { text: code || '-', color: 'default' };
+
+/* ---------- 分工负责方 → 颜色组（V10 约定 OWNER/VENDOR/BOTH） ---------- */
+export const OWNER_SIDE_TAGS: Record<string, TagMeta> = {
+  OWNER: { text: '甲方', color: 'blue' },
+  VENDOR: { text: '乙方', color: 'geekblue' },
+  BOTH: { text: '双方', color: 'purple' },
+};
+
+export const ownerSideTag = (code?: string | null): TagMeta =>
+  (code && OWNER_SIDE_TAGS[code]) || { text: code || '-', color: 'default' };

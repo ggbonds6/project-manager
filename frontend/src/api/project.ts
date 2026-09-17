@@ -9,6 +9,7 @@ import {
   PaymentItem,
   PhaseItem,
   ProjectDetail,
+  ProjectDivisionItem,
   ProjectForm,
   ProjectListItem,
   UploadTaskItem,
@@ -107,6 +108,24 @@ export const contractApi = {
   },
   remove(id: number): Promise<void> {
     return api.del<void>(`/contracts/${id}`);
+  },
+};
+
+/** 项目分工（V10）：模块/子模块的负责方、负责人、计划时间与进度 */
+export const divisionApi = {
+  listByProject(projectId: number | string): Promise<ProjectDivisionItem[]> {
+    return api.get<ProjectDivisionItem[]>(`/projects/${projectId}/divisions`);
+  },
+  /** 新增，返回新记录 id */
+  create(data: ProjectDivisionItem): Promise<number> {
+    return api.post<number>('/divisions', data);
+  },
+  update(id: number, data: ProjectDivisionItem): Promise<void> {
+    return api.put<void>(`/divisions/${id}`, data);
+  },
+  /** 删除（后端会级联删除其子模块） */
+  remove(id: number): Promise<void> {
+    return api.del<void>(`/divisions/${id}`);
   },
 };
 

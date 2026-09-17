@@ -185,6 +185,21 @@ public class ContractController {
         c.setPlanAmount(req.getPlanAmount());
         c.setScopeRemark(req.getScopeRemark());
         c.setRemark(req.getRemark());
+        // ── V10：政府合同常见字段 ──
+        c.setContractType(req.getContractType());
+        c.setPartyA(req.getPartyA());
+        c.setSignDate(req.getSignDate());
+        c.setEffectiveDate(req.getEffectiveDate());
+        c.setStartDate(req.getStartDate());
+        c.setEndDate(req.getEndDate());
+        c.setContractStatus(req.getContractStatus());
+        c.setPayeeName(req.getPayeeName());
+        c.setPayeeBank(req.getPayeeBank());
+        c.setPayeeAccount(req.getPayeeAccount());
+        c.setAcceptanceStandard(req.getAcceptanceStandard());
+        c.setWarrantyMonths(req.getWarrantyMonths());
+        c.setWarrantyAmount(req.getWarrantyAmount());
+        c.setSettleAmount(req.getSettleAmount());
     }
 
     private List<Long> normalize(List<Long> ids) {
