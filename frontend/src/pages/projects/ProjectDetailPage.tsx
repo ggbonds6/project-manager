@@ -22,9 +22,7 @@ import {
   Table,
   Tabs,
   Tag,
-  Timeline,
   Tooltip,
-  Typography,
   Avatar,
   message,
 } from 'antd';
@@ -655,6 +653,61 @@ export default function ProjectDetailPage() {
     );
   }, [detail, canEdit, navigate, reload]);
 
+  // ⚠️ 以下 hook 必须在 `if (!detail) return ...` **之前**——React 要求每次渲染的 hook
+  // 调用顺序与数量完全一致；放在提前 return 之后会导致首屏（loading）少调 hook、
+  // 加载完成后又多调，直接抛 React #310（Rendered more hooks than during the previous render）。
+  // 付款节点顺序：按字典顺序排，保证"预付款 → 到货款 → 初验 → 终验 → 质保"的可读顺序
+  const payNodeOrder = useMemo(() => {
+    const m = new Map<string, number>();
+    payNodes.forEach((n, i) => m.set(n.code, i));
+    return m;
+  }, [payNodes]);
+
+  const contractById = useMemo(() => {
+    const m = new Map<number, ContractItem>();
+    contracts.forEach((c) => {
+      if (c.id != null) m.set(c.id, c);
+    });
+    return m;
+  }, [contracts]);
+
+  // ── 筛选（工具条状态）──
+  const [payStatusSel, setPayStatusSel] = useState<string[]>([]);
+  const [payContractSel, setPayContractSel] = useState<number | null>(null);
+  const [payKeyword, setPayKeyword] = useState('');
+
+  const filteredPayments = useMemo(() => {
+    const kw = payKeyword.trim().toLowerCase();
+    return payments
+      .filter((p) => (payStatusSel.length ? payStatusSel.includes(p.status) : true))
+      .filter((p) => (payContractSel === null ? true : p.contractId === payContractSel))
+      .filter((p) => {
+        if (!kw) return true;
+        const c = p.contractId != null ? contractById.get(p.contractId) : undefined;
+        return [
+          p.nodeName,
+          p.conditionDesc,
+          p.handler,
+          p.invoiceNo,
+          p.voucherNo,
+          p.payeeName,
+          c?.name,
+          c?.vendorName,
+        ]
+          .filter(Boolean)
+          .some((v) => String(v).toLowerCase().includes(kw));
+      })
+      .sort((a, b) => {
+        const ca = a.contractId ?? 0;
+        const cb = b.contractId ?? 0;
+        if (ca !== cb) return ca - cb;
+        const oa = payNodeOrder.get(a.nodeCode) ?? 99;
+        const ob = payNodeOrder.get(b.nodeCode) ?? 99;
+        if (oa !== ob) return oa - ob;
+        return (a.id ?? 0) - (b.id ?? 0);
+      });
+  }, [payments, payStatusSel, payContractSel, payKeyword, contractById, payNodeOrder]);
+
   if (!detail) {
     return (
       <div>
@@ -953,20 +1006,6 @@ export default function ProjectDetailPage() {
    * 一条记录 = 一笔付款；合同只作为该笔付款的归属方出现（不再以合同为父节点组织）。
    */
 
-  // 付款节点顺序：按字典顺序排，保证"预付款 → 到货款 → 初验 → 终验 → 质保"的可读顺序
-  const payNodeOrder = useMemo(() => {
-    const m = new Map<string, number>();
-    payNodes.forEach((n, i) => m.set(n.code, i));
-    return m;
-  }, [payNodes]);
-
-  const contractById = useMemo(() => {
-    const m = new Map<number, ContractItem>();
-    contracts.forEach((c) => {
-      if (c.id != null) m.set(c.id, c);
-    });
-    return m;
-  }, [contracts]);
 
   /** 单笔付款的凭证附件 */
   const payVouchersOf = (pay: PaymentItem) =>
@@ -989,42 +1028,6 @@ export default function ProjectDetailPage() {
     return payRequiredAtts.filter((r) => !have.has(r.code)).map((r) => r.name);
   };
 
-  // ── 筛选（工具条状态）──
-  const [payStatusSel, setPayStatusSel] = useState<string[]>([]);
-  const [payContractSel, setPayContractSel] = useState<number | null>(null);
-  const [payKeyword, setPayKeyword] = useState('');
-
-  const filteredPayments = useMemo(() => {
-    const kw = payKeyword.trim().toLowerCase();
-    return payments
-      .filter((p) => (payStatusSel.length ? payStatusSel.includes(p.status) : true))
-      .filter((p) => (payContractSel === null ? true : p.contractId === payContractSel))
-      .filter((p) => {
-        if (!kw) return true;
-        const c = p.contractId != null ? contractById.get(p.contractId) : undefined;
-        return [
-          p.nodeName,
-          p.conditionDesc,
-          p.handler,
-          p.invoiceNo,
-          p.voucherNo,
-          p.payeeName,
-          c?.name,
-          c?.vendorName,
-        ]
-          .filter(Boolean)
-          .some((v) => String(v).toLowerCase().includes(kw));
-      })
-      .sort((a, b) => {
-        const ca = a.contractId ?? 0;
-        const cb = b.contractId ?? 0;
-        if (ca !== cb) return ca - cb;
-        const oa = payNodeOrder.get(a.nodeCode) ?? 99;
-        const ob = payNodeOrder.get(b.nodeCode) ?? 99;
-        if (oa !== ob) return oa - ob;
-        return (a.id ?? 0) - (b.id ?? 0);
-      });
-  }, [payments, payStatusSel, payContractSel, payKeyword, contractById, payNodeOrder]);
 
   const filteredPaid = filteredPayments.reduce((s, p) => s + (p.paidAmount || 0), 0);
   const unboundPays = payments.filter((p) => !p.contractId);
@@ -2411,7 +2414,6 @@ function PaymentModal({
 }: PaymentModalProps) {
   const [form] = Form.useForm<PaymentFormValues>();
   const [saving, setSaving] = useState(false);
-  const nodeCode = Form.useWatch('nodeCode', form);
   const contractIdWatched = Form.useWatch('contractId', form);
 
   useEffect(() => {

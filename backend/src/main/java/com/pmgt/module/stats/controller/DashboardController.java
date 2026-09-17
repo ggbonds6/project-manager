@@ -2,7 +2,6 @@ package com.pmgt.module.stats.controller;
 
 import com.pmgt.common.api.R;
 import com.pmgt.common.security.AuthContext;
-import com.pmgt.module.stats.service.StatsQuery;
 import com.pmgt.module.stats.service.StatsService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;

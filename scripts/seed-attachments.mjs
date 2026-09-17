@@ -235,8 +235,6 @@ async function uploadFile(token, spec) {
   await api('POST', '/api/attachments/upload', fd, token);
 }
 
-const nameCache = new Map();
-
 /** 简易并发池 */
 async function pool(items, worker, limit) {
   let i = 0;
@@ -274,7 +272,6 @@ async function main() {
   let skippedVoucher = 0;
 
   for (const p of units) {
-    nameCache.set(p.id, p.name);
     const detail = await api('GET', `/api/projects/${p.id}`, undefined, token);
     const existing = await api('GET', `/api/projects/${p.id}/attachments`, undefined, token);
 

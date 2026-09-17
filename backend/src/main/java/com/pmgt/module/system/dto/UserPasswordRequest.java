@@ -1,6 +1,5 @@
 package com.pmgt.module.system.dto;
 
-import com.pmgt.common.security.Role;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Card, Col, Row, Select, Space, Spin, Statistic, Empty, Tag, Table } from 'antd';
-import type { ColumnsType } from 'antd/es/table';
+import { Button, Card, Col, Row, Select, Space, Spin, Statistic, Empty } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { EChartsOption } from 'echarts';
 import EChart from '@/components/EChart';

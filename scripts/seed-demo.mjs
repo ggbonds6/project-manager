@@ -172,11 +172,26 @@ async function createContract(token, spec) {
     acceptanceStandard:
       spec.type === 'MAIN'
         ? '按招标文件、投标响应文件及国家现行相关标准组织验收；由采购人组织专家验收，出具验收报告后视为通过。'
-        : '按合同约定的服务内容与交付成果验收，出具书面验收意见后视为通过。',
+        : spec.type === 'EVAL'
+          ? '按合同约定的评估范围提交评估报告，经采购人组织评审通过后视为验收合格。'
+          : '按合同约定的服务内容与交付成果验收，出具书面验收意见后视为通过。',
     scopeRemark: spec.scopeRemark,
     remark: spec.remark,
     projectIds: spec.projectIds,
   }, token);
+}
+
+/**
+ * 合同状态与金额的"收口"规则（让演示数据看起来是真在流转的）：
+ *   项目已推进到终验之后（level>=4）→ 合同 DONE、给出结算金额
+ *   有变更金额              → CHANGED
+ *   未付款且刚起签           → DRAFT（如方案评估这类先签后履行的）
+ *   其余                    → ACTIVE（履行中）
+ */
+function contractStatusOf(level, change) {
+  if (level >= 4) return 'DONE';
+  if (change > 0) return 'CHANGED';
+  return 'ACTIVE';
 }
 
 /** 登记付款节点（含付款过程留痕） */
@@ -349,6 +364,7 @@ async function seedUnit(token, unit) {
   const mainAmount = round2(amount * 0.88);
   const superviseAmount = round2(amount * 0.025);
   const testAmount = round2(amount * 0.035);
+  const mainChange = idx % 3 === 0 ? round2(mainAmount * 0.02) : 0;
   let count = 0;
 
   // ① 施工主合同
@@ -362,9 +378,11 @@ async function seedUnit(token, unit) {
     months: 24,
     signDate: addDays(start, 20),
     endDate: end,
-    change: idx % 3 === 0 ? round2(mainAmount * 0.02) : 0,
-    settle: level >= 4 ? mainAmount : undefined,
+    change: mainChange,
+    settle: level >= 3 ? mainAmount : undefined,
+    status: contractStatusOf(level, mainChange),
     scopeRemark: `覆盖「${name}」全部建设内容`,
+    remark: '公开招标中标；已按规定完成合同备案；乙方已提交履约保函（合同金额 3%）。',
     projectIds: [id],
   });
   count++;
@@ -391,7 +409,10 @@ async function seedUnit(token, unit) {
     amount: superviseAmount,
     signDate: addDays(start, 25),
     endDate: end,
+    status: level >= 4 ? 'DONE' : 'ACTIVE',
+    settle: level >= 4 ? superviseAmount : undefined,
     scopeRemark: '施工阶段全过程监理',
+    remark: '监理服务随施工进度同步开展，按月提交监理月报与旁站记录。',
     projectIds: [id],
   });
   count++;
@@ -418,7 +439,10 @@ async function seedUnit(token, unit) {
       amount: testAmount,
       signDate: addDays(start, 30),
       endDate: end,
+      status: level >= 4 ? 'DONE' : 'ACTIVE',
+      settle: level >= 4 ? testAmount : undefined,
       scopeRemark: '系统功能与安全测评',
+      remark: '测评范围含功能测试与安全测评，出具测评报告并完成问题整改后付款。',
       projectIds: [id],
     });
     count++;
@@ -447,7 +471,10 @@ async function seedUnit(token, unit) {
       amount: budgetAmount,
       signDate: addDays(start, 5),
       endDate: addDays(start, 90),
+      status: 'DONE',
+      settle: budgetAmount,
       scopeRemark: '项目预算编制与审核配合',
+      remark: '预算编制成果已用于项目立项评审与投资估算。',
       projectIds: [id],
     });
     count++;
@@ -462,6 +489,26 @@ async function seedUnit(token, unit) {
       invoiceBase: `B${idx + 1}`,
       voucherBase: `2026-B${String(idx + 1).padStart(2, '0')}`,
     });
+  }
+
+  // ⑤ 方案评估服务合同（软件类项目：评估先行先签）
+  //    **故意做成"待签订"且无付款记录**——用于演示合同状态标签与"零付款节点"的合同
+  if (type === 'SW') {
+    await createContract(token, {
+      name: `${name}方案评估服务合同`,
+      no: `HT-${start.slice(0, 4)}-${String(idx + 1).padStart(3, '0')}-EVAL`,
+      type: 'EVAL',
+      partyA,
+      vendor: '正衡工程咨询',
+      amount: round2(amount * 0.008),
+      signDate: addDays(start, -10), // 评估合同先于项目立项批复
+      endDate: addDays(start, 60),
+      status: 'DRAFT',
+      scopeRemark: '建设方案技术经济评估',
+      remark: '已确定服务方，合同正在走内部会签与签批流程，尚未生效。',
+      projectIds: [id],
+    });
+    count++;
   }
 
   // 项目分工

@@ -183,8 +183,4 @@ public class ContractController {
         c.setWarrantyAmount(req.getWarrantyAmount());
         c.setSettleAmount(req.getSettleAmount());
     }
-
-    private List<Long> normalize(List<Long> ids) {
-        return ids == null ? new ArrayList<>() : ids;
-    }
 }

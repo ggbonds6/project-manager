@@ -42,7 +42,7 @@ export default function FlowTemplateDesigner() {
   const [tpls, setTpls] = useState<PhaseTplRow[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [phases, setPhases] = useState<PhaseTemplateRow[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [, setLoading] = useState(false);
 
   const active = tpls.find((t) => t.id === activeId) || null;
   const sortedPhases = [...phases].sort((a, b) => (a.sortNo ?? 0) - (b.sortNo ?? 0));

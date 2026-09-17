@@ -2,10 +2,8 @@ package com.pmgt.module.project.dto;
 
 import lombok.Data;
 
-import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.List;
 
 /**
  * 阶段实例（详情页使用）。
