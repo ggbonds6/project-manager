@@ -65,6 +65,14 @@ class StoredDoc:
     engine: str = ""
     dpi: int | None = None
     avg_confidence: float | None = None
+    provider: str = ""
+    """解析时实际使用的引擎（`platform` / `rapid` / `paddle` / `text-layer`）。"""
+    image_format: str = ""
+    stages: dict = field(default_factory=dict)
+    """阶段耗时 `{"render": 2.1, "ocr": 24.0}`——"时间花在哪"要看得见。"""
+    checks: list[dict] = field(default_factory=list)
+    """确定性校验结果（大小写金额互校等）——**可复现的"硬置信度"**，见 checks.py。"""
+    notes: list[str] = field(default_factory=list)
     chunks: list[dict] = field(default_factory=list)
     """预留给向量化——见模块文档。"""
 
@@ -81,6 +89,45 @@ class StoredDoc:
     def text(self) -> str:
         return "\n".join(p.get("text") or "" for p in self.pages)
 
+    @property
+    def review_pages(self) -> list[int]:
+        """建议人工优先复核的页：识别失败的 + 空白的 + 校验不通过的。"""
+        pages = {
+            p.get("page_no")
+            for p in self.pages
+            if p.get("error") or not (p.get("text") or "").strip()
+        }
+        for chk in self.checks:
+            if chk.get("status") in {"fail", "warn"}:
+                pages |= {i.get("page") for i in chk.get("items", []) if i.get("page")}
+        return sorted(p for p in pages if p)
+
+    @property
+    def check_summary(self) -> dict:
+        counts: dict[str, int] = {}
+        for c in self.checks:
+            key = c.get("status", "skip")
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def page_quality(self) -> list[dict]:
+        """页级明细（前端"过程性内容"展示用）。"""
+        return [
+            {
+                "page_no": p.get("page_no"),
+                "chars": p.get("chars", len(p.get("text") or "")),
+                "elapsed": p.get("elapsed"),
+                "source": p.get("source") or self.provider,
+                "confidence": p.get("confidence"),
+                "tables": p.get("tables", 0),
+                "seals": p.get("seals", 0),
+                "empty": not (p.get("text") or "").strip(),
+                "error": p.get("error") or "",
+                "note": p.get("note") or "",
+            }
+            for p in self.pages
+        ]
+
     def page_text(self, page_no: int) -> str:
         for p in self.pages:
             if p.get("page_no") == page_no:
@@ -93,7 +140,13 @@ class StoredDoc:
         total = 0
         for p in self.pages:
             body = (p.get("text") or "").strip() or "（本页未识别到文本）"
-            block = f"【第 {p['page_no']} 页】\n{body}"
+            marks: list[str] = []
+            if p.get("tables"):
+                marks.append(f"含表格 {p['tables']} 个")
+            if p.get("seals"):
+                marks.append(f"含印章 {p['seals']} 处（未识别文字）")
+            suffix = " · " + "、".join(marks) if marks else ""
+            block = f"【第 {p['page_no']} 页{suffix}】\n{body}"
             if max_chars is not None and total + len(block) > max_chars and blocks:
                 blocks.append("（…后续页面因篇幅限制未提供…）")
                 break
@@ -113,6 +166,10 @@ class StoredDoc:
             "uploaded_at": self.uploaded_at,
             "size_bytes": self.size_bytes,
             "engine": self.engine,
+            "provider": self.provider or self.engine,
+            "image_format": self.image_format,
+            "review_pages": self.review_pages,
+            "check_summary": self.check_summary,
         }
 
     def to_dict(self) -> dict:
@@ -126,6 +183,11 @@ class StoredDoc:
             "engine": self.engine,
             "dpi": self.dpi,
             "avg_confidence": self.avg_confidence,
+            "provider": self.provider,
+            "image_format": self.image_format,
+            "stages": self.stages,
+            "checks": self.checks,
+            "notes": self.notes,
             "chunks": self.chunks,
         }
 
@@ -141,6 +203,11 @@ class StoredDoc:
             engine=d.get("engine", ""),
             dpi=d.get("dpi"),
             avg_confidence=d.get("avg_confidence"),
+            provider=d.get("provider", ""),
+            image_format=d.get("image_format", ""),
+            stages=d.get("stages", {}),
+            checks=d.get("checks", []),
+            notes=d.get("notes", []),
             chunks=d.get("chunks", []),
         )
 
@@ -166,13 +233,31 @@ class DocStore:
 
     def save(self, filename: str, doc: document.DocumentText,
              size_bytes: int = 0) -> StoredDoc:
-        """把一个已解析的文档入库，返回入库结果。"""
+        """把一个已解析的文档入库，返回入库结果。
+
+        页级信息**尽量留全**（来源 / 区域块 / 质量信号 / 耗时）——这些是"内容出处"
+        与"复核优先级"的依据，丢了就只能回去重跑 OCR。
+        `blocks` 只留 `label + bbox`（见 `PageText.blocks_brief`），正文已在 `text` 里，
+        存全量块内容会让 JSON 体积翻几倍而没什么收益。
+        """
         stored = StoredDoc(
             doc_id=uuid.uuid4().hex[:16],
             filename=filename,
             kind=doc.kind,
             pages=[
-                {"page_no": p.page_no, "text": p.text, "confidence": p.confidence}
+                {
+                    "page_no": p.page_no,
+                    "text": p.text,
+                    "confidence": p.confidence,
+                    "source": p.source,
+                    "chars": p.chars,
+                    "tables": p.table_count,
+                    "seals": p.seal_count,
+                    "elapsed": round(p.elapsed, 2),
+                    "blocks": p.blocks_brief(),
+                    "error": p.error,
+                    "note": p.note,
+                }
                 for p in doc.pages
             ],
             uploaded_at=datetime.now().isoformat(timespec="seconds"),
@@ -180,6 +265,11 @@ class DocStore:
             engine=doc.engine,
             dpi=doc.dpi,
             avg_confidence=doc.avg_confidence,
+            provider=doc.provider,
+            image_format=doc.image_format,
+            stages=doc.stages,
+            checks=doc.checks,
+            notes=doc.notes,
             chunks=[],
         )
         self._write(stored)

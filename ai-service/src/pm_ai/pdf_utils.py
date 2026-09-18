@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import fitz  # PyMuPDF
 
@@ -71,23 +72,44 @@ def extract_page_texts(path: str | Path) -> list[str]:
         return [page.get_text() for page in doc]
 
 
-def render_pages(path: str | Path, dpi: int = 300, out_dir: str | Path | None = None) -> list[Path]:
-    """把 PDF 每页渲染成 PNG。
+def render_pages(
+    path: str | Path,
+    dpi: int = 300,
+    out_dir: str | Path | None = None,
+    fmt: str = "png",
+    quality: int = 85,
+    on_progress: "Callable[[int, int], None] | None" = None,
+) -> list[Path]:
+    """把 PDF 每页渲染成图片，返回图片路径列表（顺序＝页序）。
 
+    **渲染参数要跟着 OCR 引擎走**（别用一套参数喂两个引擎）：
+
+    - 平台 OCR（PaddleOCR-VL）：`150 DPI + jpeg/q85`。实测 120~300 DPI 的识别结果
+      **完全一致**（模型内部会下采样到 ≈100 万像素），但 300DPI PNG 每页 6.7MB、
+      150DPI JPEG 396KB —— **上传量差 17 倍**，白等的是时间。
+    - 本地 RapidOCR：`300 DPI + png`。它没有版面模型，字小了直接丢（金额、身份证号都靠像素）。
+
+    :param on_progress: `(已渲染页数, 总页数)`，用于上报"渲染中"的进度。
     返回图片路径列表；`out_dir` 为 None 时写到 `<PDF同级>/<PDF名>_pages/`。
-    300 DPI 是 OCR 的常用档位：再低会丢小字（身份证号、金额），再高收益递减。
     """
     src = Path(path)
     target = Path(out_dir) if out_dir else src.with_name(f"{src.stem}_pages")
     target.mkdir(parents=True, exist_ok=True)
 
+    ext = "jpg" if fmt.lower() in {"jpg", "jpeg"} else "png"
     out: list[Path] = []
     with fitz.open(src) as doc:
+        total = doc.page_count
         for i, page in enumerate(doc):
             pix = page.get_pixmap(dpi=dpi)
-            img = target / f"page_{i + 1:04d}.png"
-            pix.save(img)
+            img = target / f"page_{i + 1:04d}.{ext}"
+            if ext == "jpg":
+                img.write_bytes(pix.tobytes("jpeg", jpg_quality=quality))
+            else:
+                pix.save(img)
             out.append(img)
+            if on_progress:
+                on_progress(i + 1, total)
     return out
 
 

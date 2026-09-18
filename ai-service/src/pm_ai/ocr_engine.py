@@ -1,15 +1,22 @@
-"""OCR 引擎封装（可切换后端）。
+"""OCR 引擎封装：平台 OCR（首选）与本地引擎的统一入口。
 
-默认用 **RapidOCR**，理由：
-- 它加载的是 **PaddleOCR 同一批模型**（转成 ONNX），中文识别表现一致；
-- 只依赖 `onnxruntime`，**不需要 paddlepaddle**——内网离线装机省事很多。
+## 选型（2026-09-18 实测后定稿）
 
-若验证后认为效果不达标，可切完整 PaddleOCR：
-    pip install -e ".[paddle]"        # 装 paddleocr + paddlepaddle
-    设置 OCR_ENGINE=paddle            # 见 config.py
-两个后端输出统一为 `OcrResult`，上层代码不用改。
+| 引擎 | 位置 | 单页 | 金额 / 表格 | 输出 |
+| --- | --- | --- | --- | --- |
+| **platform** | 内网平台 PaddleOCR-VL（GPU） | ~1.8s | ✅ 全对 | markdown + blocks（带 bbox） |
+| rapid | 本机 RapidOCR（CPU） | ~4.2s | ❌ 同一页金额**全丢** | 只有文本行 + 置信度 |
 
-⚠️ 模型首次加载较慢（数秒），故做进程内单例缓存；不要每张图重新构造引擎。
+同一页真实合同的对照结果：平台读出 `7,780,000.00` / `5,446,000.00` / `2,334,000.00`
+**全部正确**（连大写"柒佰柒拾捌万元整"都完整）；RapidOCR **只认出了合同编号**，
+印章文字还串进了正文、出现「东团广东有厅」这类乱码。
+
+所以默认 `OCR_PROVIDER=auto`＝**平台可用就走平台，探测不通自动回落本地**。
+本地引擎完整保留，作用有两个：
+① 平台 GPU 机维护/宕机时的兜底（它是别人的机器）；
+② 需要"逐行置信度"时作对照（平台不返回置信度，见 README 的置信度口径）。
+
+⚠️ 本地模型首次加载较慢（数秒），故做进程内单例缓存；不要每张图重新构造引擎。
 """
 
 from __future__ import annotations
@@ -81,6 +88,28 @@ def get_engine(name: str = "rapid"):
     if name not in cache:
         cache[name] = _build_engine(name)
     return cache[name]
+
+
+def resolve_provider(name: str | None = None) -> str:
+    """把配置里的 provider 名称解析成**实际要用的引擎**：`platform` / `rapid` / `paddle`。
+
+    `auto` 会探测平台可用性——探测结果带缓存（可用 60s / 失败 15s，见 `platform_ocr.health`），
+    所以放在每次上传的路径上也不会变成"每次都去 ping 一下"。
+    """
+    from . import platform_ocr  # 局部导入，避免模块级相互引用
+    from .config import settings
+
+    want = (name or settings.ocr_provider or "auto").strip().lower()
+    if want == "auto":
+        return "platform" if platform_ocr.available() else "rapid"
+    if want in {"platform", "paddle_vl", "paddleocr-vl", "paddleocr_vl", "vl"}:
+        return "platform"
+    if want == "paddle":
+        return "paddle"
+    if want in {"rapid", "rapidocr"}:
+        return "rapid"
+    # 取值不认识时退回本地：宁可慢一点，也不要让整个解析流程起不来
+    return "rapid"
 
 
 def _parse_rapid(raw) -> list[OcrLine]:

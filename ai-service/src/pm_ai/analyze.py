@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import document, llm_client, prompts
+from . import checks, document, llm_client, prompts
 from .config import settings
 
 
@@ -29,6 +29,12 @@ class AnalyzeResult:
     markdown: str
     doc: dict = field(default_factory=dict)
     llm: dict = field(default_factory=dict)
+    verification: dict = field(default_factory=dict)
+    """**输出侧的机器校验**：答案里的数字能否在原文逐字找到。
+
+    比"让模型自评置信度"可靠——模型说 0.95 你无从验证，但"这个数字原文里有没有"
+    是代码算出来的、可复现的。见 `checks.verify_numbers_in_source`。
+    """
     truncated: bool = False
     truncate_note: str = ""
     warning: str = ""
@@ -38,6 +44,7 @@ class AnalyzeResult:
             "markdown": self.markdown,
             "doc": self.doc,
             "llm": self.llm,
+            "verification": self.verification,
             "truncated": self.truncated,
             "truncate_note": self.truncate_note,
             "warning": self.warning,
@@ -53,7 +60,7 @@ def _truncate(doc: document.DocumentText, limit: int) -> tuple[str, bool, str]:
     total = 0
     for p in doc.pages:
         body = p.text.strip() or "（本页未识别到文本）"
-        block = f"【第 {p.page_no} 页】\n{body}"
+        block = f"{document.page_header(p)}\n{body}"
         # 至少保留一页，避免首屏超大时一页都不给
         if kept and total + len(block) > limit:
             break
@@ -158,6 +165,13 @@ def analyze(path: str | Path, instruction: str = "",
     if truncated and not warning:
         warning = "原文超长，仅前若干页参与分析"
 
+    # 输出侧机器校验：答案里的每个数字能不能在原文找到。
+    # 这是"禁止虚构"的**机器兜底**——不依赖模型的自觉，也不依赖它的自评分。
+    verification = checks.verify_numbers_in_source(
+        markdown, [p.text for p in doc.pages])
+    if verification.get("status") == "warn" and not warning:
+        warning = "有数字在原文中未找到，请重点核对"
+
     return AnalyzeResult(
         markdown=markdown,
         doc=doc_summary,
@@ -170,6 +184,7 @@ def analyze(path: str | Path, instruction: str = "",
             "finish_reason": chat.finish_reason,
             "elapsed": round(time.perf_counter() - started, 2),
         },
+        verification=verification,
         truncated=truncated,
         truncate_note=note,
         warning=warning,

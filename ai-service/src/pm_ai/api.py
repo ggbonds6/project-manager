@@ -1,9 +1,18 @@
 """HTTP 接口（FastAPI）+ 简易前端页面。
 
 接口清单：
-  GET  /                  简易前端（上传 → 分析 → markdown 结果）
-  GET  /health            服务与配置自检（?with_llm=true 附带模型连通性）
+  GET  /                  前端页面（文档库 + 上传队列 + 问答）
+  GET  /health            服务与配置自检（`?with_llm=true` 附带模型连通性；平台 OCR 状态默认带上）
   POST /analyze           **核心**：上传文件 → 抽取 → 返回带「来源 + 置信度」的 markdown
+  POST /upload-tasks      **多文件异步上传**：提交即返回，后台解析并实时上报进度（网页用）
+  GET  /upload-tasks      任务队列（含进度、阶段、耗时）
+  GET  /upload-tasks/{id} 单个任务详情（页级明细 = 过程性内容）
+  DELETE /upload-tasks/{id}  取消进行中的任务 / 移除已结束的任务（`?remove=true`）
+  POST /documents         同步上传入库（CLI/脚本、单文件快速验证）
+  GET  /documents         已入库文档列表
+  GET  /documents/{id}    文档详情（页级明细 + 确定性校验结果）
+  DELETE /documents/{id}  删除文档
+  POST /chat              基于文档库问答（模型自行调用检索/计算工具）
   POST /ocr/file          只做识别，返回文本（含识别置信度、低置信行数）
   POST /ocr/pdf-info      只判断 PDF 是文本型还是扫描件（摸底用）
 
@@ -12,6 +21,9 @@
 OCR 与大模型调用都是**同步阻塞**操作。若把它们放进 `async def` 且没有 `await`，
 会**阻塞整个事件循环**——一个人上传大文件，其他人全部卡住。
 因此这些接口一律用同步 `def`，由 FastAPI 自动丢进线程池执行。
+
+（上传任务接口虽然返回很快，但内部也只是"登记任务"，真正的解析在 `tasks.py` 的
+线程池里跑，同样不占用事件循环。）
 """
 
 from __future__ import annotations
@@ -26,9 +38,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, analyze, document, llm_client, ocr_engine, pdf_utils, qa
+from . import (__version__, analyze, document, llm_client, ocr_engine, pdf_utils,
+               platform_ocr, qa)
 from .config import settings
 from .store import store
+from .tasks import tasks
 
 app = FastAPI(title="PM AI Service", version=__version__)
 
@@ -88,14 +102,29 @@ def index():
 # ── 自检 ────────────────────────────────────────────────────────
 
 @app.get("/health")
-def health(with_llm: bool = False) -> JSONResponse:
-    """服务自检。`with_llm=true` 时顺带探测大模型连通性（约 2s，失败约 15s）。"""
+def health(with_llm: bool = False, with_ocr: bool = True) -> JSONResponse:
+    """服务自检。
+
+    - `with_llm=true` 顺带探测大模型连通性（约 2s，失败约 15s）
+    - `with_ocr=false` 跳过平台 OCR 探测（探测结果有缓存，正常很快）
+    """
     payload = {
         "code": 0,
         "service": "pm-ai-service",
         "version": __version__,
         "config": settings.summary(),
     }
+    # 先探测（带缓存），再解析 provider —— resolve 会复用刚才的探测结果
+    if with_ocr:
+        h = platform_ocr.health(timeout=3)
+        payload["ocr"] = {
+            "ok": h.ok,
+            "workers": h.workers,
+            "idle": h.idle,
+            "options": h.options,
+            "detail": h.detail,
+        }
+    payload["provider"] = ocr_engine.resolve_provider()
     if with_llm:
         ok, detail = llm_client.ping()
         payload["llm"] = {"ok": ok, "detail": detail}
@@ -158,11 +187,15 @@ def ocr_file(
     dpi: int = Form(default=0),
     force_ocr: bool = Form(default=False),
 ):
-    """只识别，不调模型。
+    """只识别，不调模型（摸底 / 对比用）。
 
     - **文本型 PDF**：默认直接返回文本层（快、准），不跑 OCR；
     - **扫描件 / 图片**：渲染后用 OCR 识别；
     - `force_ocr=true` 可对文本型 PDF 也强制走 OCR（用于对比两者差异）。
+
+    ⚠️ 本接口固定走**本地引擎**（不跟随 `OCR_PROVIDER`）——它的定位是"离线可用的
+    快速对照"，用来比较本地与平台的差异。要走平台引擎请用 `/upload-tasks` 或
+    `/documents`（它们的引擎由 `OCR_PROVIDER` 决定，见 README §13）。
     """
     path = _save_tmp(file)
     try:
@@ -273,6 +306,77 @@ def delete_document(doc_id: str):
     if not store.delete(doc_id):
         raise HTTPException(status_code=404, detail="文档不存在")
     return {"code": 0, "data": {"deleted": doc_id}}
+
+
+@app.get("/documents/{doc_id}")
+def get_document(doc_id: str):
+    """单份文档详情：**含页级明细**（页内区域、质量信号、耗时）与确定性校验结果。"""
+    doc = store.get(doc_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    data = doc.to_dict()
+    data["page_quality"] = doc.page_quality()
+    data["review_pages"] = doc.review_pages
+    data["check_summary"] = doc.check_summary
+    return {"code": 0, "data": data}
+
+
+# ── 上传任务队列：多文件、有进度、可取消 ───────────────────────────
+#
+# 与 `POST /documents` 的分工：
+#   /documents      —— **同步**：解析完才返回（CLI/脚本、单文件快速验证用）
+#   /upload-tasks   —— **异步**：提交即返回，后台解析并实时上报进度（网页用）
+# 两者最终写进同一个文档库，所以用哪种都不会"两套数据"。
+
+@app.post("/upload-tasks")
+def create_upload_tasks(
+    files: list[UploadFile] = File(...),
+    dpi: int = Form(default=0),
+):
+    """一次提交**多个**文件，立刻返回任务列表；解析在后台进行。
+
+    前端据此做队列：一次选 5 个文件＝5 个并行任务，各自有进度、可单独取消。
+    """
+    for f in files:
+        _guard_size(f)
+    created = []
+    for f in files:
+        path = _save_tmp(f)
+        task = tasks.submit(
+            path,
+            Path(f.filename or path.name).name,
+            f.size or path.stat().st_size,
+            dpi=dpi or None,
+        )
+        created.append(task.to_dict(with_pages=False))
+    return {"code": 0, "data": created}
+
+
+@app.get("/upload-tasks")
+def list_upload_tasks():
+    """任务列表（最近在前，不含页级明细——明细走单个任务接口）。"""
+    return {"code": 0, "data": tasks.list()}
+
+
+@app.get("/upload-tasks/{task_id}")
+def get_upload_task(task_id: str):
+    """单个任务详情：**含页级进度明细**、阶段耗时、校验结果（前端"过程性内容"的数据源）。"""
+    task = tasks.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return {"code": 0, "data": task.to_dict(with_pages=True)}
+
+
+@app.delete("/upload-tasks/{task_id}")
+def cancel_upload_task(task_id: str, remove: bool = False):
+    """取消一个进行中的任务；`remove=true` 时改为从列表移除已结束的任务。"""
+    if remove:
+        if not tasks.remove(task_id):
+            raise HTTPException(status_code=400, detail="任务不存在或仍在进行中")
+        return {"code": 0, "data": {"removed": task_id}}
+    if not tasks.cancel(task_id):
+        raise HTTPException(status_code=400, detail="任务不存在或已结束")
+    return {"code": 0, "data": {"cancelled": task_id}}
 
 
 # ── 问答：模型自行调用检索工具 ─────────────────────────────────────

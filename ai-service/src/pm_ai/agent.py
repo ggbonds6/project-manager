@@ -31,7 +31,6 @@ import time
 from dataclasses import dataclass, field
 
 from . import llm_client, tools
-from .config import settings
 
 DEFAULT_MAX_ROUNDS = 8
 """工具调用轮数上限。
