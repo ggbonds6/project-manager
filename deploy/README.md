@@ -47,7 +47,7 @@ docker compose ps && curl http://127.0.0.1:8080/api/health     # 期望 db:"up"
 - 前端（nginx）：**http://服务器IP:8080**（默认端口，可改 `WEB_PORT`）
 - `/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露）
 - **附件存储**：生产统一 **华为 OBS**（`APP_STORAGE_TYPE=obs` + `APP_STORAGE_OBS_*`，对象置于桶内 `uploads/` 前缀下），
-  详见《双机ARM服务器独立部署方案.md》；`APP_STORAGE_TYPE=local` 时用命名卷 `pm_uploads`
+  详见[《部署与发布全流程手册》附录 A](../docs/部署与发布全流程手册.md)；`APP_STORAGE_TYPE=local` 时用命名卷 `pm_uploads`
 
 **首次建库**：后端启动时自研迁移 Runner 自动执行 `db/migration-yashan/V1~V9` 完成建表与种子（幂等，已执行版本记入 `schema_version`），无需手工导库。
 
@@ -55,7 +55,7 @@ docker compose ps && curl http://127.0.0.1:8080/api/health     # 期望 db:"up"
 
 > 📌 **双机（两台 ARM 服务器，独立运行、指向同一崖山库、上层网关负载均衡）部署**：
 > 每台一份 Docker Compose 即可，含附件共享存储 / JWT 一致性 / 冒烟清单等完整步骤，
-> 见 [`docs/双机ARM服务器独立部署方案.md`](../docs/双机ARM服务器独立部署方案.md)。
+> 见 [`docs/部署与发布全流程手册.md`](../docs/部署与发布全流程手册.md) **附录 A · 生产拓扑与选型（双机 ARM）**。
 
 ---
 

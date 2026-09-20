@@ -822,7 +822,7 @@ python3 ~/.dsh/skills/ocr-doc-parsing/scripts/ocr.py check
 | `description` 太笼统 | skill 永远不被触发 | 写清"做什么 + 何时用 + 用户真实说法" |
 | `description` 太长 | 触发率反而下降 | 控制在 1024 字符内,2–4 句 |
 | `name` 不合规 | skill 被丢弃(大写、下划线、空格、超 64 字符) | 只用小写字母/数字/`-` |
-| frontmatter 里出现裸冒号 | YAML 解析失败,skill 不被发现 | 值含 `:` 时用引号包起来,或写成 `|` 块 |
+| frontmatter 里出现裸冒号 | YAML 解析失败,skill 不被发现 | 值含 `:` 时用引号包起来,或写成 `\|` 块 |
 | 平台私有字段混进通用版 | 换平台后行为不一致 | 通用版只用标准字段,私有字段另存变体 |
 | 地址 / 密钥硬编码 | 换环境全部失效、密钥进版本库 | 一律读环境变量 + 凭据文件 |
 | 把所有细节写进 SKILL.md | 每次触发都塞满上下文 | 详细资料下沉 `references/`,逻辑下沉 `scripts/` |

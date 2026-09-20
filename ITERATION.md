@@ -59,10 +59,9 @@
 | v3.5.1 | 2026-09-17 | 修复前端 React #310 + 演示数据补全 + 死代码清理 | **🔴 React #310（hook 顺序）**：v3.5.0 新加的 6 个 hook（`payNodeOrder`/`contractById` 两个 `useMemo`、三个筛选 `useState`、`filteredPayments`）被放在了组件里 `if (!detail) return …` **之后**——首屏（`detail` 为 null）走提前 return 少调这些 hook，加载完成后再调，数量不一致即抛 `Rendered more hooks than during the previous render`（#310）。修复：全部**前移到提前 return 之前**，并加注释说明"hook 必须在任何提前 return 之前"。已加结构性自检：组件内提前 return 之后 hook 数为 **0**（共 34 个 hook 全在其前）。**演示数据补全**：合同补 `contractStatus`（按推进度自动给 DONE/CHANGED/ACTIVE）、`settleAmount`（结算后才有）、`remark`、服务类合同的 `scopeRemark/验收标准`；新增 **4 份"方案评估"合同（状态=待签订、无付款记录）**用于演示状态标签与"零付款节点"的合同；核算单元合同数由 2~4 份扩到 **2~5 份**。**新增开发机工具**：`scripts/demo-reset.sql`（**物理**清空演示数据，解决"逻辑删除导致库里堆积 `deleted=1` 历史行、翻库时误以为当前数据缺字段"）、`scripts/db-sql.sh` + `scripts/jdbc/RunSql.java`（开发机无 yasql 客户端时手工查/改库，连接信息自动从容器环境变量或 `.env` 取，**口令不打印不落盘**）、`scripts/README.md`（脚本清单与用法）。**死代码清理**：前端 `tsc --noUnusedLocals --noUnusedParameters` **清零**（ProjectDetailPage 的 `Timeline`/`Typography`/未用 `useWatch`，以及 FlowTemplateDesigner/PhaseEditModal/ProjectOverviewPanel/StatsPage/SystemPage 的既有未使用导入）；后端未使用导入 **8 处清零** + 删掉死方法 `ContractController.normalize`（另 3 个疑似死方法是 `this::method` 方法引用，经核对**保留**）；`seed-attachments.mjs` 删掉只写不读的 `nameCache`。**实测**：清库重灌后 **29 份合同 / 77 笔付款 / 128 条项目分工 / 412 个附件**（阶段 217 · 合同 114 · 付款凭证 81）；`contract` 表 `deleted=1` 行数 **0**、在用合同字段缺失 **0**（仅 `settle_amount` 有 21 份为空——未结算，符合业务）；合同状态分布 ACTIVE 16 / DONE 6 / DRAFT 4 / CHANGED 3；类型分布 MAIN 9 / SUPERVISE 9 / EVAL 4 / TEST 4 / BUDGET 3。**约定（两条，用户明确要求）**：① 前端改动不再由 AI 起浏览器做端到端验证（结构性检查 + 数据/接口核对即可，交互效果由用户刷新确认）；② **不主动重建镜像**（`dev-reload.sh`/`make-release.sh` 耗时且会重启容器，需要时先问）。两条已写入部署手册 §2.1、`scripts/README.md` §5 与项目记忆。**文档补齐（用户指出「没更新完」）**：`ITERATION.md`「各迭代明细」补 11 个缺失版本（v1.7 / v2.1~v2.4 为历史遗留，v3.2.0~v3.5.1 为本轮相关），现**总表 33 行 == 明细 33 段**；「项目速览」「功能完成度」「运行方式速查」「后续待办」同步重写。《设计方案》逐章同步：§5.3 附件归属改四类、§5.4 补付款留痕与收款账户快照、**新增 §5.5 合同字段**、§6.2 页签五→**八**、§8 表数 **11→14**（补录 `attachment_upload_task`）、§13 差异清单时点 v3.0→**v3.5.1** 并补 21~32 条（第 27 条显式修正第 8 条的旧口径）、§14 维护约定补「总表与明细两处版本须一一对应」；修正目录 4 条失效锚点。 | `e76a183`、`7e65171` |
 | ai-0.4.0 | 2026-09-18 | **ai-service：移除本地 OCR + P0 规范化** | **只走内网平台 OCR**：同页实测平台 `PaddleOCR-VL-1.6-0.9B` 金额（`7,780,000.00`/`5,446,000.00`/`2,334,000.00`）与大写「柒佰柒拾捌万元整」**全对**，本地 RapidOCR **金额全丢**（只有合同编号）→ 删除 `ocr_engine.py`、`scripts/selfcheck_ocr.py` 与 `rapidocr-onnxruntime`/`pillow`/`[paddle]` extra，`OCR_PROVIDER`/`OCR_DPI`/`OCR_WORKERS` 废弃，平台不可用**报错不降级**，镜像去掉 `libgl1`/`libglib2.0-0`/`libgomp1` 与构建期 OCR 自检（改为只校验包能导入）；**P0 规范化**：ruff（lint+format）+ pytest（大写金额解析 / 平台 OCR 响应解析 / 任务状态机 / `calculate` 白名单）+ 依赖加上下界 + `print`→`logging`，新增 `[dev]`/`[scripts]` extra 与 `scripts/check.sh`/`check.cmd`（**本机优先、Docker 兜底**；Python 装于 `E:\env\python-3.11.9`、venv 在 `E:\env\venvs\pm-ai`，`ruff check + format --check + pytest` 本机 **0.2 秒**跑完）；工具集 **4→3**（删 `list_documents`）、`calculate` 改 `Decimal`（**返回字符串** `result`/`rounded_2`，避免 JSON 浮点丢分位）并去掉 `**`/`//`/`%`；版本 `0.1.0`→**`0.4.0`**；**Java 迁移最大障碍（本地 OCR 无 Java 等价物）随之消失**，但时机不变（等检索层与接口冻结） | `9e7ea27`（四份文档归档）、`0440563`（v0.4.0）；v0.3 基线 `4240363` |
 | ai-0.5.0 | 2026-09-18 | **ai-service：检索链路接通（Embedding 召回 + Reranker 精排）** | 平台已部署 **Qwen3-VL-Embedding-8B**（**固定 4096 维**；⚠️ 平台实际部署**不支持 MRL 降维**，传 `dimensions` 实测 **HTTP 400**，故 `VEC_EMBED_DIMENSIONS=0` 表示**不传**）与 **Qwen3-VL-Reranker-8B**（网关 `http://10.254.208.35:8090/v1`，与千问对话/平台 OCR **共用同一把 sk**，手册 `ai-service/Qwen3-VL-Embedding-Reranker调用手册.md`）；新增 `vec_client.py`（纯 urllib：`/embeddings`、Jina 风格 `/rerank`、`GET /models` 探活、`cosine`）、`retrieval.py`（**三步链路**：向量召回 + 关键词召回（字符 2-gram + IDF，原在 `tools.py`，本轮**搬迁**）→ 按 (doc_id, page_no, 文本 sha1) 去重融合 → Reranker 精排取 top_k）、`scripts/vec_try.py`（`--health` / `--selftest` / `--ingest` / `--search` / `--top-k` / `--doc-id` / `--offline`）、`tests/test_retrieval.py`（5 条离线用例：精排顺序生效 / 向量不可用降级关键词且 note 写明 / 切片向量走缓存（第二次只为 query 编码）/ 切片键随内容变化 / **`VEC_BACKEND=opensearch` 显式报错**）；`tools.search_documents` 改为**委托** `retrieval.search()`（工具签名不变，返回体新增 `retrieval`/`reranked`/`note`）；新增配置 `VEC_BASE_URL`/`VEC_API_KEY`（默认复用 `LLM_*`，`VEC_TIMEOUT=300`）/`VEC_EMBED_MODEL`/`VEC_RERANK_MODEL`/`VEC_EMBED_DIMENSIONS=0`（**不传 dimensions**；平台不支持 MRL 降维，实际 4096 维）/`RETRIEVAL_RECALL=50`/`RETRIEVAL_TOP_K=5`/`VEC_BACKEND=local`/`OPENSEARCH_*`（索引 `pm-ai-chunks`）；`GET /health?with_vec=true` 返回 `vec` 块（ok/detail/models/backend/embed_model/rerank_model/dimensions）；向量缓存在 `work/vectors/<doc_id>.json`（含 model/dimensions，切片内容变了自动失效；**向量与索引都是可重建物，不进主系统**）；向量服务不可用时**降级为关键词检索**并在 `note` 写明原因（与 OCR 降级性质不同：答案仍带页码来源）；**实测**：开发机跑通**离线接线演练**（`--offline`：解析一个文本型 PDF → 1 个切片 → 混合检索命中并带页码与分数），质量门 **55 用例**全绿 + `ruff check` / `ruff format --check` 通过；**未验证（如实）**：开发机连不上政务内网网关（`URLError: timed out`），真实向量化/重排/语义判别**尚未验证**，需在有内网访问的机器上跑 `python scripts/vec_try.py`（默认自检）；**检索层存储选型统一为 OpenSearch**（崖山内核自带向量能力仅作备选、不作选型基线），**适配层尚未实现**（`VEC_BACKEND` 只支持 `local`，配置成 `opensearch` 会显式报错而非静默降级），**下一步：部署 OpenSearch 并补适配层** | 本轮待提交 |
-
 | ai-1.0.0 | 2026-09-20 | **AI 能力服务全量 Java 化：`ai-service`（Python/FastAPI）→ `ai-backend`（Spring Boot 3.3.5 / Java 17）** | 与主系统**同栈**、仍**独立构建与部署**（默认 8100）。四类能力全部移植：**平台 OCR**（`PlatformOcrClient`：批量 ≤16 页/请求、并发 12、"批量响应 blocks 在 `results[i]` 不在顶层"的坑、失败页占位**不兜底**、健康探针带 TTL 缓存）、**PDF 解析**（PDFBox 3 替代 PyMuPDF：页数 / 逐页文本 / 按 DPI 渲染 JPEG q85）、**确定性校验**（`Checks`：`BigDecimal` 大写金额解析与互校、比例合计容差 ±1、数值写法规整、答案数字可溯源；Java 正则显式 `UNICODE_CHARACTER_CLASS`，`BigDecimal` 一律 `compareTo` + `stripTrailingZeros` 归一）、**大模型**（`LlmClient` / `Prompts`（提示词**逐字照搬**）/ `ToolAgent`（8 轮工具循环 + 轮数用尽禁用工具再问）/ `QaService`（单条 system 必须在最前）/ `AnalyzeService`）、**检索链路**（`VecClient` + `RetrievalService`：字符 2-gram + IDF 关键词 + 向量召回 → 去重融合 → Reranker 精排；向量缓存 `work/vectors/`；向量/重排不可用**降级关键词并写 note**）；新增 `OpenSearchIndex` kNN 适配层（**未实测**：集群未部署；配 `opensearch` 时**显式报错、不静默降级**）。接口层：`/health`（`with_ocr`/`with_llm`/`with_vec` 三探测）、`/analyze`、`/ocr/pdf-info`、`/ocr/file`、`/documents`（增删查）、`/upload-tasks`（**先返回、后台解析**、状态机、取消/移除、重启把残留标失败）、`/chat`；响应形状与 Python 版**逐字段一致**（成功 `{code,data}`，失败 HTTP 状态码 + `{"detail"}`）。**踩坑（都已写进代码注释）**：Lombok 注解处理器必须显式配 `annotationProcessorPaths`（否则满屏"找不到符号"、看着像缺类）；`@Async` 自调用走不到代理（改显式线程池提交）；`StoredDoc.PageInfo.page_no` 必须 `@JsonProperty`（否则页码静默丢失、整页被误判成空白页）；`.env` 需 `spring.config.import` 才等价于 Python 的 dotenv。**实测（真实内网网关 `10.254.208.35:8090`）**：扫描件平台 OCR 正确识别《中标通知书》正文；`/analyze` 8.73s（tokens 1375+779）输出带 `[P1]` 来源与置信度的结构化 markdown；上传任务 `QUEUED→DONE` 1.47s；`/chat` 10.27s、工具轨迹 `search_documents×2 → read_page`，对上"中标金额"给出金额并主动标注"千分位是中文逗号、**存疑**请核对原件"，对"付款方式"如实回答**文档中未找到**并给出依据。**74 个 JUnit 用例全绿**（`ai-1.0.1` 收口时为 81）；`Checks` 与 Python 版做过 **35 个用例的逐字段差分对照，完全一致**。Python 侧代码/脚本/文档的清理见下一轮 | 本轮待提交 |
-
 | ai-1.0.1 | 2026-09-20 | **清理与回归单一主线：删除 Python 侧 `ai-service`，知识资产迁入 `ai-backend`** | Python 侧代码/脚本/测试/文档整体删除（`ai-service/` 50 个受控文件：2 份手册迁入 `ai-backend/docs`、其余 48 个删除），只保留**仍然有价值的知识**并迁入主线：两份只读接口手册（`平台OCR调用使用手册.md`、`Qwen3-VL-Embedding-Reranker调用手册.md`）与四份规划文档（架构评估与规范化、知识库总体架构与演进路线、知识库落地实施方案、embedding 端点部署方案）落 `ai-backend/docs/`，另新增《平台能力实测结论》把散落在 Python README 里的实测数字与踩坑结论固化下来（含平台 OCR 渲染参数/印章编造/并发、置信度四层口径、思维链吃光额度、单条 system、Embedding 不支持 MRL 降维、Rerank 返回入参下标、质量门用例数）；合成样本迁到 `ai-backend/work/samples` 并同步 `verify-e2e.ps1`；**保真修正**：PDFBox 逐页文本换行归一（`\r\n`→`\n`）且整页空白回空串，使 Java 与 PyMuPDF **逐字节一致**（电子版 182==182、扫描件 0==0，此前是 191 vs 182 / 1 vs 0）；旧 Python 服务容器退役（端口让给 Java 版）；全部相对路径引用（手册位置、样本路径、curl 示例）同步更新；**OpenSearch 仍待集群部署**（适配层已就绪、配 `opensearch` 显式报错） | 本轮待提交 |
+| docs-1.0 | 2026-09-20 | **文档与脚本集约化重整（跨主系统 + AI 能力服务）** | ① **修表格格式**：ITERATION 总表内夹了空行，导致 `ai-1.0.0`/`ai-1.0.1` 两行被"踢出"表格（Markdown 里**空行即结束表格**）——已去除；全仓脚本体检另修 1 处单元格裸竖线（厂商手册表格里 `` `\|` `` → `` `\|` ``）。② **建两张地图**：新增 [`docs/README.md`](docs/README.md)（**唯一文档地图**：按角色导读 + 权威文档清单 + 已核减登记 + 维护约定）、重写 [`scripts/README.md`](scripts/README.md) 为**脚本与操作唯一清单**（场景速查表 + Shell 要求 + 分组明细；如实记录本机**无 Git Bash**、`scripts/*.sh` 暂时跑不了，并给出两条替代路径）。③ **核减过程性文档**（理由：一次性/已完成/已被取代的计划留在仓库只会制造歧义）：崖山两份（可行性分析 + 迁移实施方案）压缩为《崖山数据库与迁移约定》、知识库两份合并为《知识库实施方案与路线》、附件智能处理自测方案压缩为《附件智能处理-验收标准与现状》、双机 ARM 与 Gitea 两份并入《部署与发布全流程手册》附录 A/B、删除《embedding 端点部署方案》（平台已直接提供）《架构评估与规范化方案》（结论已在迁移对照表与 ITERATION）《流程模板图形化评估》（功能已于 v2.3 移除）。④ 根 `README.md` 增加"两张地图"入口，并把"文档地图同步""Markdown 表格两禁忌"写入硬性维护约定。 | 本轮待提交 |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -315,7 +314,7 @@
   `ai-service/docs/架构评估与规范化方案.md`、`ai-service/docs/知识库总体架构与演进路线.md`（§9.3 本地 OCR 三步现状标注）、
   `docs/附件智能处理能力-自测方案.md`（历史对比数据保留 + 时点说明），以及本文档。
 - **下一步**：P0 落实 embedding 来源 → P1 表驱动异步任务（主系统迁移 V13 `attachment_ai_task`）→ P2 混合检索 + 评测集，
-  施工图见 [`ai-service/docs/知识库落地实施方案.md`](ai-service/docs/知识库落地实施方案.md)。
+  施工图见 [`ai-backend/docs/知识库实施方案与路线.md`](ai-backend/docs/知识库实施方案与路线.md)（原 `ai-service/docs/知识库落地实施方案.md`，随 Python 侧清理由 `docs-1.0` 合并至此）。
 - **文档一致性**：本文档「总表行数 == 明细段数」的集合级校验随之由 **33 == 33** 变为 **34 == 34**（新增 `ai-0.4.0` 一行 + 对应明细一段）。
 
 ### ai-0.5.0 — ai-service v0.5.0：检索链路接通（Embedding 召回 + Reranker 精排）
@@ -352,7 +351,7 @@
   **显式抛错**（由 `tests/test_retrieval.py::test_unimplemented_backend_fails_fast` 钉住），
   **不静默退回进程内检索**——静默降级会把"以为在用集群"和"实际在进程内算"混在一起，属最难排查的一类问题。
   切片键已按内容指纹生成，**可直接当索引 `_id` 做幂等 upsert**。
-  **下一步：OpenSearch 集群部署后实测 kNN 在线路由**（选型与字段见 `ai-backend/docs/知识库落地实施方案.md`；适配层已实现、路由已接但**未实测**，集群不可达/配错时**显式报错**、不静默退回进程内检索）。
+  **下一步：OpenSearch 集群部署后实测 kNN 在线路由**（选型与字段见 `ai-backend/docs/知识库实施方案与路线.md`；适配层已实现、路由已接但**未实测**，集群不可达/配错时**显式报错**、不静默退回进程内检索）。
 - **`src/pm_ai/tools.py` 改为委托**：`search_documents` 现在只做"参数容错 + 结果整形"并调用 `retrieval.search()`，
   **工具签名不变**（`search_documents(query, top_k, doc_id)`），返回体新增 `retrieval`（hybrid/keyword）、
   `reranked`、`note` 三个键；关键词实现已从该文件移出。→ 提示词与问答编排**零改动**，
@@ -467,6 +466,31 @@
 - **遗留**：OpenSearch 集群仍未部署（9200 探测不通）→ kNN 在线路由标注"**已接线、未实测**"，
   `VEC_BACKEND` 保持 `local`；配错/不可达时**显式报错**、绝不静默退回进程内检索。
 
+### docs-1.0 — 文档与脚本集约化重整（2026-09-20）
+
+- **起因**：多轮迭代后文档积累出三类问题——① ITERATION 表格被空行打断，最新两行渲染成普通段落；
+  ② 过程性/已作废文档堆积（Python 时代的操作步骤、已完成的迁移计划、已移除功能的评估），制造歧义与阅读负担；
+  ③ 脚本散落在 `scripts/`、`deploy/windows/`、`deploy/docker/`、`ai-backend/scripts/` 四处，没有统一清单。
+- **表格修复**：用一次性脚本对全仓 Markdown 做体检（两类病：**表格内空行**、**单元格裸竖线**），
+  修掉 ITERATION 的 2 处空行（`ai-1.0.0`/`ai-1.0.1` 回到表格内）与厂商手册 1 处竖线；
+  两条禁忌写入 `README.md` 硬性维护约定，避免复发。
+- **两张地图**：
+  - [`docs/README.md`](docs/README.md)：**唯一文档地图**——按角色的导读路径、权威文档清单（主系统 9 份 + AI 6 份）、
+    **已核减文档登记表**（写明去向，避免以后再去仓库里翻）、文档维护约定；
+  - [`scripts/README.md`](scripts/README.md)：重写为**脚本与操作唯一清单**——§0 环境与三条硬约定
+    （含 **Shell 要求**：`.cmd` 可用、`.ps1` 需 pwsh 7、`.sh` 需要 Git Bash 而**本机没有**）、
+    §1 场景速查（开发/停止/AI 本地跑/质量门/端到端验收/演示数据/查库/本地镜像部署/迭代重建/发版/
+    服务器部署/升级/重启/回滚共 17 项）、§2~§4 分组明细、§5 新增脚本约定（优先 Windows 原生入口）。
+- **核减清单**（原文件 → 去向，详见 `docs/README.md` §2）：崖山 2 合 1（新《崖山数据库与迁移约定》）、
+  知识库 2 合 1（新《知识库实施方案与路线》）、附件自测方案压缩（新《附件智能处理-验收标准与现状》）、
+  双机 ARM 与 Gitea 并入《部署与发布全流程手册》附录 A/B、删除《embedding 端点部署方案》
+  《架构评估与规范化方案》《流程模板图形化评估》三份已作废/已移除的文档。
+- **同步机制**：主系统与 AI 能力服务文档改动**双向登记** `docs/README.md`；一个主题只留一份权威文档；
+  过程性文档完成后核减，决策与实测数字进 ITERATION。
+- **未做（待确认）**：① 把 `scripts/*.sh` 改写/新增为 Windows 原生 `.cmd`/`.ps1` 等价实现
+  （本机无 Git Bash，`make-release.sh` / `dev-reload.sh` / `db-sql.sh` 目前只能装 Git Bash 或走 WSL）；
+  ② `.workbuddy/memory/` 下 7 份助手工作日志（约 1900 行，**未被 git 跟踪**）是否清理。
+
 ---
 
 ## 功能完成度
@@ -537,7 +561,7 @@ bash scripts/make-release.sh <版本>                 # 产发布包（发版）
 5. **附件保留策略**：删除项目后附件元数据与物理文件的治理（当前刻意逻辑保留以便审计追溯）。
 6. 工程化：前端按路由代码分包（当前单包较大）、后端 profile（dev/prod）、数据库每日备份、操作日志导出。
 7. 阶段逾期提醒增强：已具备基础版，可补列表页逾期角标与全局提醒。
-8. **AI 能力服务（`ai-backend`）检索层与主系统集成**：**已全量 Java 化并验证**——Spring Boot 3 / Java 17、与主系统同栈、独立部署；平台 OCR + 千问对话 + Qwen3-VL Embedding/Reranker **全部在真实内网网关上跑通**；**81 个 JUnit 用例全绿**；Docker 镜像已构建并起容器实测通过；原 Python 版 `ai-service/` 已删除、知识资产迁入 `ai-backend/docs/`。**下一步**：① **OpenSearch 集群部署后实测 kNN 在线路由**（适配层已实现、路由已接但未实测；集群不可达/配错时**显式报错**而非静默降级）→ ② **建评测集**（30~50 附件 + 100~200 QA，recall@5 / MRR / 引用准确率 / 数字幻觉率基线）→ ③ 按 [`ai-backend/docs/知识库落地实施方案.md`](ai-backend/docs/知识库落地实施方案.md) 推进 **P1 表驱动异步任务**（迁移 V13 `attachment_ai_task`：上传→解析→切片→向量→索引→回写）与**主系统集成**（JWT + 解析结果回写 + 问答入口并入主系统前端）。
+8. **AI 能力服务（`ai-backend`）检索层与主系统集成**：**已全量 Java 化并验证**——Spring Boot 3 / Java 17、与主系统同栈、独立部署；平台 OCR + 千问对话 + Qwen3-VL Embedding/Reranker **全部在真实内网网关上跑通**；**81 个 JUnit 用例全绿**；Docker 镜像已构建并起容器实测通过；原 Python 版 `ai-service/` 已删除、知识资产迁入 `ai-backend/docs/`。**下一步**：① **OpenSearch 集群部署后实测 kNN 在线路由**（适配层已实现、路由已接但未实测；集群不可达/配错时**显式报错**而非静默降级）→ ② **建评测集**（30~50 附件 + 100~200 QA，recall@5 / MRR / 引用准确率 / 数字幻觉率基线）→ ③ 按 [`ai-backend/docs/知识库实施方案与路线.md`](ai-backend/docs/知识库实施方案与路线.md) 推进 **P1 表驱动异步任务**（迁移 V13 `attachment_ai_task`：上传→解析→切片→向量→索引→回写）与**主系统集成**（JWT + 解析结果回写 + 问答入口并入主系统前端）。
 
 ## 变更记录说明
 
