@@ -101,6 +101,40 @@ class Settings:
     )
     ocr_platform_quality: int = field(default_factory=lambda: _env_int("OCR_PLATFORM_QUALITY", 85))
 
+    # ── 检索（Embedding 召回 + Reranker 精排）────────────────────
+    #
+    # 平台已部署 **Qwen3-VL-Embedding-8B**（4096 维；本部署**不支持 MRL 降维**，见下）与
+    # **Qwen3-VL-Reranker-8B**，入口与对话/OCR 是**同一个网关、同一把 sk**
+    # （见《Qwen3-VL-Embedding-Reranker调用手册.md》）。
+    # 链路：向量召回 recall 条 → Reranker 精排 → 取 top_k（手册建议 50~100 → 5~10）。
+    vec_base_url: str = field(default_factory=lambda: _env("VEC_BASE_URL", ""))
+    vec_api_key: str = field(default_factory=lambda: _env("VEC_API_KEY", ""))
+    vec_timeout: int = field(default_factory=lambda: _env_int("VEC_TIMEOUT", 300))
+    embed_model: str = field(
+        default_factory=lambda: _env("VEC_EMBED_MODEL", "Qwen3-VL-Embedding-8B")
+    )
+    rerank_model: str = field(
+        default_factory=lambda: _env("VEC_RERANK_MODEL", "Qwen3-VL-Reranker-8B")
+    )
+    # 输出维度：**0 = 不传该参数**（用平台默认 4096 维）。
+    # ⚠️ 实测（2026-09-20）：本平台部署的 Qwen3-VL-Embedding-8B **不支持 MRL 降维**——
+    # 传 `dimensions` 会被直接拒掉：HTTP 400 `does not support matryoshka representation,
+    # changing output dimensions will lead to poor results`。手册虽写 MRL 支持 64~4096，
+    # 但**以实际部署为准**，故默认不传（4096 维）；真要用低维得平台侧换部署参数。
+    embed_dimensions: int = field(default_factory=lambda: _env_int("VEC_EMBED_DIMENSIONS", 0))
+    # 召回条数（送进 Reranker 的候选数）与精排后返回条数
+    retrieval_recall: int = field(default_factory=lambda: _env_int("RETRIEVAL_RECALL", 50))
+    retrieval_top_k: int = field(default_factory=lambda: _env_int("RETRIEVAL_TOP_K", 5))
+    # 向量索引后端：
+    #   local      = 进程内余弦 + 本地向量缓存（**当前默认**，零部署，够用到几万条切片）
+    #   opensearch = OpenSearch kNN（**正式选型**，集群尚未部署 → **适配层也尚未实现**：
+    #                配成它会在检索时显式报错，不静默退回 local。见 retrieval._check_backend）
+    vec_backend: str = field(default_factory=lambda: _env("VEC_BACKEND", "local").lower())
+    opensearch_url: str = field(default_factory=lambda: _env("OPENSEARCH_URL", ""))
+    opensearch_index: str = field(default_factory=lambda: _env("OPENSEARCH_INDEX", "pm-ai-chunks"))
+    opensearch_user: str = field(default_factory=lambda: _env("OPENSEARCH_USER", ""))
+    opensearch_password: str = field(default_factory=lambda: _env("OPENSEARCH_PASSWORD", ""))
+
     # 判定扫描件的阈值：平均每页字符数低于此值即视为扫描件。
     # ⚠️ 它不是"本地引擎参数"——文本型/扫描件的分流规则与引擎无关，故保留。
     scanned_char_threshold: int = field(
@@ -117,6 +151,11 @@ class Settings:
             self.ocr_base_url = self.llm_base_url
         if not self.ocr_api_key:
             self.ocr_api_key = self.llm_api_key
+        # 向量化/重排同样走这个网关（手册：与对话、OCR 共用同一套 sk）
+        if not self.vec_base_url:
+            self.vec_base_url = self.llm_base_url
+        if not self.vec_api_key:
+            self.vec_api_key = self.llm_api_key
 
     def summary(self) -> dict:
         """用于 /health 与自检脚本，不输出密钥明文。"""
@@ -127,6 +166,14 @@ class Settings:
             "llm_max_input_chars": self.llm_max_input_chars,
             "llm_max_tokens": self.llm_max_tokens,
             "llm_enable_thinking": self.llm_enable_thinking,
+            "vec_base_url": self.vec_base_url,
+            "vec_api_key": "已配置" if self.vec_api_key else "未配置",
+            "vec_embed_model": self.embed_model,
+            "vec_rerank_model": self.rerank_model,
+            "vec_embed_dimensions": self.embed_dimensions,
+            "vec_backend": self.vec_backend,
+            "retrieval_recall": self.retrieval_recall,
+            "retrieval_top_k": self.retrieval_top_k,
             "ocr_base_url": self.ocr_base_url,
             "ocr_api_key": "已配置" if self.ocr_api_key else "未配置",
             "ocr_timeout": self.ocr_timeout,

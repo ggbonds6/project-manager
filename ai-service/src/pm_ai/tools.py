@@ -27,128 +27,25 @@
 
 ## ⚠️ 将来接向量库只改这里
 
-`search_documents` 目前是**关键词检索**（字符 2-gram + IDF 加权，不引入分词依赖）。
-接入向量库后，把 `_keyword_search` 换成"向量召回 + 关键词混合"即可，
-**工具签名、问答编排、提示词都不用动**。
+`search_documents` 的实际实现在 `retrieval.py`：
+**向量召回（Qwen3-VL-Embedding）+ 关键词召回（2-gram + IDF）→ Reranker 精排**。
+工具这一层只做"参数容错 + 结果整形"，**工具签名不变**——这正是当初把检索单独分层的意义：
+换检索算法（关键词 → 混合 → 将来换 OpenSearch kNN）不用动提示词与问答编排。
 """
 
 from __future__ import annotations
 
 import ast
-import math
 import operator
-import re
 from decimal import Decimal
 from typing import Any
 
-from .store import StoredDoc, iter_chunks, store
-
-MAX_SNIPPET_CHARS = 500
-"""单个检索片段返回给模型的最大字数——太长会白占上下文。"""
-
+from . import retrieval
+from .store import store
 
 # ══════════════════════════════════════════════════════════════════
 # 工具 1：检索文档
 # ══════════════════════════════════════════════════════════════════
-
-_STOP_BIGRAMS = {
-    "的是",
-    "了的",
-    "和和",
-    "在在",
-    "有有",
-    "我我",
-    "你你",
-    "他他",
-    "什么",
-    "怎么",
-    "哪些",
-    "哪个",
-    "如何",
-    "请问",
-    "告诉",
-}
-"""高频但无区分度的二元组，降权用（没有分词库时的粗糙替代）。"""
-
-
-def _query_terms(query: str) -> list[str]:
-    """把查询拆成检索项：英文/数字取整词，中文取 2-gram。
-
-    为什么用 2-gram 而不是分词：中文不引分词库（内网离线装机省事），
-    2-gram 对"付款条款""中标金额"这类术语足够有效。
-    """
-    q = (query or "").strip().lower()
-    terms: set[str] = set()
-    terms.update(re.findall(r"[a-z0-9][a-z0-9\-\.]*", q))
-    han = re.sub(r"[^\u4e00-\u9fff]", "", q)
-    if len(han) == 1:
-        terms.add(han)
-    for i in range(len(han) - 1):
-        bigram = han[i : i + 2]
-        if bigram not in _STOP_BIGRAMS:
-            terms.add(bigram)
-    return list(terms)
-
-
-def _keyword_search(query: str, doc_id: str | None, top_k: int) -> list[dict]:
-    """关键词检索（**将来换成向量召回 + 混合检索**）。
-
-    打分思路（简化版 BM25）：
-      - 完整查询命中 → 高权重
-      - 单个检索项命中 → 基础分 + 词频加成
-      - 用 IDF 压制"项目""合同"这类到处都是的词，突出稀有词
-    """
-    terms = _query_terms(query)
-    raw = (query or "").strip().lower()
-
-    docs: list[StoredDoc] = (
-        [d for d in [store.get(doc_id)] if d] if doc_id else list(store.all_docs())
-    )
-
-    chunks: list[dict] = []
-    for doc in docs:
-        chunks.extend(iter_chunks(doc))
-    if not chunks:
-        return []
-
-    # 统计文档频率（df）用于 IDF
-    df: dict[str, int] = {t: 0 for t in terms}
-    for ch in chunks:
-        low = ch["text"].lower()
-        for t in terms:
-            if t in low:
-                df[t] += 1
-    n = len(chunks)
-
-    scored: list[tuple[float, dict]] = []
-    for ch in chunks:
-        low = ch["text"].lower()
-        score = 0.0
-        if raw and raw in low:
-            score += 12.0
-        for t in terms:
-            c = low.count(t)
-            if not c:
-                continue
-            idf = math.log(1 + n / (1 + df.get(t, 0)))  # 稀有词权重高
-            score += idf * (1 + min(c, 5) * 0.25)
-        if score > 0:
-            scored.append((score, ch))
-
-    scored.sort(key=lambda x: -x[0])
-    out: list[dict] = []
-    for score, ch in scored[: max(1, min(top_k, 10))]:
-        text = ch["text"]
-        out.append(
-            {
-                "doc_id": ch["doc_id"],
-                "filename": ch["filename"],
-                "page_no": ch["page_no"],
-                "score": round(score, 2),
-                "text": text[:MAX_SNIPPET_CHARS] + ("…" if len(text) > MAX_SNIPPET_CHARS else ""),
-            }
-        )
-    return out
 
 
 def search_documents(query: str, top_k: int = 5, doc_id: str | None = None) -> dict:
@@ -158,14 +55,22 @@ def search_documents(query: str, top_k: int = 5, doc_id: str | None = None) -> d
         top_k = int(top_k)
     except (TypeError, ValueError):
         top_k = 5
-    hits = _keyword_search(query or "", doc_id, top_k)
-    if not hits:
+    result = retrieval.search(query or "", top_k=top_k, doc_id=doc_id)
+    if not result["hits"]:
         return {
             "found": 0,
             "hits": [],
             "hint": "没有检索到相关内容。可换关键词（如换成金额、合同编号、条款名），或确认问题涉及的文档是否已上传。",
+            # note 会写明"向量服务不可用，本次仅关键词召回"这类降级信息，别吞掉
+            "note": result.get("note", ""),
         }
-    return {"found": len(hits), "hits": hits}
+    return {
+        "found": result["found"],
+        "hits": result["hits"],
+        "retrieval": result["retrieval"],
+        "reranked": result["reranked"],
+        "note": result["note"],
+    }
 
 
 # ══════════════════════════════════════════════════════════════════

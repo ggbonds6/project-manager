@@ -38,7 +38,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import __version__, analyze, document, llm_client, pdf_utils, platform_ocr, qa
+from . import __version__, analyze, document, llm_client, pdf_utils, platform_ocr, qa, vec_client
 from .config import settings
 from .store import store
 from .tasks import tasks
@@ -104,11 +104,12 @@ def index():
 
 
 @app.get("/health")
-def health(with_llm: bool = False, with_ocr: bool = True) -> JSONResponse:
+def health(with_llm: bool = False, with_ocr: bool = True, with_vec: bool = False) -> JSONResponse:
     """服务自检。
 
     - `with_llm=true` 顺带探测大模型连通性（约 2s，失败约 15s）
     - `with_ocr=false` 跳过平台 OCR 探测（探测结果有缓存，正常很快）
+    - `with_vec=true` 顺带探测向量化/重排网关（检索链路；`GET /models`，不消耗配额）
     """
     payload = {
         "code": 0,
@@ -132,6 +133,19 @@ def health(with_llm: bool = False, with_ocr: bool = True) -> JSONResponse:
     if with_llm:
         ok, detail = llm_client.ping()
         payload["llm"] = {"ok": ok, "detail": detail}
+    if with_vec:
+        # 检索链路（Embedding 召回 + Reranker 精排）走的是同一个网关，
+        # 少了它问答会静默退化为关键词检索——所以自检要能一眼看出来。
+        vec = vec_client.health(timeout=5)
+        payload["vec"] = {
+            "ok": vec.ok,
+            "detail": vec.detail,
+            "models": vec.models,
+            "backend": settings.vec_backend,
+            "embed_model": settings.embed_model,
+            "rerank_model": settings.rerank_model,
+            "dimensions": settings.embed_dimensions,
+        }
     return JSONResponse(payload)
 
 
