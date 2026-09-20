@@ -122,8 +122,9 @@ SYSTEM_PROMPT = """你是政务信息化项目审计辅助系统中的**文档�
 NO_INSTRUCTION = "（用户未指定特别关注点，请按文档类型自行判断应抽取哪些关键信息。）"
 
 
-def build_user_prompt(labeled_text: str, page_count: int, instruction: str = "",
-                      truncated_note: str = "") -> str:
+def build_user_prompt(
+    labeled_text: str, page_count: int, instruction: str = "", truncated_note: str = ""
+) -> str:
     """组装用户提示词。
 
     :param labeled_text: **带页码标记**的原文（见 document.DocumentResult.labeled_text），
@@ -133,8 +134,11 @@ def build_user_prompt(labeled_text: str, page_count: int, instruction: str = "",
     :param truncated_note: 截断说明（为空表示未截断）
     """
     focus = instruction.strip() if instruction and instruction.strip() else NO_INSTRUCTION
-    tail = ("（原文共 %d 页，以上为全部内容。）" % page_count) if not truncated_note \
-        else ("（原文共 %d 页。⚠️ %s）" % (page_count, truncated_note))
+    tail = (
+        f"（原文共 {page_count} 页，以上为全部内容。）"
+        if not truncated_note
+        else f"（原文共 {page_count} 页。⚠️ {truncated_note}）"
+    )
 
     return f"""## 本次任务
 
@@ -253,7 +257,11 @@ def build_doc_scope_note(docs: list[dict]) -> str:
         "| --- | --- | --- |",
     ]
     for d in docs:
-        lines.append(f"| `{d.get('doc_id', '')}` | {d.get('filename', '')} | {d.get('pages', '')} |")
+        lines.append(
+            f"| `{d.get('doc_id', '')}` | {d.get('filename', '')} | {d.get('pages', '')} |"
+        )
     lines.append("")
-    lines.append("回答时优先检索这些文档；用户的问题若明显只涉及某一份，可在 `search_documents` 里指定 `doc_id`。")
+    lines.append(
+        "回答时优先检索这些文档；用户的问题若明显只涉及某一份，可在 `search_documents` 里指定 `doc_id`。"
+    )
     return "\n".join(lines)

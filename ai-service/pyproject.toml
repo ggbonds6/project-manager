@@ -1,32 +1,40 @@
 [project]
 name = "pm-ai-service"
-version = "0.1.0"
-description = "项目管理系统的 AI 能力服务（附件解析 / OCR / 抽取 / 检索），独立部署，与主系统通过 HTTP 交互"
+version = "0.4.0"
+description = "项目管理系统的 AI 能力服务（附件解析 / 平台 OCR / 抽取 / 检索），独立部署，与主系统通过 HTTP 交互"
 requires-python = ">=3.10"
 
+# ⚠️ 依赖只留**运行时真正用到**的。2026-09-18 清理的三处冗余：
+#   - `pandas` / `openpyxl`：只有一次性摸底脚本（inventory / batch_ocr 导出 Excel）用，
+#     服务进程从不 import → 移入 [scripts] extra（pandas+numpy 上百 MB，不该压在镜像里）；
+#   - `pillow`：全仓库无直接 import（本地 OCR 时代由它传递带入），平台 OCR 走
+#     PyMuPDF 渲染出的 JPEG 字节，用不到 PIL → 删除；
+#   - `rapidocr-onnxruntime` 与 `paddle` extra：**本地 OCR 兜底已移除**（决策见 README §13）。
+#     平台 OCR 是政务内网自建、质量实测碾压本地（同一份合同：平台连"柒佰柒拾捌万元整"
+#     都完整，本地引擎金额全丢），保留两套引擎等于天天背着一套更差的兜底。
 dependencies = [
   # Web 服务
-  "fastapi>=0.110",
-  "uvicorn[standard]>=0.29",
-  "python-multipart>=0.0.9",
-  # 文档处理
-  "pymupdf>=1.24",          # PDF 文本提取 + 页面渲染为图片（不依赖 poppler）
-  "pillow>=10.0",
-  # OCR（RapidOCR = PaddleOCR 模型的 ONNX 版：同样模型、依赖更少、装机更省事）
-  "rapidocr-onnxruntime>=1.3",
-  # 大模型调用（千问走 OpenAI 兼容协议）
-  "openai>=1.30",
-  # 配置与统计
-  "python-dotenv>=1.0",
-  "pandas>=2.0",
-  "openpyxl>=3.1",          # to_excel 需要
+  "fastapi>=0.110,<1.0",
+  "uvicorn[standard]>=0.29,<1.0",
+  "python-multipart>=0.0.9,<1.0",
+  # 文档处理：PyMuPDF 既能提取文本层、又能把页面渲染成图，一条依赖覆盖两条路
+  "pymupdf>=1.24,<2.0",
+  # 大模型调用（千问走 OpenAI 兼容协议，本质是 HTTP）
+  "openai>=1.30,<3.0",
+  # 配置：.env 便于本机开发；生产直接用真实环境变量
+  "python-dotenv>=1.0,<2.0",
 ]
 
 [project.optional-dependencies]
-# 备选 OCR：若 RapidOCR 效果不达标，换成完整 PaddleOCR（同为同一批模型，含更全的后处理）
-paddle = [
-  "paddleocr>=2.7",
-  "paddlepaddle>=2.6",
+# 质量门（lint + 测试）。本机没装 Python 时在容器里跑：见 scripts/check.sh
+dev = [
+  "pytest>=8.0,<9.0",
+  "ruff>=0.6,<1.0",
+]
+# 一次性摸底脚本（scripts/inventory.py、scripts/batch_ocr.py 导出 Excel）才需要
+scripts = [
+  "pandas>=2.0,<3.0",
+  "openpyxl>=3.1,<4.0",
 ]
 
 [project.scripts]
@@ -41,3 +49,37 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# ── 质量门配置（P0 规范化，2026-09-18 新增）─────────────────────
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# 只处理 Python 源码：`.venv`/`work`/`static` 是虚拟环境、运行产物与前端单页。
+# `*.md` 也排除——ruff 0.16 起会顺手格式化 Markdown 里的 Python 代码块，
+# 而文档（如《平台OCR调用使用手册.md》，本身是只读归档件）不该被 lint 工具改写。
+extend-exclude = [".venv", "work", "static", "*.md"]
+
+[tool.ruff.lint]
+# E/W = pycodestyle、F = pyflakes、I = 导入排序、UP = pyupgrade、B = bugbear、SIM = 简化建议
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+# E501（行太长）**刻意忽略**：本项目大量注释/docstring 是中文，而 ruff 按显示宽度计算
+# （CJK 字符记 2 列），中文说明行必然"超长"。强行折行只会把说明拆得难读，
+# 代码本身的换行与缩进交给 `ruff format`（line-length = 100）保证。
+ignore = ["E501"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 的依赖注入就是"在默认值里调用"（File(...) / Form(...) / Depends(...)），
+# B008 在该框架下是误报，官方推荐用 extend-immutable-calls 放行，而不是全局关掉 B008。
+extend-immutable-calls = [
+  "fastapi.Body",
+  "fastapi.Depends",
+  "fastapi.File",
+  "fastapi.Form",
+  "fastapi.Header",
+  "fastapi.Query",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

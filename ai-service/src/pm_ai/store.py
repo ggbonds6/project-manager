@@ -16,13 +16,18 @@
   "doc_id": "a1b2c3...",
   "filename": "数据库一体机补充协议.pdf",
   "kind": "scanned",
-  "pages": [{"page_no": 1, "text": "...", "confidence": 0.97}],
-  "avg_confidence": 0.97,
+  "pages": [{"page_no": 1, "text": "...", "confidence": null}],
+  "avg_confidence": null,
   "uploaded_at": "2026-09-16T15:50:00",
   "size_bytes": 5458280,
   "chunks": []
 }
 ```
+
+⚠️ `confidence` / `avg_confidence` 现在**恒为 `null`**：平台 OCR 不返回置信度，
+而本地引擎（唯一能给逐页分数的来源）已于 2026-09-18 移除。
+这两个键保留是为了老文档与前端读取时不出现缺字段——`null` 的正确读法是
+"这个信息不存在"，不是"识别质量为零"。
 
 `chunks` 现在为空，是留给向量化的位置：
 接入后每项形如 `{"page_no": 3, "text": "...", "embedding": [...]}`。
@@ -40,10 +45,10 @@ from __future__ import annotations
 import json
 import re
 import uuid
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Iterator
 
 from . import document
 from .config import settings
@@ -53,6 +58,7 @@ DEFAULT_CHUNK_CHARS = 500
 
 
 # ── 数据结构 ─────────────────────────────────────────────────────
+
 
 @dataclass
 class StoredDoc:
@@ -65,8 +71,10 @@ class StoredDoc:
     engine: str = ""
     dpi: int | None = None
     avg_confidence: float | None = None
+    """平均识别置信度。**平台 OCR 不返回置信度，故恒为 `None`**；保留是为了历史文档与前端兼容。"""
     provider: str = ""
-    """解析时实际使用的引擎（`platform` / `rapid` / `paddle` / `text-layer`）。"""
+    """解析时实际使用的引擎。取值域已收窄为 `platform` / `text-layer`（2026-09-18 起，
+    本地 `rapid` / `paddle` 已移除）。"""
     image_format: str = ""
     stages: dict = field(default_factory=dict)
     """阶段耗时 `{"render": 2.1, "ocr": 24.0}`——"时间花在哪"要看得见。"""
@@ -192,7 +200,7 @@ class StoredDoc:
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> "StoredDoc":
+    def from_dict(cls, d: dict) -> StoredDoc:
         return cls(
             doc_id=d["doc_id"],
             filename=d.get("filename", ""),
@@ -214,6 +222,7 @@ class StoredDoc:
 
 # ── 存储 ─────────────────────────────────────────────────────────
 
+
 class DocStore:
     """基于文件系统的文档库。
 
@@ -231,8 +240,7 @@ class DocStore:
         safe = re.sub(r"[^0-9a-fA-F]", "", doc_id)
         return self.root / f"{safe}.json"
 
-    def save(self, filename: str, doc: document.DocumentText,
-             size_bytes: int = 0) -> StoredDoc:
+    def save(self, filename: str, doc: document.DocumentText, size_bytes: int = 0) -> StoredDoc:
         """把一个已解析的文档入库，返回入库结果。
 
         页级信息**尽量留全**（来源 / 区域块 / 质量信号 / 耗时）——这些是"内容出处"
@@ -279,7 +287,7 @@ class DocStore:
         path = self._path(doc.doc_id)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(doc.to_dict(), ensure_ascii=False), encoding="utf-8")
-        tmp.replace(path)   # 原子替换，避免写一半被读到
+        tmp.replace(path)  # 原子替换，避免写一半被读到
 
     def get(self, doc_id: str) -> StoredDoc | None:
         path = self._path(doc_id)
@@ -319,6 +327,7 @@ class DocStore:
 
 # ── 切片（检索的最小单元）─────────────────────────────────────────
 
+
 def iter_chunks(doc: StoredDoc, chunk_chars: int = DEFAULT_CHUNK_CHARS) -> Iterator[dict]:
     """把文档切成检索单元，**不跨页**，返回 {doc_id, page_no, text}。
 
@@ -338,14 +347,17 @@ def iter_chunks(doc: StoredDoc, chunk_chars: int = DEFAULT_CHUNK_CHARS) -> Itera
         buf = ""
         for para in paras:
             if buf and len(buf) + len(para) > chunk_chars:
-                yield {"doc_id": doc.doc_id, "filename": doc.filename,
-                       "page_no": page_no, "text": buf}
+                yield {
+                    "doc_id": doc.doc_id,
+                    "filename": doc.filename,
+                    "page_no": page_no,
+                    "text": buf,
+                }
                 buf = para
             else:
                 buf = f"{buf}\n{para}" if buf else para
         if buf:
-            yield {"doc_id": doc.doc_id, "filename": doc.filename,
-                   "page_no": page_no, "text": buf}
+            yield {"doc_id": doc.doc_id, "filename": doc.filename, "page_no": page_no, "text": buf}
 
 
 store = DocStore()

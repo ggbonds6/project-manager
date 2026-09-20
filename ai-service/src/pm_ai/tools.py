@@ -8,8 +8,16 @@
 | --- | --- |
 | `search_documents` | 长文档塞不进上下文，必须按需检索 |
 | `read_page` | 检索到的片段可能不够，需要读整页原文核对 |
-| `list_documents` | 多文档时要先知道有哪些 |
 | `calculate` | **模型算数不可靠**，金额求和/比例校验必须交给代码 |
+
+> **为什么没有 `list_documents`**（2026-09-18 删除）：文档清单已经由
+> `qa.build_messages` → `prompts.build_doc_scope_note` 注入 system 提示词
+> （`doc_id | 文件名 | 页数`），工具返回的信息与之重复，只会引诱模型"先列一遍文档"
+> 白烧一轮往返。清单若要展示更多字段，改 scope note 即可。
+>
+> 判据（提工具前先问）：只有模型**物理上做不到**的才值得做成工具——看不见的数据
+> （检索）、算不准的（精确算术）；模型本来就会的（摘要/抽取/判断/格式化）交给提示词，
+> 不要工具化；只是"想让流程更自主"的更不要（见下条）。
 
 ## 为什么不做成"全流程 agent 自主调度"
 
@@ -30,6 +38,7 @@ import ast
 import math
 import operator
 import re
+from decimal import Decimal
 from typing import Any
 
 from .store import StoredDoc, iter_chunks, store
@@ -43,8 +52,21 @@ MAX_SNIPPET_CHARS = 500
 # ══════════════════════════════════════════════════════════════════
 
 _STOP_BIGRAMS = {
-    "的是", "了的", "和和", "在在", "有有", "我我", "你你", "他他",
-    "什么", "怎么", "哪些", "哪个", "如何", "请问", "告诉",
+    "的是",
+    "了的",
+    "和和",
+    "在在",
+    "有有",
+    "我我",
+    "你你",
+    "他他",
+    "什么",
+    "怎么",
+    "哪些",
+    "哪个",
+    "如何",
+    "请问",
+    "告诉",
 }
 """高频但无区分度的二元组，降权用（没有分词库时的粗糙替代）。"""
 
@@ -62,7 +84,7 @@ def _query_terms(query: str) -> list[str]:
     if len(han) == 1:
         terms.add(han)
     for i in range(len(han) - 1):
-        bigram = han[i:i + 2]
+        bigram = han[i : i + 2]
         if bigram not in _STOP_BIGRAMS:
             terms.add(bigram)
     return list(terms)
@@ -108,7 +130,7 @@ def _keyword_search(query: str, doc_id: str | None, top_k: int) -> list[dict]:
             c = low.count(t)
             if not c:
                 continue
-            idf = math.log(1 + n / (1 + df.get(t, 0)))     # 稀有词权重高
+            idf = math.log(1 + n / (1 + df.get(t, 0)))  # 稀有词权重高
             score += idf * (1 + min(c, 5) * 0.25)
         if score > 0:
             scored.append((score, ch))
@@ -117,13 +139,15 @@ def _keyword_search(query: str, doc_id: str | None, top_k: int) -> list[dict]:
     out: list[dict] = []
     for score, ch in scored[: max(1, min(top_k, 10))]:
         text = ch["text"]
-        out.append({
-            "doc_id": ch["doc_id"],
-            "filename": ch["filename"],
-            "page_no": ch["page_no"],
-            "score": round(score, 2),
-            "text": text[:MAX_SNIPPET_CHARS] + ("…" if len(text) > MAX_SNIPPET_CHARS else ""),
-        })
+        out.append(
+            {
+                "doc_id": ch["doc_id"],
+                "filename": ch["filename"],
+                "page_no": ch["page_no"],
+                "score": round(score, 2),
+                "text": text[:MAX_SNIPPET_CHARS] + ("…" if len(text) > MAX_SNIPPET_CHARS else ""),
+            }
+        )
     return out
 
 
@@ -136,7 +160,11 @@ def search_documents(query: str, top_k: int = 5, doc_id: str | None = None) -> d
         top_k = 5
     hits = _keyword_search(query or "", doc_id, top_k)
     if not hits:
-        return {"found": 0, "hits": [], "hint": "没有检索到相关内容。可换关键词，或先用 list_documents 确认文档。"}
+        return {
+            "found": 0,
+            "hits": [],
+            "hint": "没有检索到相关内容。可换关键词（如换成金额、合同编号、条款名），或确认问题涉及的文档是否已上传。",
+        }
     return {"found": len(hits), "hits": hits}
 
 
@@ -144,19 +172,22 @@ def search_documents(query: str, top_k: int = 5, doc_id: str | None = None) -> d
 # 工具 2：读整页
 # ══════════════════════════════════════════════════════════════════
 
+
 def read_page(doc_id: str, page_no: int) -> dict:
     """读取指定文档的某一页原文（核对上下文用）。"""
     doc = store.get(doc_id) if doc_id else None
     if doc is None:
-        return {"error": f"找不到文档 {doc_id}；可先用 list_documents 查看可用文档。"}
+        return {"error": f"找不到文档 {doc_id}；文档清单见 system 提示词。"}
     try:
         page_no = int(page_no)
     except (TypeError, ValueError):
         return {"error": f"页码无效：{page_no}"}
     text = doc.page_text(page_no)
     if not text.strip():
-        return {"error": f"{doc.filename} 第 {page_no} 页没有文本（可能是空白页或未识别）。",
-                "total_pages": doc.page_count}
+        return {
+            "error": f"{doc.filename} 第 {page_no} 页没有文本（可能是空白页或未识别）。",
+            "total_pages": doc.page_count,
+        }
     return {
         "doc_id": doc.doc_id,
         "filename": doc.filename,
@@ -167,52 +198,49 @@ def read_page(doc_id: str, page_no: int) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════
-# 工具 3：列出文档
+# 工具 3：计算（金额求和、比例校验等）
 # ══════════════════════════════════════════════════════════════════
 
-def list_documents() -> dict:
-    """列出当前已上传的文档。"""
-    docs = store.list()
-    return {
-        "count": len(docs),
-        "documents": [
-            {"doc_id": d["doc_id"], "filename": d["filename"],
-             "pages": d["pages"], "chars": d["chars"]}
-            for d in docs
-        ],
-    }
-
-
-# ══════════════════════════════════════════════════════════════════
-# 工具 4：计算（金额求和、比例校验等）
-# ══════════════════════════════════════════════════════════════════
-
+# ⚠️ 只留四则运算。**刻意不给 `**` / `//` / `%`**（2026-09-18 收紧）：
+# 表达式长度上限 200 字符挡不住 `9**9**9` —— 大整数幂会算出一个天文数字，CPU/内存被打满；
+# 而"金额求和、比例校验、差额"这些审计场景根本用不到乘方/取整/取模。
 _OPS = {
-    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
-    ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv,
-    ast.Pow: operator.pow, ast.Mod: operator.mod,
-    ast.USub: operator.neg, ast.UAdd: operator.pos,
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
 }
 
 
-def _eval_node(node: ast.AST) -> float:
+def _eval_node(node: ast.AST) -> Decimal:
+    """按白名单求值。**全程 Decimal**，与 `checks.py` 的校验口径保持一致。
+
+    原实现走 float：同一个服务里"金额校验用十进制、金额计算用浮点"，
+    大额累加会出现分位漂移，`round(value, 4)` 只是把误差藏起来。
+    """
     if isinstance(node, ast.Expression):
         return _eval_node(node.body)
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return float(node.value)
-    if isinstance(node, ast.List):
-        raise ValueError("不支持列表")
+    if isinstance(node, ast.Constant):
+        # bool 是 int 的子类，显式排除，避免 True/False 被当成数字
+        if isinstance(node.value, bool) or not isinstance(node.value, (int, float)):
+            raise ValueError("只支持数字")
+        return Decimal(str(node.value))
     if isinstance(node, ast.BinOp) and type(node.op) in _OPS:
-        return float(_OPS[type(node.op)](_eval_node(node.left), _eval_node(node.right)))
+        return _OPS[type(node.op)](_eval_node(node.left), _eval_node(node.right))
     if isinstance(node, ast.UnaryOp) and type(node.op) in _OPS:
-        return float(_OPS[type(node.op)](_eval_node(node.operand)))
-    raise ValueError("仅支持数字与 + - * / // % ** ( )")
+        return _OPS[type(node.op)](_eval_node(node.operand))
+    raise ValueError("仅支持数字与 + - * / ( )")
 
 
 def calculate(expression: str) -> dict:
     """做精确算术。**金额求和、比例校验请用本工具，不要自己心算。**
 
     例：`calculate("2394690 + 3192920 + 1596460 + 798230")`
+
+    返回的 `result` 是**字符串**而不是数字：JSON 里的浮点会丢分位精度，
+    而审计口径要求"看到什么就是什么"。需要四舍五入到分时用 `rounded_2`。
     """
     expr = (expression or "").strip().replace(",", "").replace("，", "")
     if not expr:
@@ -224,7 +252,11 @@ def calculate(expression: str) -> dict:
         value = _eval_node(ast.parse(expr, mode="eval"))
     except Exception as exc:  # noqa: BLE001
         return {"error": f"无法计算：{exc}"}
-    return {"expression": expression, "result": round(value, 4)}
+    return {
+        "expression": expression,
+        "result": format(value.normalize(), "f"),
+        "rounded_2": format(value.quantize(Decimal("0.01")), "f"),
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -232,14 +264,6 @@ def calculate(expression: str) -> dict:
 # ══════════════════════════════════════════════════════════════════
 
 TOOL_SCHEMAS: list[dict] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "list_documents",
-            "description": "列出当前已上传的文档（文件名、页数、字数）。开始分析前可先调用它确认有哪些文档。",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    },
     {
         "type": "function",
         "function": {
@@ -252,9 +276,15 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "string", "description": "检索关键词或问题，如“付款条款”“中标金额”"},
+                    "query": {
+                        "type": "string",
+                        "description": "检索关键词或问题，如“付款条款”“中标金额”",
+                    },
                     "top_k": {"type": "integer", "description": "返回片段数，默认 5，最多 10"},
-                    "doc_id": {"type": "string", "description": "限定在某份文档内检索；不填则检索全部"},
+                    "doc_id": {
+                        "type": "string",
+                        "description": "限定在某份文档内检索；不填则检索全部",
+                    },
                 },
                 "required": ["query"],
             },
@@ -268,7 +298,10 @@ TOOL_SCHEMAS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "doc_id": {"type": "string", "description": "文档 ID（来自 list_documents 或 search_documents）"},
+                    "doc_id": {
+                        "type": "string",
+                        "description": "文档 ID（见 system 提示词里的文档清单，或 search_documents 的返回）",
+                    },
                     "page_no": {"type": "integer", "description": "页码，从 1 开始"},
                 },
                 "required": ["doc_id", "page_no"],
@@ -281,13 +314,15 @@ TOOL_SCHEMAS: list[dict] = [
             "name": "calculate",
             "description": (
                 "做精确算术计算。**涉及金额求和、比例校验、差额计算时必须使用本工具**，"
-                "不要自己心算。表达式只支持数字与 + - * / // % ** ( )。"
+                "不要自己心算。表达式只支持数字与 + - * / ( )。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "expression": {"type": "string",
-                                   "description": "算式，如 2394690 + 3192920 + 1596460 + 798230"},
+                    "expression": {
+                        "type": "string",
+                        "description": "算式，如 2394690 + 3192920 + 1596460 + 798230",
+                    },
                 },
                 "required": ["expression"],
             },
@@ -300,7 +335,6 @@ TOOL_SCHEMAS: list[dict] = [
 # 会让下面的参数过滤把模型传来的参数**全部丢掉**
 # （实测症状：`search_documents() missing 1 required positional argument: 'query'`）。
 _DISPATCH = {
-    "list_documents": list_documents,
     "search_documents": search_documents,
     "read_page": read_page,
     "calculate": calculate,

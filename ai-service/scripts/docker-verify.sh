@@ -4,7 +4,8 @@
 #
 # 用法（在仓库任意位置，脚本会自己定位 ai-service/）：
 #   bash scripts/docker-verify.sh up          # 构建 + 启动 + 等就绪 + 自检
-#   bash scripts/docker-verify.sh check       # 容器内跑环境自检（依赖/OCR/模型连通）
+#   bash scripts/docker-verify.sh check       # 容器内跑环境自检（依赖/平台 OCR/模型连通）
+#   bash scripts/docker-verify.sh test        # 质量门：ruff + pytest（等价于 scripts/check.sh）
 #   bash scripts/docker-verify.sh inventory   # 附件构成摸底（samples/ 目录）
 #   bash scripts/docker-verify.sh ocr <文件>  # 单文件识别试（相对 /samples 的路径）
 #   bash scripts/docker-verify.sh logs        # 跟踪日志
@@ -56,11 +57,19 @@ wait_ready() {
   return 1
 }
 
+# 摸底 / 批量导出脚本要用 pandas+openpyxl，而这两个依赖已从**服务**依赖里摘出去
+# （见 pyproject 的 [scripts] extra：只有一次性摸底脚本用，不该压在镜像里）。
+# 所以这里按需在容器内装上，而非把 pandas 塞回镜像。
+ensure_scripts_extra() {
+  echo "── 安装 [scripts] extra（pandas/openpyxl，仅摸底脚本需要）──"
+  docker compose exec -T ai-service pip install --quiet --no-cache-dir -e ".[scripts]"
+}
+
 case "$MODE" in
   up)
     require_env
     mkdir -p samples work
-    echo "── 构建镜像（构建期会跑 OCR 冒烟自检，首次约 3~8 分钟）──"
+    echo "── 构建镜像（不含本地 OCR，通常 1~3 分钟）──"
     docker compose build
     echo
     echo "── 启动服务 ──"
@@ -87,7 +96,13 @@ case "$MODE" in
     docker compose exec -T ai-service python scripts/check_env.py
     ;;
 
+  test)
+    # 质量门与容器无关，复用独立脚本（它在临时容器里装 .[dev] 后跑 ruff + pytest）
+    bash "${ROOT}/scripts/check.sh"
+    ;;
+
   inventory)
+    ensure_scripts_extra
     docker compose exec -T ai-service python scripts/inventory.py /samples
     ;;
 
@@ -101,6 +116,7 @@ case "$MODE" in
     ;;
 
   ocr-many)
+    ensure_scripts_extra
     docker compose exec -T ai-service python scripts/batch_ocr.py /samples --out-dir /app/work/out "${@}"
     ;;
 

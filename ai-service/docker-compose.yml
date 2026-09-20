@@ -3,7 +3,7 @@
 #
 # 用法（在 ai-service/ 目录下）：
 #   cp .env.example .env && vi .env        # 填千问地址与密钥（首次）
-#   docker compose build                   # 构建（构建期会跑 OCR 自检）
+#   docker compose build                   # 构建（镜像不含本地 OCR，构建很快）
 #   docker compose up -d                   # 启动
 #   docker compose logs -f ai-service      # 看日志
 #

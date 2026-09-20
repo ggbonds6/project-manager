@@ -20,7 +20,7 @@
 ├─ docs/         设计与部署文档
 ├─ deploy/       部署资产（docker 生产镜像 / windows 开发脚本）
 ├─ scripts/      发版打包 + 演示数据 + 开发机辅助工具（清单见 scripts/README.md）
-├─ ai-service/   附件智能处理服务（Python/FastAPI，同仓库但独立构建与部署，暂缓开发）
+├─ ai-service/   附件智能处理服务（Python/FastAPI，同仓库但独立构建与部署，开发中 · ai-0.4.0）
 ├─ frontend/     React 前端
 └─ backend/      Spring Boot 后端
 ```

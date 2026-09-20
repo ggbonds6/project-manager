@@ -294,8 +294,9 @@ function main() {
     status.innerHTML = `正在连接 ${API} …`;
     fetch(API + '/health').then(r => r.json()).then(d => {
       const c = d.config || {}, ocr = d.ocr || {};
-      const provider = d.provider || c.ocr_provider || '-';
-      const label = { platform: '平台 OCR（PaddleOCR-VL）', rapid: '本地 RapidOCR', paddle: '本地 PaddleOCR' }[provider] || provider;
+      // 本地引擎已于 2026-09-18 移除，服务端 provider 恒为 platform（不再有 auto/回落）
+      const provider = d.provider || 'platform';
+      const label = { platform: '平台 OCR（PaddleOCR-VL）' }[provider] || provider;
       const ocrLine = provider === 'platform'
         ? `识别引擎：${label}${ocr.workers ? `（空闲 ${ocr.idle ?? '-'}/${ocr.workers}）` : ''}`
         : `<span style="color:#a3231b">识别引擎：${label}${ocr.ok ? '' : '（平台 OCR 不可用：' + escapeHtml(ocr.detail || '') + '）'}</span>`;
@@ -510,7 +511,7 @@ function main() {
     }
     docList.innerHTML = docs.map(d => {
       const engine = d.provider || d.engine || '';
-      const engineText = { platform: '平台 OCR', rapid: '本地 OCR', paddle: '本地 OCR', 'text-layer': '文本层' }[engine] || engine;
+      const engineText = { platform: '平台 OCR', 'text-layer': '文本层' }[engine] || engine;
       const review = (d.review_pages || []).length ? ` · <span style="color:#a3231b">待复核 ${d.review_pages.join(',')} 页</span>` : '';
       return `
       <div class="doc-item ${selected.has(d.doc_id) ? 'on' : ''}" data-id="${d.doc_id}">

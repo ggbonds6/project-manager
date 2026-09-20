@@ -2,27 +2,21 @@
 # ─────────────────────────────────────────────────────────────────
 # PM AI Service 镜像
 #
-# 用途：本机 / 内网 x86_64 机器上的**验证环境**（先把 OCR 与文档解析跑通）。
-# 正式环境若上 GPU 推理，可基于同一份代码另建镜像，本文件仍可作为基础。
+# 用途：本机 / 内网机器上的**验证环境**（文档解析 + 平台 OCR + 抽取问答）。
 #
-# 关键点：镜像内**自带 OCR 模型**（rapidocr-onnxruntime 把模型打包在 wheel 里），
-#        构建时跑一次真实识别 —— 构建成功即代表离线可用。
+# 关键点（2026-09-18 起）：
+#   - **镜像内不含任何本地 OCR 引擎**：识别全部走内网平台 OCR（HTTP），
+#     因此不再需要 OpenCV / onnxruntime 的运行时依赖（libgl1 / libglib2.0-0 / libgomp1），
+#     镜像更小、构建更快，也不再在构建期下载/打包 OCR 模型；
+#   - 构建期只校验"包能导入"——真实识别依赖外部平台，构建期连不上，
+#     请用 `python scripts/check_env.py` 在**运行时**自检（见 README §2.1）。
 # ─────────────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    OMP_NUM_THREADS=4
-
-# libgl1/libglib2.0-0：OpenCV 依赖（RapidOCR 图像处理链路，slim 镜像默认没有）
-# libgomp1：onnxruntime 的 OpenMP 运行时
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgl1 \
-        libglib2.0-0 \
-        libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
@@ -35,8 +29,9 @@ RUN pip install --upgrade pip setuptools wheel \
 COPY scripts/ ./scripts/
 COPY static/ ./static/
 
-# 构建期冒烟自检：确认打包正确 + OCR 真的能识别（失败会让构建中断）
-RUN python scripts/selfcheck_ocr.py
+# 构建期冒烟自检：只确认包结构正确、能 import
+# （平台 OCR 与大模型都要运行时才连得上，构建期验证不了）
+RUN python -c "import pm_ai, pm_ai.api, pm_ai.document, pm_ai.platform_ocr; print('pm_ai import ok')"
 
 EXPOSE 8100
 

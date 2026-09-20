@@ -1,7 +1,7 @@
 """编排：文档 → 结构化文本 → 提示词 → 千问 → markdown 结果。
 
 这一层只负责"把链路串起来"，具体规则都在：
-- 解析/分页/置信度 → `document.py`
+- 解析/分页/页内区域 → `document.py`
 - 提示词与铁律     → `prompts.py`
 - 模型调用         → `llm_client.py`
 
@@ -74,8 +74,7 @@ def _truncate(doc: document.DocumentText, limit: int) -> tuple[str, bool, str]:
     return "\n\n".join(kept), True, note
 
 
-def analyze(path: str | Path, instruction: str = "",
-            dpi: int | None = None) -> AnalyzeResult:
+def analyze(path: str | Path, instruction: str = "", dpi: int | None = None) -> AnalyzeResult:
     """对一个文件做完整的"抽取 + 生成"。
 
     :param path:        文件路径
@@ -97,8 +96,10 @@ def analyze(path: str | Path, instruction: str = "",
         return AnalyzeResult(
             markdown=(
                 "> ⚠️ **未从文件中提取到任何文本**。\n>\n"
-                "> 可能原因：扫描件清晰度过低、OCR 未能识别，或文件为空白页。\n"
-                "> 建议：确认文件内容正常，或提高渲染 DPI（`.env` 的 `OCR_DPI`）后重试。"
+                "> 可能原因：扫描件清晰度过低、平台 OCR 未能识别，或文件为空白页。\n"
+                "> 建议：确认文件内容正常；用 `.env` 的 `OCR_PLATFORM_DPI` 提高渲染 DPI "
+                "后重试（仅排障/印章两遍法有用）；或先用 `/health` 确认平台 OCR 是否可用。\n"
+                "> 注意：本地 OCR 兜底已于 2026-09-18 移除，平台不可用时**没有备用引擎**。"
             ),
             doc=doc.summary(),
             warning="未提取到文本",
@@ -167,8 +168,7 @@ def analyze(path: str | Path, instruction: str = "",
 
     # 输出侧机器校验：答案里的每个数字能不能在原文找到。
     # 这是"禁止虚构"的**机器兜底**——不依赖模型的自觉，也不依赖它的自评分。
-    verification = checks.verify_numbers_in_source(
-        markdown, [p.text for p in doc.pages])
+    verification = checks.verify_numbers_in_source(markdown, [p.text for p in doc.pages])
     if verification.get("status") == "warn" and not warning:
         warning = "有数字在原文中未找到，请重点核对"
 

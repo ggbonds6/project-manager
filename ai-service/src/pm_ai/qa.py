@@ -72,7 +72,7 @@ def build_messages(
     messages: list[dict] = [{"role": "system", "content": system_content}]
 
     # 只回放纯文本历史（见模块文档）；截断到最近 N 轮
-    for item in (history or [])[-MAX_HISTORY_TURNS * 2:]:
+    for item in (history or [])[-MAX_HISTORY_TURNS * 2 :]:
         role = item.get("role")
         content = (item.get("content") or "").strip()
         if role in ("user", "assistant") and content:
@@ -102,18 +102,23 @@ def ask(
         )
 
     messages, docs = build_messages(question, doc_ids, history)
-    result = agent.run(messages, max_rounds=max_rounds or agent.DEFAULT_MAX_ROUNDS,
-                       timeout=settings.llm_timeout)
+    result = agent.run(
+        messages, max_rounds=max_rounds or agent.DEFAULT_MAX_ROUNDS, timeout=settings.llm_timeout
+    )
 
     answer = result.text
     if not answer:
         if result.stopped_reason == "error":
-            answer = (f"> ⚠️ **问答失败**：`{result.error}`\n>\n"
-                      "> 排查：① 推理服务是否可达（`/health?with_llm=true`）　"
-                      "② `LLM_TIMEOUT` 是否偏小　③ 模型名是否正确")
+            answer = (
+                f"> ⚠️ **问答失败**：`{result.error}`\n>\n"
+                "> 排查：① 推理服务是否可达（`/health?with_llm=true`）　"
+                "② `LLM_TIMEOUT` 是否偏小　③ 模型名是否正确"
+            )
         elif result.stopped_reason == "max_rounds":
-            answer = ("> ⚠️ 已达到工具调用轮数上限，仍未给出结论。\n>\n"
-                      "> 可尝试：把问题问得更具体、指定某一份文档，或调大 `LLM_MAX_TOKENS`。")
+            answer = (
+                "> ⚠️ 已达到工具调用轮数上限，仍未给出结论。\n>\n"
+                "> 可尝试：把问题问得更具体、指定某一份文档，或调大 `LLM_MAX_TOKENS`。"
+            )
         else:
             answer = f"> ⚠️ {prompts.EMPTY_OUTPUT_HINT}"
 

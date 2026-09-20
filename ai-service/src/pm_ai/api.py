@@ -13,7 +13,7 @@
   GET  /documents/{id}    文档详情（页级明细 + 确定性校验结果）
   DELETE /documents/{id}  删除文档
   POST /chat              基于文档库问答（模型自行调用检索/计算工具）
-  POST /ocr/file          只做识别，返回文本（含识别置信度、低置信行数）
+  POST /ocr/file          只做识别，返回文本（平台 OCR，不调模型）
   POST /ocr/pdf-info      只判断 PDF 是文本型还是扫描件（摸底用）
 
 ## 一个容易踩的坑：阻塞接口不要写成 `async def`
@@ -38,8 +38,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (__version__, analyze, document, llm_client, ocr_engine, pdf_utils,
-               platform_ocr, qa)
+from . import __version__, analyze, document, llm_client, pdf_utils, platform_ocr, qa
 from .config import settings
 from .store import store
 from .tasks import tasks
@@ -91,15 +90,18 @@ def index():
     page = STATIC_DIR / "index.html"
     if page.is_file():
         return FileResponse(page)
-    return JSONResponse({
-        "code": 0,
-        "service": "pm-ai-service",
-        "version": __version__,
-        "hint": "前端页面未随镜像提供（static/index.html 不存在），可直接访问 /docs 使用接口。",
-    })
+    return JSONResponse(
+        {
+            "code": 0,
+            "service": "pm-ai-service",
+            "version": __version__,
+            "hint": "前端页面未随镜像提供（static/index.html 不存在），可直接访问 /docs 使用接口。",
+        }
+    )
 
 
 # ── 自检 ────────────────────────────────────────────────────────
+
 
 @app.get("/health")
 def health(with_llm: bool = False, with_ocr: bool = True) -> JSONResponse:
@@ -114,7 +116,7 @@ def health(with_llm: bool = False, with_ocr: bool = True) -> JSONResponse:
         "version": __version__,
         "config": settings.summary(),
     }
-    # 先探测（带缓存），再解析 provider —— resolve 会复用刚才的探测结果
+    # 先探测（带缓存）平台 OCR 是否可用
     if with_ocr:
         h = platform_ocr.health(timeout=3)
         payload["ocr"] = {
@@ -124,7 +126,9 @@ def health(with_llm: bool = False, with_ocr: bool = True) -> JSONResponse:
             "options": h.options,
             "detail": h.detail,
         }
-    payload["provider"] = ocr_engine.resolve_provider()
+    # 引擎只剩平台一条路（本地 OCR 兜底已于 2026-09-18 移除），故这里恒为 "platform"。
+    # 字段保留是为了不让读取它的主系统/前端拿到 KeyError；真实的连通性看上面的 ocr.ok。
+    payload["provider"] = "platform"
     if with_llm:
         ok, detail = llm_client.ping()
         payload["llm"] = {"ok": ok, "detail": detail}
@@ -132,6 +136,7 @@ def health(with_llm: bool = False, with_ocr: bool = True) -> JSONResponse:
 
 
 # ── 核心：文件分析（抽取 + 来源标注 + 置信度）──────────────────────
+
 
 @app.post("/analyze")
 def analyze_file(
@@ -156,6 +161,7 @@ def analyze_file(
 
 
 # ── 只看识别结果（不调模型）──────────────────────────────────────
+
 
 @app.post("/ocr/pdf-info")
 def pdf_info(file: UploadFile = File(...)):
@@ -187,78 +193,45 @@ def ocr_file(
     dpi: int = Form(default=0),
     force_ocr: bool = Form(default=False),
 ):
-    """只识别，不调模型（摸底 / 对比用）。
+    """只识别，不调模型（摸底 / 排障 / 对比用）。
 
     - **文本型 PDF**：默认直接返回文本层（快、准），不跑 OCR；
-    - **扫描件 / 图片**：渲染后用 OCR 识别；
-    - `force_ocr=true` 可对文本型 PDF 也强制走 OCR（用于对比两者差异）。
+    - **扫描件 / 图片**：渲染后走**平台 OCR**（PaddleOCR-VL）；
+    - `force_ocr=true` 可对文本型 PDF 也强制走 OCR（用于对比两者差异）；
+    - `dpi` 可覆盖平台默认渲染 DPI（默认 150，见 `OCR_PLATFORM_DPI`）——
+      它只用于排障与印章"两遍法"，提高 DPI 并不会改善正文识别（原因见 `document._render`）。
 
-    ⚠️ 本接口固定走**本地引擎**（不跟随 `OCR_PROVIDER`）——它的定位是"离线可用的
-    快速对照"，用来比较本地与平台的差异。要走平台引擎请用 `/upload-tasks` 或
-    `/documents`（它们的引擎由 `OCR_PROVIDER` 决定，见 README §13）。
+    实现直接复用 `document.read_document`，与 `/documents`、`/upload-tasks` 走**同一条链路**：
+    这样"摸底看到的识别结果"与"入库后的识别结果"必然一致，否则摸底会给出假象
+    （此前本接口固定走本地引擎，已经因为两套实现而产生过误导）。
+
+    ⚠️ 平台 OCR **不返回置信度**，所以响应里**没有** `avg_score` /
+    `per_page_scores` / `low_confidence_count` 这类字段。本地引擎已于 2026-09-18 移除，
+    没有本地分数可以给，也**不能编一个出来**——那只会让"识别质量"这件事失真。
+    判断识别结果可不可信，请看 `checks`（确定性校验）与 `failed_pages`。
     """
     path = _save_tmp(file)
     try:
         _guard_size(file)
-        use_dpi = dpi or settings.ocr_dpi
-        suffix = path.suffix.lower()
+        doc = document.read_document(path, dpi=dpi or None, force_ocr=force_ocr)
+        if doc.error:
+            raise HTTPException(status_code=400, detail=doc.error)
 
-        if suffix == ".pdf":
-            info = pdf_utils.read_pdf(path)
-            if info.error:
-                raise HTTPException(status_code=400, detail=f"PDF 解析失败：{info.error}")
-
-            if not info.is_scanned(settings.scanned_char_threshold) and not force_ocr:
-                text = pdf_utils.extract_text(path)
-                return {
-                    "code": 0,
-                    "data": {
-                        "kind": "text_pdf",
-                        "pages": info.page_count,
-                        "text": text,
-                        "engine": "text-layer",
-                        "elapsed": 0,
-                    },
-                }
-
-            # 渲染图落到 work/（输入目录在容器里是只读挂载）
-            render_dir = settings.work_dir / "pages" / uuid.uuid4().hex
-            try:
-                images = pdf_utils.render_pages(path, dpi=use_dpi, out_dir=render_dir)
-                merged, per_page = ocr_engine.ocr_pages(images)
-            finally:
-                shutil.rmtree(render_dir, ignore_errors=True)
-
-            return {
-                "code": 0,
-                "data": {
-                    "kind": "scanned",
-                    "pages": info.page_count,
-                    "text": merged.text,
-                    "engine": "ocr",
-                    "dpi": use_dpi,
-                    "elapsed": round(merged.elapsed, 2),
-                    "avg_score": round(merged.avg_score, 3),
-                    "low_confidence_count": len(merged.low_confidence),
-                    "per_page_scores": [round(p.avg_score, 3) for p in per_page],
-                },
-            }
-
-        if suffix in pdf_utils.IMAGE_EXTS:
-            result = ocr_engine.ocr_image(path)
-            return {
-                "code": 0,
-                "data": {
-                    "kind": "image",
-                    "text": result.text,
-                    "engine": "ocr",
-                    "elapsed": round(result.elapsed, 2),
-                    "avg_score": round(result.avg_score, 3),
-                    "low_confidence_count": len(result.low_confidence),
-                },
-            }
-
-        raise HTTPException(status_code=400, detail=f"不支持的格式：{suffix}")
+        return {
+            "code": 0,
+            "data": {
+                "kind": doc.kind,
+                "pages": doc.page_count,
+                "text": doc.text,
+                "engine": doc.engine,
+                "dpi": doc.dpi,
+                "image_format": doc.image_format,
+                "elapsed": round(doc.elapsed, 2),
+                # 没有本地兜底后，失败页会如实留空——必须让调用方看得见，别当成"这页本来就没字"
+                "failed_pages": doc.failed_pages,
+                "notes": doc.notes,
+            },
+        }
     finally:
         path.unlink(missing_ok=True)
 
@@ -268,6 +241,7 @@ def ocr_file(
 # 与 /ocr/file 的区别：/ocr/file 只识别并返回文本（不保存）；
 # /documents 会把解析结果**持久化**，作为后续问答的检索基础。
 # 它同时承担"解析"与"入库"两件事，扫描件可能耗时数十秒到数分钟。
+
 
 @app.post("/documents")
 def upload_document(file: UploadFile = File(...), dpi: int = Form(default=0)):
@@ -282,7 +256,8 @@ def upload_document(file: UploadFile = File(...), dpi: int = Form(default=0)):
             raise HTTPException(
                 status_code=400,
                 detail="未从文件中提取到任何文本。若为扫描件，可能是清晰度过低；"
-                       "可提高 OCR_DPI 后重试。",
+                "可提高渲染 DPI（`.env` 的 `OCR_PLATFORM_DPI`，用于排障/印章两遍法）"
+                "或确认平台 OCR 是否可用（`/health`）后重试。",
             )
         stored = store.save(
             filename=Path(file.filename or path.name).name,
@@ -327,6 +302,7 @@ def get_document(doc_id: str):
 #   /documents      —— **同步**：解析完才返回（CLI/脚本、单文件快速验证用）
 #   /upload-tasks   —— **异步**：提交即返回，后台解析并实时上报进度（网页用）
 # 两者最终写进同一个文档库，所以用哪种都不会"两套数据"。
+
 
 @app.post("/upload-tasks")
 def create_upload_tasks(
@@ -380,6 +356,7 @@ def cancel_upload_task(task_id: str, remove: bool = False):
 
 
 # ── 问答：模型自行调用检索工具 ─────────────────────────────────────
+
 
 class ChatIn(BaseModel):
     question: str

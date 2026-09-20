@@ -47,6 +47,7 @@ from .config import settings
 @dataclass
 class ToolCall:
     """模型发起的一次工具调用请求。"""
+
     id: str
     name: str
     arguments: dict
@@ -149,14 +150,17 @@ def chat_messages(
     usage = getattr(resp, "usage", None)
 
     calls: list[ToolCall] = []
-    for tc in (getattr(msg, "tool_calls", None) or []):
+    for tc in getattr(msg, "tool_calls", None) or []:
         raw = getattr(tc.function, "arguments", "") or "{}"
         try:
             args = json.loads(raw)
         except Exception:  # noqa: BLE001 - 参数不是合法 JSON 时按空参数处理
             args = {}
-        calls.append(ToolCall(id=getattr(tc, "id", ""), name=tc.function.name,
-                              arguments=args, raw_arguments=raw))
+        calls.append(
+            ToolCall(
+                id=getattr(tc, "id", ""), name=tc.function.name, arguments=args, raw_arguments=raw
+            )
+        )
 
     return ChatResult(
         text=(msg.content or "").strip(),

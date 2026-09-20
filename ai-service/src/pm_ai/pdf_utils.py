@@ -12,9 +12,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import fitz  # PyMuPDF
 
@@ -78,7 +78,7 @@ def render_pages(
     out_dir: str | Path | None = None,
     fmt: str = "png",
     quality: int = 85,
-    on_progress: "Callable[[int, int], None] | None" = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[Path]:
     """把 PDF 每页渲染成图片，返回图片路径列表（顺序＝页序）。
 

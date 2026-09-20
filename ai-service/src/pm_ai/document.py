@@ -17,30 +17,33 @@
 
 | 层 | 来源 | 性质 |
 | --- | --- | --- |
-| 识别层 | 本地引擎给逐页分（平台**不返回**置信度） | 机器分，实测**不可靠**（0.97 也会错） |
+| 识别层 | **已消失**：本地引擎逐页分，平台**不返回**置信度 | 机器分，实测**不可靠** |
 | 校验层 | `checks.py` 的确定性检查（大小写金额互校等） | **可复现**，这是最硬的一层 |
 | 理解层 | 模型自评 0–1 | 主观，只用来排序复核优先级 |
 
-⚠️ 实测教训：OCR 平均置信度 0.97 的文件里，金额仍被识别错（千分位逗号→小数点）。
-**识别置信度高 ≠ 内容正确**，三层都不能替代人工复核。
+⚠️ 实测教训（保留，因为它解释了为什么"没有识别置信度"不算损失）：
+本地引擎曾报出 OCR 平均置信度 0.97，同一份文件里的金额仍被识别错（千分位逗号→小数点）。
+**识别置信度高 ≠ 内容正确**。真正能兜住"禁止虚构"的是校验层与人工复核，
+所以平台不返回置信度并不可惜；`confidence` 这类字段只是为保持 API 形状而留着（恒为 None）。
 """
 
 from __future__ import annotations
 
 import shutil
-import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
-from . import checks, ocr_engine, pdf_utils, platform_ocr
+from . import checks, pdf_utils, platform_ocr
 from .config import settings
 
 ProgressFn = Callable[[str, int, int], None]
-"""进度回调：`(阶段, 已完成, 总数)`。阶段取值：`render` / `ocr` / `ocr-fallback` / `check`。"""
+"""进度回调：`(阶段, 已完成, 总数)`。阶段取值：`render` / `ocr` / `check`。
+
+（原 `ocr-fallback` 阶段随本地引擎兜底一起移除，见 `_recognize`。）
+"""
 
 
 @dataclass
@@ -48,15 +51,22 @@ class PageText:
     page_no: int
     text: str
     confidence: float | None = None
-    """**识别层**置信度。仅本地引擎给；平台 OCR 与文本层为 `None`（不代表不可靠，是"没有这个信息"）。"""
+    """**识别层**置信度。平台 OCR **不返回**该值，故此处恒为 `None`。
+
+    保留字段是为了 API 形状与历史文档稳定（主系统、`store.py`、前端仍会读它），
+    收到 `None` 即表示"平台没提供这个信息"，而不是"这一页不可靠"。
+    """
     source: str = ""
-    """这一页实际由谁识别：`text-layer` / `platform` / `rapid` / `paddle`。"""
+    """这一页实际由谁识别：`text-layer` / `platform`。
+
+    取值域已收窄（2026-09-18）：本地 `rapid` / `paddle` 已随本地引擎一起移除。
+    """
     blocks: list[dict] = field(default_factory=list)
     """版面块（平台引擎）：`{label, content, bbox}`——出处定位与质量信号的来源。"""
     elapsed: float = 0.0
     error: str = ""
     note: str = ""
-    """补充说明（例：平台失败后由本地引擎补跑）。"""
+    """补充说明（例：平台该页识别失败，需人工复核）。"""
 
     # ── 质量信号：比"一个分数"更容易解释，也更容易动作化 ──
     @property
@@ -110,8 +120,12 @@ class DocumentText:
     kind: str  # text_pdf | scanned | image | error
     pages: list[PageText] = field(default_factory=list)
     engine: str = "text-layer"
+    """实际执行的解析方式。取值域已收窄为 `platform` / `text-layer`（2026-09-18 起）。"""
     provider: str = ""
-    """配置层面解析出来的引擎（`platform` / `rapid` / `text-layer`）。"""
+    """配置层面解析出来的引擎。取值域同上：只可能是 `platform` / `text-layer`。
+
+    保留该字段（主系统与前端会读），但不再存在 `rapid` / `paddle` / `auto` 这几种取值。
+    """
     elapsed: float = 0.0
     dpi: int | None = None
     image_format: str = ""
@@ -158,9 +172,14 @@ class DocumentText:
 
     @property
     def low_confidence_pages(self) -> list[int]:
-        """识别质量偏低（<0.85）的页——**仅本地引擎有这项**。"""
-        return [p.page_no for p in self.pages
-                if p.confidence is not None and p.confidence < 0.85]
+        """识别质量偏低的页——**平台 OCR 不返回置信度，此属性恒为空**。
+
+        保留（而不是删掉）是为了 API 形状与历史文档稳定：
+        `store.py`、`scripts/analyze_cli.py`、`static/index.html` 仍在读它，
+        删字段会让这些调用方拿到 `KeyError`/`undefined`；空列表语义也正确——
+        "没有可用的低置信信息"，而不是"全部页面都很可靠"。
+        """
+        return [p.page_no for p in self.pages if p.confidence is not None and p.confidence < 0.85]
 
     @property
     def review_pages(self) -> list[int]:
@@ -173,6 +192,11 @@ class DocumentText:
 
     @property
     def avg_confidence(self) -> float | None:
+        """平均识别置信度——**平台 OCR 不返回置信度，此属性恒为 `None`**。
+
+        保留理由同 `low_confidence_pages`：API 形状与历史文档稳定。
+        注意 `None` ≠ 0，前端据此显示"该引擎不提供逐页置信度"才是正确解读。
+        """
         vals = [p.confidence for p in self.pages if p.confidence is not None]
         return round(sum(vals) / len(vals), 3) if vals else None
 
@@ -219,21 +243,31 @@ def page_header(p: PageText) -> str:
 
 # ── 主入口 ──────────────────────────────────────────────────────
 
+
 def read_document(
     path: str | Path,
     dpi: int | None = None,
     force_ocr: bool = False,
-    provider: str | None = None,
     on_progress: ProgressFn | None = None,
 ) -> DocumentText:
     """读文档 → 结构化文本，自动区分文本型 / 扫描件。
 
     - **文本型 PDF**：逐页取文本层（最快最准，不消耗 OCR 算力）→ 仍会跑确定性校验
-    - **扫描件 / 图片**：按 `provider` 渲染 + 识别（平台优先，失败自动用本地引擎补跑）
+    - **扫描件 / 图片**：渲染 → **平台 OCR**（PaddleOCR-VL）
+
+    :param dpi: 仅用于排障 / 印章"两遍法"——覆盖平台默认渲染 DPI（默认 150）。
+        注意提高 DPI **不会改善正文识别**（VL 模型内部下采样到约 100 万像素，
+        实测 120~300 DPI 结果完全一致），只在上传体积和耗时上付出代价；
+        它真正的用途是低 DPI 下印章文字会被"编造"（实测读出过完全不相干的银行名），
+        需要读章时用高 DPI 原图重跑该页。
+    :param force_ocr: 文本型 PDF 也强制走 OCR（用于对比文本层与 OCR 的差异）。
+
+    2026-09-18：**本地 OCR 兜底已彻底移除，只走平台**。
+    因此这里不再有 `provider` 参数，也不再"平台失败时用本地引擎补跑"——
+    失败页保留 `error`，由上层（`document.summary` → 任务/接口）提示人工复核。
     """
     p = Path(path)
     suffix = p.suffix.lower()
-    prov = ocr_engine.resolve_provider(provider)
 
     if suffix == ".pdf":
         info = pdf_utils.read_pdf(p)
@@ -245,15 +279,16 @@ def read_document(
                 PageText(page_no=i + 1, text=t, source="text-layer")
                 for i, t in enumerate(pdf_utils.extract_page_texts(p))
             ]
-            doc = DocumentText(kind="text_pdf", pages=pages,
-                               engine="text-layer", provider="text-layer")
+            doc = DocumentText(
+                kind="text_pdf", pages=pages, engine="text-layer", provider="text-layer"
+            )
             _attach_checks(doc, on_progress)
             return doc
 
-        return _ocr_pdf(p, prov, dpi, on_progress)
+        return _ocr_pdf(p, dpi, on_progress)
 
     if suffix in pdf_utils.IMAGE_EXTS:
-        return _ocr_image(p, prov, on_progress)
+        return _ocr_image(p, on_progress)
 
     return DocumentText(kind="error", error=f"不支持的格式：{suffix}")
 
@@ -268,26 +303,32 @@ def _attach_checks(doc: DocumentText, on_progress: ProgressFn | None) -> None:
         on_progress("check", 1, 1)
 
 
-def _render(path: Path, provider: str, dpi: int | None, out_dir: Path,
-            on_progress: ProgressFn | None) -> tuple[list[Path], str, int]:
-    """渲染页面。**参数跟着引擎走**（平台 150DPI/JPEG，本地 300DPI/PNG），返回 (图, 格式, dpi)。"""
+def _render(
+    path: Path, dpi: int | None, out_dir: Path, on_progress: ProgressFn | None
+) -> tuple[list[Path], str, int]:
+    """渲染页面为平台 OCR 要的图，返回 (图, 格式, 实际用的 dpi)。
+
+    **参数只跟平台走**（150 DPI / JPEG / q85）：
+    实测 120~300 DPI 识别结果完全一致（VL 模型内部下采样到 ≈100 万像素），
+    而 300 DPI PNG 每页 6.7MB、150 DPI JPEG 每页 396KB——差 17 倍，白等的是上传时间。
+    传 `dpi` 只为排障与印章"两遍法"（低 DPI 下开 `OCR_SEAL` 会编造印章文字）。
+    """
     cb = (lambda d, t: on_progress("render", d, t)) if on_progress else None
-    if provider == "platform":
-        use_dpi = settings.ocr_platform_dpi
-        fmt = settings.ocr_platform_format
-        images = pdf_utils.render_pages(
-            path, dpi=use_dpi, out_dir=out_dir, fmt=fmt,
-            quality=settings.ocr_platform_quality, on_progress=cb)
-    else:
-        use_dpi = dpi or settings.ocr_dpi
-        fmt = "png"
-        images = pdf_utils.render_pages(path, dpi=use_dpi, out_dir=out_dir, on_progress=cb)
+    use_dpi = dpi or settings.ocr_platform_dpi
+    fmt = settings.ocr_platform_format
+    images = pdf_utils.render_pages(
+        path,
+        dpi=use_dpi,
+        out_dir=out_dir,
+        fmt=fmt,
+        quality=settings.ocr_platform_quality,
+        on_progress=cb,
+    )
     return images, fmt, use_dpi
 
 
-def _ocr_pdf(path: Path, provider: str, dpi: int | None,
-             on_progress: ProgressFn | None) -> DocumentText:
-    """扫描件：渲染每页 → 识别（平台批量并发 / 本地逐页），保留页号与质量信号。"""
+def _ocr_pdf(path: Path, dpi: int | None, on_progress: ProgressFn | None) -> DocumentText:
+    """扫描件：渲染每页 → 平台识别（批量并发），保留页号与质量信号。"""
     # 渲染图必须落到 work/（输入目录在容器里是只读挂载）
     out_dir = settings.work_dir / "pages" / uuid.uuid4().hex
     started = time.perf_counter()
@@ -295,17 +336,24 @@ def _ocr_pdf(path: Path, provider: str, dpi: int | None,
     notes: list[str] = []
     try:
         t0 = time.perf_counter()
-        images, fmt, use_dpi = _render(path, provider, dpi, out_dir, on_progress)
+        images, fmt, use_dpi = _render(path, dpi, out_dir, on_progress)
         stages["render"] = round(time.perf_counter() - t0, 2)
 
         t0 = time.perf_counter()
-        pages = _recognize(images, provider, on_progress, notes)
+        pages = _recognize(images, on_progress, notes)
         stages["ocr"] = round(time.perf_counter() - t0, 2)
 
-        doc = DocumentText(kind="scanned", pages=pages, engine=provider,
-                           provider=provider, dpi=use_dpi, image_format=fmt,
-                           stages=stages, notes=notes,
-                           elapsed=round(time.perf_counter() - started, 2))
+        doc = DocumentText(
+            kind="scanned",
+            pages=pages,
+            engine="platform",
+            provider="platform",
+            dpi=use_dpi,
+            image_format=fmt,
+            stages=stages,
+            notes=notes,
+            elapsed=round(time.perf_counter() - started, 2),
+        )
     finally:
         shutil.rmtree(out_dir, ignore_errors=True)
 
@@ -314,45 +362,43 @@ def _ocr_pdf(path: Path, provider: str, dpi: int | None,
     return doc
 
 
-def _ocr_image(path: Path, provider: str, on_progress: ProgressFn | None) -> DocumentText:
+def _ocr_image(path: Path, on_progress: ProgressFn | None) -> DocumentText:
     """单张图片（线上图片附件常见）。"""
     started = time.perf_counter()
     notes: list[str] = []
-    pages = _recognize([path], provider, on_progress, notes)
-    doc = DocumentText(kind="image", pages=pages, engine=provider, provider=provider,
-                       image_format=path.suffix.lstrip("."), notes=notes,
-                       elapsed=round(time.perf_counter() - started, 2))
+    pages = _recognize([path], on_progress, notes)
+    doc = DocumentText(
+        kind="image",
+        pages=pages,
+        engine="platform",
+        provider="platform",
+        image_format=path.suffix.lstrip("."),
+        notes=notes,
+        elapsed=round(time.perf_counter() - started, 2),
+    )
     _attach_checks(doc, on_progress)
     doc.elapsed = round(time.perf_counter() - started, 2)
     return doc
 
 
-def _recognize(images: list[Path], provider: str,
-               on_progress: ProgressFn | None, notes: list[str]) -> list[PageText]:
-    """按 provider 识别；平台路径下**失败页自动用本地引擎补跑**。"""
-    if provider == "platform":
-        pages = _platform_pages(images, on_progress)
-        failed = [i for i, p in enumerate(pages) if p.error]
-        if failed:
-            # 兜底：平台不可用/单请求失败时，至少让这些页有内容，并在元信息里说清楚
-            sub = [images[i] for i in failed]
-            local = _local_pages(sub, "rapid", None)
-            recovered = 0
-            for k, i in enumerate(failed):
-                lp = local[k]
-                if not lp.is_empty:
-                    lp.page_no = pages[i].page_no
-                    lp.note = f"平台识别失败，已用本地引擎补跑（原错误：{pages[i].error[:80]}）"
-                    pages[i] = lp
-                    recovered += 1
-            notes.append(
-                f"{len(failed)} 页平台识别失败，其中 {recovered} 页已用本地引擎补跑"
-                f"（识别质量会低于平台，请重点核对）")
-            if on_progress:
-                on_progress("ocr-fallback", len(images), len(images))
-        return pages
+def _recognize(
+    images: list[Path], on_progress: ProgressFn | None, notes: list[str]
+) -> list[PageText]:
+    """识别全部页面——**只走平台 OCR，没有兜底**。
 
-    return _local_pages(images, provider, on_progress)
+    本地 RapidOCR/PaddleOCR 兜底已于 2026-09-18 移除，原因见 `config.py` 的 OCR 段注释：
+    本地引擎识别出来的金额/编号不可用，"悄悄换一个差引擎"比"明确失败"更危险——
+    使用者会以为结果来自平台，从而不再复核。故失败页**保留 `error`**，
+    由上层（任务列表 / 接口返回值 / `notes`）显式提示人工复核。
+    """
+    pages = _platform_pages(images, on_progress)
+    failed = [p.page_no for p in pages if p.error]
+    if failed:
+        notes.append(
+            f"{len(failed)} 页平台识别失败（第 {'、'.join(str(n) for n in failed)} 页）："
+            f"本地 OCR 兜底已于 2026-09-18 移除，这些页**没有内容**，需人工复核或稍后重跑"
+        )
+    return pages
 
 
 def _platform_pages(images: list[Path], on_progress: ProgressFn | None) -> list[PageText]:
@@ -361,38 +407,17 @@ def _platform_pages(images: list[Path], on_progress: ProgressFn | None) -> list[
         on_progress=(lambda d, t: on_progress("ocr", d, t)) if on_progress else None,
     )
     return [
-        PageText(page_no=i + 1, text=r.markdown, source="platform",
-                 blocks=r.blocks, elapsed=r.elapsed, error=r.error)
+        PageText(
+            page_no=i + 1,
+            text=r.markdown,
+            source="platform",
+            blocks=r.blocks,
+            elapsed=r.elapsed,
+            error=r.error,
+        )
         for i, r in enumerate(raw)
     ]
 
 
-def _local_pages(images: list[Path], provider: str,
-                 on_progress: ProgressFn | None) -> list[PageText]:
-    """本地引擎逐页识别（并发受 `OCR_WORKERS` 限制，进度逐页上报）。"""
-    results: list[PageText | None] = [None] * len(images)
-    lock = threading.Lock()
-    counter = {"done": 0}
-
-    def one(i: int) -> None:
-        r = ocr_engine.ocr_image(images[i], provider)
-        results[i] = PageText(
-            page_no=i + 1,
-            text=r.text,
-            source=provider,
-            confidence=round(r.avg_score, 3) if r.lines else None,
-            elapsed=r.elapsed,
-        )
-        with lock:
-            counter["done"] += 1
-            if on_progress:
-                on_progress("ocr", counter["done"], len(images))
-
-    workers = max(1, min(settings.ocr_workers, len(images)))
-    if workers == 1:
-        for i in range(len(images)):
-            one(i)
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            list(pool.map(one, range(len(images))))
-    return [p or PageText(page_no=i + 1, text="", error="未识别") for i, p in enumerate(results)]
+# 本地引擎逐页识别函数 `_local_pages`（RapidOCR/PaddleOCR、线程池 + OCR_WORKERS 限流）
+# 已于 2026-09-18 随本地 OCR 兜底一并删除，只走平台。

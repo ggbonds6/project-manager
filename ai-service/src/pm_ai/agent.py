@@ -45,6 +45,7 @@ BRIEF_CHARS = 120
 @dataclass
 class ToolTrace:
     """一次工具调用记录——前端据此展示"模型查了什么、查到几条"。"""
+
     round: int
     name: str
     arguments: dict
@@ -61,15 +62,21 @@ class AgentResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     elapsed: float = 0.0
-    stopped_reason: str = "done"   # done | max_rounds | error
+    stopped_reason: str = "done"  # done | max_rounds | error
     error: str = ""
 
     def to_dict(self) -> dict:
         return {
             "text": self.text,
             "trace": [
-                {"round": t.round, "name": t.name, "arguments": t.arguments,
-                 "brief": t.brief, "elapsed": round(t.elapsed, 2), "is_error": t.is_error}
+                {
+                    "round": t.round,
+                    "name": t.name,
+                    "arguments": t.arguments,
+                    "brief": t.brief,
+                    "elapsed": round(t.elapsed, 2),
+                    "is_error": t.is_error,
+                }
                 for t in self.trace
             ],
             "rounds": self.rounds,
@@ -167,28 +174,34 @@ def run(
                 cost = time.perf_counter() - t0
 
                 # 工具结果必须回传；用 JSON 保证结构清晰、模型好解析
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": json.dumps(result, ensure_ascii=False),
-                })
-                trace.append(ToolTrace(
-                    round=round_no,
-                    name=call.name,
-                    arguments=call.arguments,
-                    brief=_brief(call.name, result),
-                    elapsed=cost,
-                    is_error=isinstance(result, dict) and "error" in result,
-                ))
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    }
+                )
+                trace.append(
+                    ToolTrace(
+                        round=round_no,
+                        name=call.name,
+                        arguments=call.arguments,
+                        brief=_brief(call.name, result),
+                        elapsed=cost,
+                        is_error=isinstance(result, dict) and "error" in result,
+                    )
+                )
 
         # ── 到上限：禁用工具再问一次，让它用已有信息作答 ──
-        messages.append({
-            "role": "user",
-            "content": (
-                "（已达到本轮工具调用上限。请**仅根据以上已经获得的信息**作答；"
-                "仍然必须标注来源页码；确实没有查到的部分，请明确写「文档中未找到」，不要猜测。）"
-            ),
-        })
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "（已达到本轮工具调用上限。请**仅根据以上已经获得的信息**作答；"
+                    "仍然必须标注来源页码；确实没有查到的部分，请明确写「文档中未找到」，不要猜测。）"
+                ),
+            }
+        )
         resp = llm_client.chat_messages(messages, tools=None, timeout=timeout)
         prompt_tokens += resp.prompt_tokens
         completion_tokens += resp.completion_tokens

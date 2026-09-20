@@ -34,10 +34,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from .config import settings
 
@@ -122,7 +122,9 @@ def health(force: bool = False, timeout: float = 10.0) -> OcrHealth:
             body = exc.read().decode("utf-8", "replace")[:160]
             result.detail = f"HTTP {exc.code}: {body}（401 检查 sk 是否有效）"
         except Exception as exc:  # noqa: BLE001 - 探测要吞掉所有异常并如实上报
-            result.detail = f"{type(exc).__name__}: {exc}（检查网络能否访问 {settings.ocr_base_url}）"
+            result.detail = (
+                f"{type(exc).__name__}: {exc}（检查网络能否访问 {settings.ocr_base_url}）"
+            )
 
     with _HEALTH_LOCK:
         _HEALTH = result
@@ -130,16 +132,19 @@ def health(force: bool = False, timeout: float = 10.0) -> OcrHealth:
 
 
 def available(force: bool = False) -> bool:
-    """平台 OCR 是否可用（供 `OCR_PROVIDER=auto` 决定走向）。"""
+    """平台 OCR 是否可用（供自检脚本与 `/health` 探针使用）。
+
+    注意：本地 OCR 兜底已于 2026-09-18 移除，本函数不再用于"走平台还是走本地"的选路。
+    """
     return health(force=force).ok
 
 
 # ── 识别 ─────────────────────────────────────────────────────────
 
+
 def _post(payload: dict, timeout: int | None = None) -> dict:
     url = settings.ocr_base_url.rstrip("/") + "/ocr"
-    req = urllib.request.Request(
-        url, data=json.dumps(payload).encode(), method="POST")
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST")
     req.add_header("Content-Type", "application/json")
     if settings.ocr_api_key:
         req.add_header("Authorization", "Bearer " + settings.ocr_api_key)
@@ -162,21 +167,25 @@ def _pages_from_response(d: dict, n: int) -> list[PlatformPage]:
     results = d.get("results") or []
     if not results and n == 1 and (d.get("markdown") or d.get("blocks")):
         # 少数实现可能不返回 results，退回顶层字段
-        results = [{
-            "markdown": d.get("markdown", ""),
-            "blocks": d.get("blocks") or [],
-            "width": d.get("width"),
-            "height": d.get("height"),
-        }]
+        results = [
+            {
+                "markdown": d.get("markdown", ""),
+                "blocks": d.get("blocks") or [],
+                "width": d.get("width"),
+                "height": d.get("height"),
+            }
+        ]
     out: list[PlatformPage] = []
     for i in range(n):
         r = results[i] if i < len(results) else {}
-        out.append(PlatformPage(
-            markdown=r.get("markdown") or "",
-            blocks=r.get("blocks") or [],
-            width=int(r.get("width") or 0),
-            height=int(r.get("height") or 0),
-        ))
+        out.append(
+            PlatformPage(
+                markdown=r.get("markdown") or "",
+                blocks=r.get("blocks") or [],
+                width=int(r.get("width") or 0),
+                height=int(r.get("height") or 0),
+            )
+        )
     return out
 
 
@@ -194,8 +203,7 @@ def _ocr_group(paths: list[Path], seal: bool, seal_min_pixels: int | None) -> li
         d = _post(payload)
     except PlatformOcrError as exc:
         msg = str(exc)
-        return [PlatformPage(error=msg, elapsed=round(time.perf_counter() - t0, 2))
-                for _ in paths]
+        return [PlatformPage(error=msg, elapsed=round(time.perf_counter() - t0, 2)) for _ in paths]
     wall = time.perf_counter() - t0
     pages = _pages_from_response(d, len(paths))
     # 逐页耗时：平台**按批**返回（一次请求多页），拿不到单页耗时，
@@ -227,8 +235,7 @@ def ocr_images(
     size = max(1, min(batch_size or settings.ocr_batch_pages, MAX_BATCH_PAGES))
     seal = settings.ocr_seal if seal is None else seal
     pin = seal_min_pixels or settings.ocr_seal_min_pixels
-    workers = max(1, min(concurrency or settings.ocr_concurrency,
-                         (len(items) + size - 1) // size))
+    workers = max(1, min(concurrency or settings.ocr_concurrency, (len(items) + size - 1) // size))
 
     out: list[PlatformPage] = [PlatformPage() for _ in items]
     done = 0
@@ -236,7 +243,7 @@ def ocr_images(
 
     def run(start: int) -> None:
         nonlocal done
-        group = items[start:start + size]
+        group = items[start : start + size]
         pages = _ocr_group(group, seal, pin)
         for k, pg in enumerate(pages):
             out[start + k] = pg

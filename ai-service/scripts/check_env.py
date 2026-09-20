@@ -4,7 +4,7 @@
 检查项：
   1. Python 版本
   2. 关键依赖是否装齐
-  3. OCR 引擎能否加载（首次会触发模型加载，较慢）
+  3. **平台 OCR** 能否连通（内网网关，需先配好 .env；本地引擎已于 2026-09-18 移除）
   4. 大模型是否连通（千问，需先配好 .env）
   5. 打印当前配置摘要（不显示密钥明文）
 
@@ -28,7 +28,6 @@ FAIL = "  [FAIL]"
 
 REQUIRED = [
     ("fitz", "PyMuPDF", "PDF 解析与页面渲染"),
-    ("rapidocr_onnxruntime", "RapidOCR", "OCR 引擎"),
     ("openai", "openai", "大模型调用"),
     ("fastapi", "FastAPI", "HTTP 接口"),
     ("pandas", "pandas", "汇总导出"),
@@ -57,7 +56,8 @@ def check_deps() -> bool:
             all_ok = False
             print(f"{FAIL}{name:<12} 未安装（{exc}）")
 
-    optional = [("paddleocr", "PaddleOCR（备选引擎）"), ("faiss", "FAISS（后续检索用）")]
+    # 本地引擎已于 2026-09-18 移除，故可选依赖里不再有 paddleocr
+    optional = [("faiss", "FAISS（后续检索用）")]
     for module, name in optional:
         try:
             __import__(module)
@@ -67,22 +67,32 @@ def check_deps() -> bool:
     return all_ok
 
 
-def check_ocr() -> bool:
-    print("\n[3/5] OCR 引擎加载（首次较慢，请稍候）")
+def check_platform_ocr() -> bool:
+    """检查**平台 OCR 连通性**。
+
+    为什么这里改为探连通性而不是"加载引擎"：本地引擎（RapidOCR/PaddleOCR）已随兜底逻辑
+    一起移除，平台是唯一识别通道——平台不通就等于"服务没有 OCR 能力"，
+    这是必须在自检里硬性暴露的问题（以前有本地兜底，探不通还能降级，现在不能）。
+    """
+    print("\n[3/5] 平台 OCR 连通性（内网网关）")
     try:
-        from pm_ai import ocr_engine
+        from pm_ai import platform_ocr
+        from pm_ai.config import settings
 
         started = time.perf_counter()
-        ocr_engine.get_engine("rapid")
+        h = platform_ocr.health(force=True, timeout=5)
         cost = time.perf_counter() - started
-        print(f"{OK}RapidOCR 加载成功，耗时 {cost:.1f}s")
-        if cost > 60:
-            print(f"{WARN}加载偏慢——内网环境请确认模型文件是否已就位")
-        return True
+        if h.ok:
+            print(f"{OK}PaddleOCR-VL 可用：{h.detail}（{cost:.1f}s）")
+            return True
+        print(f"{FAIL}平台 OCR 不可用：{h.detail}")
+        addr = settings.ocr_base_url or "未配置（OCR_BASE_URL 或 LLM_BASE_URL）"
+        print(f"       平台地址：{addr}")
+        print("       排查：① 网关地址是否正确　② sk 是否有效（401）　③ 网络能否访问该地址")
+        print("       注意：本地 OCR 兜底已于 2026-09-18 移除，平台不通就没有可用的识别能力")
+        return False
     except Exception as exc:  # noqa: BLE001
-        print(f"{FAIL}OCR 加载失败：{type(exc).__name__}: {exc}")
-        print("       内网环境常见原因：RapidOCR 模型文件未提前放置（见 README 离线安装一节）")
-        print("       用 Docker 部署时不会遇到该问题——镜像内已自带模型，构建期已自检")
+        print(f"{FAIL}{type(exc).__name__}: {exc}")
         return False
 
 
@@ -127,7 +137,7 @@ def main() -> int:
     print("PM AI Service · 环境自检")
     print("=" * 64)
 
-    results = [check_python(), check_deps(), check_ocr()]
+    results = [check_python(), check_deps(), check_platform_ocr()]
     if not args.skip_llm:
         results.append(check_llm())
     check_config()

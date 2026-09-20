@@ -51,14 +51,18 @@ def main() -> int:
     result = analyze.analyze(path, instruction=args.instruction, dpi=args.dpi or None)
 
     d, llm = result.doc, result.llm
-    print(f"类型：{d.get('kind')}　页数：{d.get('pages')}　字数：{d.get('chars')}"
-          f"　识别置信度：{d.get('avg_confidence')}")
-    if d.get("low_confidence_pages"):
-        print(f"⚠️ 识别偏低页：{d['low_confidence_pages']}（人工复核优先看）")
+    print(f"类型：{d.get('kind')}　页数：{d.get('pages')}　字数：{d.get('chars')}")
+    # 不再打印"识别置信度"：平台 OCR 不返回置信度（avg_confidence 恒为 None，
+    # 字段保留只为 API 形状稳定），打印 "None" 只会误导。改为提示识别失败的页——
+    # 本地兜底移除后，失败页会静默变空白，必须让人看见。
+    if d.get("failed_pages"):
+        print(f"⚠️ 识别失败页：{d['failed_pages']}（可提高 OCR_PLATFORM_DPI 后用两遍法重跑该页）")
     if llm.get("ok"):
-        print(f"模型：{llm.get('model')}　耗时：{llm.get('elapsed')}s　"
-              f"tokens：{llm.get('prompt_tokens')}+{llm.get('completion_tokens')}"
-              f"　finish：{llm.get('finish_reason')}")
+        print(
+            f"模型：{llm.get('model')}　耗时：{llm.get('elapsed')}s　"
+            f"tokens：{llm.get('prompt_tokens')}+{llm.get('completion_tokens')}"
+            f"　finish：{llm.get('finish_reason')}"
+        )
     if result.warning:
         print(f"⚠️ {result.warning}")
     if result.truncated:

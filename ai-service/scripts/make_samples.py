@@ -108,11 +108,11 @@ def _write_lines(page, items, start_y: float = 80.0, leading: float = 1.9) -> fl
 def _write_table(page, y: float) -> None:
     """绘制支付明细表（固定列坐标，模拟真实表格）。"""
     row_h = 30
-    for text, x in zip(REIMBURSE_HEADER, REIMBURSE_COLS):
+    for text, x in zip(REIMBURSE_HEADER, REIMBURSE_COLS, strict=False):
         page.insert_text((x, y), text, fontname=CJK_FONT, fontsize=11)
     y += row_h * 0.8
     for row in [*REIMBURSE_ROWS, REIMBURSE_TOTAL]:
-        for text, x in zip(row, REIMBURSE_COLS):
+        for text, x in zip(row, REIMBURSE_COLS, strict=False):
             if text:
                 page.insert_text((x, y), text, fontname=CJK_FONT, fontsize=11)
         y += row_h
@@ -195,7 +195,9 @@ def main() -> int:
 
     print()
     print("下一步：")
-    print("  python scripts/inventory.py samples        # 摸底（应看到 3 份 scanned、1 份 text_pdf）")
+    print(
+        "  python scripts/inventory.py samples        # 摸底（应看到 3 份 scanned、1 份 text_pdf）"
+    )
     print("  python scripts/ocr_try.py samples/合成样本3-支付报销单(扫描件表格).pdf --save")
     print()
     print("⚠️ 合成样本全部为虚构数据，仅用于验证链路；真实效果仍需用实际附件复核。")

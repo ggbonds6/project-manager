@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import time
@@ -42,17 +43,17 @@ STAGE_LABEL = {
     "detect": "判定文件类型",
     "render": "渲染页面",
     "ocr": "识别中",
-    "ocr-fallback": "本地引擎补跑",
     "check": "数据校验",
     "store": "写入文档库",
     "done": "完成",
 }
 
 _STAGE_RANGE = {
-    # 阶段 → (该阶段起点占比, 终点占比)。识别是最耗时的一段，权重给到 0.72。
+    # 阶段 → (该阶段起点占比, 终点占比)。识别是最耗时的一段，权重给到 0.77。
+    # 2026-09-18：本地引擎兜底阶段（ocr-fallback）已随本地 OCR 一起移除，
+    # 它原先占的 0.92~0.97 归还给识别阶段，避免进度条走完 92% 后长时间不动。
     "render": (0.05, 0.20),
-    "ocr": (0.20, 0.92),
-    "ocr-fallback": (0.92, 0.97),
+    "ocr": (0.20, 0.97),
     "check": (0.97, 0.99),
     "store": (0.99, 1.0),
 }
@@ -184,8 +185,9 @@ class TaskManager:
             return
         self._last_save = now
         keep = self._order[-MAX_TASKS_KEPT:]
-        payload = {"tasks": [self._tasks[i].to_dict(with_pages=True) for i in keep
-                             if i in self._tasks]}
+        payload = {
+            "tasks": [self._tasks[i].to_dict(with_pages=True) for i in keep if i in self._tasks]
+        }
         tmp = self.path.with_suffix(".tmp")
         try:
             tmp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
@@ -194,8 +196,9 @@ class TaskManager:
             pass
 
     # ── 对外接口 ──
-    def submit(self, tmp_path: Path, filename: str, size_bytes: int,
-               dpi: int | None = None) -> Task:
+    def submit(
+        self, tmp_path: Path, filename: str, size_bytes: int, dpi: int | None = None
+    ) -> Task:
         task = Task(
             task_id=uuid.uuid4().hex[:12],
             filename=filename,
@@ -256,7 +259,6 @@ class TaskManager:
         task.status = "PARSING"
         task.started_at = datetime.now().isoformat(timespec="seconds")
         tmp = Path(task.tmp_path)
-        started = time.perf_counter()
 
         def on_progress(stage: str, done: int, total: int) -> None:
             if task.cancel_requested:
@@ -273,7 +275,9 @@ class TaskManager:
             if not doc.text.strip():
                 raise RuntimeError(
                     "未从文件中提取到任何文本。若为扫描件，可能是清晰度过低；"
-                    "可提高 OCR 平台 DPI 或改用本地引擎后重试。")
+                    "可提高平台 OCR 渲染 DPI（OCR_PLATFORM_DPI）后重试，"
+                    "或确认该页本身是空白页。"
+                )
 
             task.stage_key, task.stage = "store", STAGE_LABEL["store"]
             task.provider = doc.provider or doc.engine
@@ -306,10 +310,10 @@ class TaskManager:
 
     @staticmethod
     def _cleanup_file(path: Path) -> None:
-        try:
+        # 清理失败无所谓（临时文件本来就在容器/宿主机的 work 目录里，会被下次覆盖），
+        # 但不能让"删不掉"把整个任务判成失败——所以吞掉异常，用 suppress 表达得更明确。
+        with contextlib.suppress(Exception):
             path.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
 
 
 tasks = TaskManager()

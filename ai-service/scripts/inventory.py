@@ -76,7 +76,7 @@ def summarize(rows: list[dict]) -> None:
     print(f"{'类型':<12}{'数量':>6}{'占比':>9}{'总大小MB':>12}")
     for kind, items in sorted(by_kind.items(), key=lambda kv: -len(kv[1])):
         size = sum(i["大小MB"] for i in items)
-        print(f"{kind:<12}{len(items):>6}{len(items)/total*100:>8.1f}%{size:>12.1f}")
+        print(f"{kind:<12}{len(items):>6}{len(items) / total * 100:>8.1f}%{size:>12.1f}")
 
     scanned = len(by_kind.get("scanned", []))
     print("-" * 64)
