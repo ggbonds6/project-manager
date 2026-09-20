@@ -32,6 +32,15 @@ const DOCX_BASE_CSS = `.pm-office-body{font-family:'Microsoft YaHei','PingFang S
 interface Props {
   item: AttachmentItem | null;
   onClose: () => void;
+  /**
+   * 定位到第 N 页（1 起）。目前只在 PDF 分支生效——浏览器内置 PDF 阅读器认 URL 的 `#page=N`。
+   *
+   * 为什么加这个参数：AI 问答的出处引用必须能"跳到附件第 N 页"（方案 §3.2 的信任基础），
+   * 而引用只拿得到 attachmentId + 文件名 + 页码，没有主系统附件列表里的元数据。
+   * 该参数为**纯增量**：不传时所有分支的行为与改动前完全一致。
+   * 其它格式（图片/Office/文本）没有页的概念，忽略之。
+   */
+  pageNo?: number | null;
 }
 
 /**
@@ -41,9 +50,9 @@ interface Props {
  *  - docx：docx-preview 解析渲染（懒加载）
  *  - xls/xlsx：SheetJS(xlsx) 解析为表格 HTML（懒加载）
  *  - doc/ppt/pptx/ofd/压缩包等：当前无稳定纯前端方案 → 提示"暂不支持在线预览，请下载后查看"
- * 支持全屏（Esc / 按钮退出）。
+ * 支持全屏（Esc / 按钮退出）、PDF 定位到指定页（AI 引用来跳转）。
  */
-export default function AttachmentPreviewModal({ item, onClose }: Props) {
+export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props) {
   const [text, setText] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pdfLoaded, setPdfLoaded] = useState(false);
@@ -284,6 +293,9 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
       );
     }
     if (isPdf) {
+      // `#page=N` 只对浏览器内置 PDF 阅读器有意义；不带页码时 URL 与改动前一致
+      const pdfSrc =
+        attachmentUrl(item.id, 'inline') + (pageNo && pageNo > 0 ? `#page=${pageNo}` : '');
       return (
         <div style={box}>
           {!pdfLoaded && (
@@ -294,7 +306,10 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
             </div>
           )}
           <iframe
-            src={attachmentUrl(item.id, 'inline')}
+            // key 带上页码：同一附件切换页码时（AI 引用不同页）强制 iframe 重新加载，
+            // 否则浏览器会沿用已有文档、忽略新的 hash
+            key={`${item.id}-${pageNo || 0}`}
+            src={pdfSrc}
             title={item.fileName}
             onLoad={() => setPdfLoaded(true)}
             onError={() => setPdfLoaded(true)}
@@ -455,7 +470,16 @@ export default function AttachmentPreviewModal({ item, onClose }: Props) {
   }
 
   return (
-    <Modal title={headerTitle} open onCancel={onClose} width={900} footer={footer}>
+    <Modal
+      title={headerTitle}
+      open
+      onCancel={onClose}
+      width={900}
+      footer={footer}
+      // 明确抬到 antd Drawer(1000) 之上：AI 悬浮问答窗里点引用会在这个 Drawer 内部再弹预览，
+      // 不给数值就依赖挂载顺序，偶发会出现"预览被抽屉盖住"的情况。
+      zIndex={1300}
+    >
       <div style={{ maxHeight: '72vh', overflow: 'auto' }}>{renderViewer(false)}</div>
     </Modal>
   );

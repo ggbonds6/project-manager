@@ -56,6 +56,27 @@ app:
     secret: ${JWT_SECRET:change-me-please-this-is-a-dev-secret-0123456789abcdef}
     expire-hours: 168
 
+# AI 能力服务（ai-backend）接入：主系统前端只调 /api/ai/*，由主系统代理到它。
+# 8100 仅内网可达，浏览器永远不直连（见 docs/AI前端与集成方案.md §4.3）。
+pm:
+  ai:
+    # 总开关：关闭后 /api/ai/health 返回 available=false 并说明原因，其余接口给明确业务错误。
+    # 用于「本环境没部署 AI 服务」时把入口关掉，避免用户看到一堆连接超时。
+    enabled: ${AI_ENABLED:true}
+    base-url: ${AI_SERVICE_BASE_URL:http://127.0.0.1:8100}
+    # 服务间令牌（与用户 JWT 分离）。⚠️ AI 服务当前**没有任何入站鉴权**，
+    # 这里配了值会以 Authorization: Bearer <token> 发出，但对方不校验——
+    # 安全性目前完全依赖网络隔离（已登记为待办，不在主系统侧"单方面"修）。
+    token: ${AI_SERVICE_TOKEN:}
+    # 附件上传成功后是否自动触发解析入库（方案 §3.3）。关掉后行为与"没有这个功能"完全一致：
+    # 不触发、也不写 attachment.ai_index_status；只有 enabled=true 时才会生效。
+    # 解析要走平台 OCR（花钱/耗时），平台维护或批量导入历史附件时需要能一句话关掉。
+    auto-parse: ${AI_AUTO_PARSE:true}
+    # 问答类超时（秒）：实测一次带工具调用的问答约 10s
+    chat-timeout-seconds: ${AI_CHAT_TIMEOUT:60}
+    # 其它请求超时（秒）：健康探测/文档列表/任务轮询/自动解析触发都必须快速失败
+    timeout-seconds: ${AI_TIMEOUT:10}
+
 logging:
   level:
     com.pmgt: info

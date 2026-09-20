@@ -47,7 +47,7 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | POST | `/ocr/file` | 只识别不调模型（摸底用） |
 | POST/GET/DELETE | `/documents[/{id}]` | 文档库（解析入库、列表、详情、删除） |
 | POST/GET/DELETE | `/upload-tasks[/{id}]` | 上传解析任务（先返回、后台解析、轮询进度） |
-| POST | `/chat` | 文档问答（工具调用：检索 → 读页 → 计算） |
+| POST | `/chat` | 文档问答（工具调用：检索 → 读页 → 计算）。请求 `{question, doc_ids, history}`（`docIds` 亦接受）；响应 `data.answer` 正文用 `[1][2]` 标注出处，`data.citations` 给出结构化出处 `[{index,doc_id,filename,page_no,snippet,score}]`——**前端"点引用跳原文第 N 页"就靠它**，无引用时为 `[]` |
 
 成功响应 `{"code":0,"data":{...}}`；失败为 HTTP 状态码 + `{"detail":"..."}`（与 Python 版一致）。
 
@@ -67,4 +67,5 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | [`docs/平台OCR调用使用手册.md`](docs/平台OCR调用使用手册.md) | 平台 OCR（PaddleOCR-VL）的 HTTP 接口、印章与手写体、性能基线与排障（**由 ai-service 迁入**） |
 | [`docs/Qwen3-VL-Embedding-Reranker调用手册.md`](docs/Qwen3-VL-Embedding-Reranker调用手册.md) | Embedding / Reranker 的接口、维度与性能基线、召回—精排配比（**由 ai-service 迁入**） |
 | [`docs/知识库实施方案与路线.md`](docs/知识库实施方案与路线.md) | **知识库/检索层的一份文档**（原"落地实施方案"与"总体架构与演进路线"合并）：目标与前提、四层架构、索引 mapping 与字段、`VEC_BACKEND=opensearch` 对接、P0/P1/P2 分期与评测集指标、风险登记 |
+| [`../docs/AI工具集与检索编排评估.md`](../docs/AI工具集与检索编排评估.md) | **动工具集或检索编排之前必读**（主系统侧文档）：平台的"无状态能力"与本服务"有状态编排"的职责边界、`search_documents`/`read_page`/`calculate` 逐个保留理由、为什么默认走流水线而不是全自主 agent、改造清单与验收口径 |
 

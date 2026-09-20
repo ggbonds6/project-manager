@@ -26,9 +26,9 @@
 服务器用的编排是 **`deploy/docker/docker-compose.deploy.yml`**（发布包里改名为 `docker-compose.yml`）：
 **没有 `build:` 段** + `pull_policy: never`，镜像缺失时立刻报错，不会误触发联网构建。
 
-```bash
-# ── 开发机：出发布包（镜像 + 编排 + .env 模板）──
-bash scripts/make-release.sh v3.3.0              # 产 dist/pm-release-v3.3.0/
+```text
+# ── 开发机（Windows PowerShell，无需 Git Bash）：出发布包（镜像 + 编排 + .env 模板）──
+.\scripts\make-release.ps1 v3.3.0                # 产 dist/pm-release-v3.3.0/
 scp dist/pm-release-v3.3.0/pm-images-aarch64-v3.3.0.tar.gz  lhim@<服务器>:/home/lhim/pm/releases/
 scp dist/pm-release-v3.3.0/docker-compose.yml dist/pm-release-v3.3.0/.env.example lhim@<服务器>:/home/lhim/pm/app/
 
@@ -72,11 +72,14 @@ docker compose -f deploy/docker/docker-compose.yml up -d --build
 
 ### 2.1 改完代码一键重建（日常开发用这个）
 
-```bash
-bash scripts/dev-reload.sh              # 重建前后端并重启（默认）
-bash scripts/dev-reload.sh backend      # 只重建后端（改了 Java / 迁移 SQL）
-bash scripts/dev-reload.sh frontend     # 只重建前端（改了 tsx / ts / css）
+```powershell
+.\scripts\dev-reload.ps1              # 重建前后端并重启（默认）
+.\scripts\dev-reload.ps1 backend      # 只重建后端（改了 Java / 迁移 SQL）
+.\scripts\dev-reload.ps1 frontend     # 只重建前端（改了 tsx / ts / css）
 ```
+
+> 开发机脚本都是 Windows 原生 `.ps1`（Windows PowerShell 5.1 或 `pwsh` 7 均可，**不需要 Git Bash**）；
+> 若执行策略为 Restricted，用 `powershell -ExecutionPolicy Bypass -File scripts\dev-reload.ps1`。
 
 脚本依次做：`docker compose build` → `up -d`（compose 检测到镜像变化会自动重建容器）→
 轮询 `/api/health`，就绪后打印访问地址与容器状态。

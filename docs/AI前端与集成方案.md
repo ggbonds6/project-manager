@@ -90,9 +90,11 @@
 
 ### 4.3 部署与鉴权
 
-- **同源**：nginx 增加 `location /ai-api/ { proxy_pass http://pm-ai-backend:8100/; }`，
-  前端只调 `/ai-api/*` → **无跨域、无额外端口对外**；AI 服务的 8100 **不对公网暴露**。
-- **鉴权**：主系统后端持有服务间令牌调用 AI 服务；**浏览器永远不直连 AI 服务**（避免把 AI 服务暴露成公网入口）。
+- **同源**：前端只调**主系统后端**的 `/api/ai/*`（nginx 里已有的 `location /api/ → pm-backend:8080` 无需改动）。
+  **不加** `location /ai-api/ → pm-ai-backend:8100` 这条反代——那会让浏览器**绕过主系统的权限解析**直接够到 AI 服务，
+  与下面第 3 条边界自相矛盾（2026-09-20 修正：原文写作"前端只调 `/ai-api/*`"是错的）。AI 服务的 8100
+  **只在内网可达**，仅被主系统后端调用。
+- **鉴权**：主系统后端持有服务间令牌调用 AI 服务（`AI_SERVICE_TOKEN`，与用户 JWT 分离）；**浏览器永远不直连 AI 服务**。
 - **AI 服务侧的 `/v1` 前缀**：按路线图加版本前缀（`/v1/documents`、`/v1/chat`…），给未来留出契约演进空间。
 
 ---
@@ -164,6 +166,9 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 2. 返回统一结构：`{data, unit, 口径说明, data_time, scope}` —— 让模型能解释"这个数字是什么口径、什么时候的数据"；
 3. AI 服务侧把它包装成**工具**（与 `search_documents` / `read_page` / `calculate` 同一层），
    提示词明确："**结构化问题必须走这些工具，不得自行推算或估算**"；
+   ⚠️ **模型侧只暴露 1 个工具** `query_business_data(entity, filters)`，`entity ∈ {projects, contracts, payments, stats}`
+   —— 4 个 RPC 不变，但"一个实体一个工具"会让工具数膨胀到 7 个、拉低选择准确率与提示词缓存命中率。
+   依据与取舍见 [`AI工具集与检索编排评估.md`](AI工具集与检索编排评估.md)；
 4. 每次调用写 `ai_ask_log` + `operate_log`（谁、何时、问什么、查了哪些数据、答了什么）；
 5. **三条禁止**：AI 服务直连数据库 ❌ ／ 把主系统库连接串交给 AI 服务 ❌ ／ 让模型生成 SQL（NL2SQL）❌
    —— 审计场景不可控、难复核、有注入与性能风险。
@@ -199,3 +204,59 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 | 本机配置移出仓库树 | `local/export`（数据库导出、`口令与配置清单.md`、SSH 公钥）→ **`E:\env\pm-local\export`**；仓库内 `local/` 只留两个本机启动助手（已 gitignore） |
 | 接入不必等 OpenSearch | 见 §8.1：`VEC_BACKEND=local` 即可打通全链路，P0 现在可开工 |
 | 数据访问渠道 | 见 §8.2：主系统受控查询 RPC + 工具化，不用 MCP、不直连库、不生成 SQL |
+
+---
+
+## 9. P0 接口契约（**冻结**：前端与主系统后端各按此实现，不再各自发明）
+
+统一的响应信封沿用主系统既有约定（`{code, message, data}`，成功 `code=0`，前端 `api.get<T>()` 已自动解包到 `data`）；
+路径前缀一律 `/api/ai`，**前端不认 AI 服务的原始契约**（AI 服务字段变了只改主系统适配层）。
+字段命名：**camelCase**（与主系统既有接口一致）。时间：`yyyy-MM-dd HH:mm:ss`。
+
+| # | 方法与路径 | 入参 | 返回 `data` | 权限 |
+| --- | --- | --- | --- | --- |
+| 1 | `GET /api/ai/health` | — | `{available, aiServiceBaseUrl, vectorBackend, platformReachable, models:{chat,ocr,embedding,reranker}, documentCount, pendingTaskCount, checkedAt, message}` | 登录 |
+| 2 | `GET /api/ai/documents` | `keyword, projectId, page=1, size=20` | `{total, records:[{docId, filename, projectId, projectName, attachmentId, pageCount, chunkCount, sizeBytes, indexedAt, indexStatus, error}]}` | 登录（按可访问项目过滤） |
+| 3 | `DELETE /api/ai/documents/{docId}` | — | `{docId, deleted}` | ADMIN/MANAGER |
+| 4 | `GET /api/ai/tasks` | `status, projectId, page=1, size=20` | `{total, records:[{taskId, attachmentId, filename, projectId, projectName, status, progress, docId, error, createdAt, updatedAt}]}` | 登录 |
+| 5 | `GET /api/ai/tasks/{taskId}` | — | 同上单条 | 登录 |
+| 6 | `POST /api/ai/tasks/{taskId}/retry` | — | `{taskId}` | ADMIN/MANAGER |
+| 7 | `POST /api/ai/attachments/{attachmentId}/parse` | — | `{taskId, docId}` | ADMIN/MANAGER |
+| 8 | `GET /api/ai/attachments/status` | `attachmentIds=1,2,3`（逗号分隔，上限 200） | `[{attachmentId, indexStatus, progress, docId, error}]` | 登录 |
+| 9 | `POST /api/ai/chat` | `{question, projectId?, attachmentIds?, conversationId?, topK?}` | `{conversationId, answer, citations:[{index, docId, attachmentId, filename, pageNo, snippet, score}], systemData:[{label,value,unit,caliber,dataTime,scope}], toolTrace:[{name,summary,elapsedMs,hitCount}], degraded, notice, elapsedMs, logId}` | 登录（**作用域在主系统解析**） |
+| 10 | `GET /api/ai/ask-logs` | `page, size, userId, from, to` | `{total, records:[{logId, userId, userName, question, projectId, attachmentIds, answerDigest, citedCount, elapsedMs, degraded, createdAt}]}` | ADMIN（P1 使用） |
+
+**枚举取值（定死，前端直接映射中文标签）**：
+
+| 字段 | 取值 | 中文标签 |
+| --- | --- | --- |
+| `indexStatus`（文档/附件） | `NOT_PARSED` / `PARSING` / `READY` / `FAILED` | 未解析 ｜ 解析中 ｜ 已可检索 ｜ 解析失败 |
+| 任务 `status` | `QUEUED` / `RUNNING` / `DONE` / `FAILED` | 排队中 ｜ 解析中 ｜ 已完成 ｜ 失败 |
+| `vectorBackend` | `local` / `opensearch` | 进程内向量 ｜ OpenSearch |
+
+**P0 只实现 #1~#9**；`systemData` 在 P0 恒为 `[]`（受控查询工具属 P2）；#10 随 P1 的留痕页一起做。
+**AI 服务不可用时的行为**（不许含糊）：`#1` 返回 `available=false` + 中文原因；
+`#9` 直接返回业务错误（`code≠0`，message 明确写"AI 服务不可用"），**不允许降级成"未找到"**。
+
+**引用里的 `attachmentId` 由主系统补齐**（AI 服务只认 `doc_id`，它不持有附件语义）：主系统按 `doc_id → attachmentId`
+（`attachment.ai_doc_id` / `attachment_ai_task`）回填；映射不到（如文档已删）时为 `null`，前端据此**把该条引用显示为
+"文件名 第 N 页（附件已删除）"而不是做成可点击链接**。补充原因：`citations` 是前端"点一下跳到第 N 页"的唯一依据，
+若只给 `doc_id`，前端还得再查一次文档列表做映射——那是把主系统的知识漏给前端，不如在主系统一次补齐。
+
+---
+
+## 10. 前端工程规范（AI 模块落地时遵守）
+
+| 项 | 规定 |
+| --- | --- |
+| 目录 | 页面 `src/pages/ai/*`（`AiPage.tsx` + 各页签子组件）；对话组件 `src/components/ai/*`（**悬浮窗与 `/ai` 页共用**，不许写两份）；接口 `src/api/ai.ts`；类型 `src/types/ai.ts` |
+| 请求 | 只用 `@/api/http` 的 `api.get/post/put/del/upload`（自动带 token、自动解包 `data`、错误已统一 toast）；**不引 axios 实例**、不手写 fetch |
+| 类型 | 契约字段在 `src/types/ai.ts` 里与 §9 一一对应；枚举用字符串字面量联合类型 + 中文标签映射表（同 `tagDict` 的做法） |
+| 依赖 | **不新增 npm 依赖**：markdown 用既有 `react-markdown`，高亮/滚动/图标用 antd 与 `@ant-design/icons`，日期用既有 `dayjs` |
+| 权限 | 菜单与按钮用 `useAuth()` 的 `user.role` 判定（`ADMIN`/`MANAGER`/`VIEWER`）；**前端隐藏只是顺手**，真正的拦截在主系统后端 |
+| 状态 | 列表分页/加载/空态/错误态四态齐全（沿用既有页面写法）；对话流用 `useState` 局部状态，不引状态管理库 |
+| 交互底线 | 任何"未找到"必须显示为**未找到**（不得显示为通用错误）；引用必须可点击跳附件原文；解析失败必须能看到原因并可重试 |
+| 验收 | `npm run build`（`tsc` + `vite build`）零错误；`npm run dev` 下 `/ai` 页与悬浮窗可用；不改动非 AI 相关页面行为 |
+
+> 与 §8.3 的关系：§8.3 定"做哪些、不做哪些"，本节定"怎么写"。两者冲突时以"最小可用集"为准。
+

@@ -23,7 +23,7 @@
 ├─ docs/         设计与部署文档
 ├─ deploy/       部署资产（docker 生产镜像 / windows 开发脚本）
 ├─ scripts/      发版打包 + 演示数据 + 开发机辅助工具 + 文档体检（清单见 scripts/README.md）
-├─ local/        **本机专用资产**（数据库导出、口令清单、本机启动助手）——已 gitignore，不入库
+├─ local/        **本机启动助手**（start/stop-project-local.cmd，已 gitignore 不入库）；口令与数据库导出在仓库外 `E:\env\pm-local\`
 ├─ ai-backend/   AI 能力服务（Spring Boot 3 / Java 17，与主系统同栈、独立构建与部署 · ai-1.0.1）
 ├─ frontend/     React 前端
 └─ backend/      Spring Boot 后端
@@ -68,9 +68,9 @@
 
 4. （可选）灌入演示数据（**每次迭代功能都应同步补充演示数据**，见 §文档维护约定）：
 
-   ```bash
+   ```powershell
    # ① 想从干净基线开始时，先物理清空演示数据（可选；详见 scripts/README.md）
-   bash scripts/db-sql.sh scripts/demo-reset.sql
+   .\scripts\db-sql.ps1 scripts/demo-reset.sql
 
    # ② 项目/子项目 + 多合同（施工主合同·监理·第三方测评·预算编制·方案评估）+ 付款 + 项目分工
    node scripts/seed-demo.mjs
@@ -81,7 +81,7 @@
 
    > ②③ 走真实后端 API，默认连 `http://127.0.0.1:8088`（可传参改，如 `node scripts/seed-demo.mjs http://127.0.0.1:8080`）。
    > 注意：本系统删除一律是**逻辑删除**，反复重跑 seed 会在库里堆积 `deleted=1` 的历史行——看数据库时先按 `deleted=0` 过滤，或先用 ① 清空。
-   > 需要手工查/改库（本机通常没有 yasql 客户端）时用 `bash scripts/db-sql.sh <sql文件>`。
+   > 需要手工查/改库（本机通常没有 yasql 客户端）时用 `.\scripts\db-sql.ps1 <sql文件>`（本机 Windows 原生，无需 Git Bash）。
 
 预置登录账号（密码均 `123456`）：`admin`（管理员）/ `jingban01`（经办人）/ `lingdao01`（领导，只读）。
 
@@ -120,5 +120,5 @@
 9. 收尾顺手清理无效代码（未使用导入 / 死方法 / 只写不读的变量）；
 10. 提交说明引用对应验证结果。
 
-当前版本：主系统 **v3.5.1** ｜ AI 能力服务 **ai-1.0.1**（Java 版，独立构建与部署）｜ 文档与脚本 **docs-1.0**
+当前版本：主系统 **v3.6.0**（含「AI 与知识库」P0：菜单页 + 全局悬浮问答 + 引用可跳原文第 N 页）｜ AI 能力服务 **ai-1.1.0**（Java 版，独立构建与部署；`/chat` 返回结构化引用）｜ 文档与脚本 **docs-1.2**
 （数据库已切换崖山 YashanDB Oracle 模式）（详见 [`ITERATION.md`](ITERATION.md) 迭代总表与功能完成度）。

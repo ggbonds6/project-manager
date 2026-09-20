@@ -63,6 +63,9 @@
 | ai-1.0.1 | 2026-09-20 | **清理与回归单一主线：删除 Python 侧 `ai-service`，知识资产迁入 `ai-backend`** | Python 侧代码/脚本/测试/文档整体删除（`ai-service/` 50 个受控文件：2 份手册迁入 `ai-backend/docs`、其余 48 个删除），只保留**仍然有价值的知识**并迁入主线：两份只读接口手册（`平台OCR调用使用手册.md`、`Qwen3-VL-Embedding-Reranker调用手册.md`）与四份规划文档（架构评估与规范化、知识库总体架构与演进路线、知识库落地实施方案、embedding 端点部署方案）落 `ai-backend/docs/`，另新增《平台能力实测结论》把散落在 Python README 里的实测数字与踩坑结论固化下来（含平台 OCR 渲染参数/印章编造/并发、置信度四层口径、思维链吃光额度、单条 system、Embedding 不支持 MRL 降维、Rerank 返回入参下标、质量门用例数）；合成样本迁到 `ai-backend/work/samples` 并同步 `verify-e2e.ps1`；**保真修正**：PDFBox 逐页文本换行归一（`\r\n`→`\n`）且整页空白回空串，使 Java 与 PyMuPDF **逐字节一致**（电子版 182==182、扫描件 0==0，此前是 191 vs 182 / 1 vs 0）；旧 Python 服务容器退役（端口让给 Java 版）；全部相对路径引用（手册位置、样本路径、curl 示例）同步更新；**OpenSearch 仍待集群部署**（适配层已就绪、配 `opensearch` 显式报错） | 本轮待提交 |
 | docs-1.0 | 2026-09-20 | **文档与脚本集约化重整（跨主系统 + AI 能力服务）** | ① **修表格格式**：ITERATION 总表内夹了空行，导致 `ai-1.0.0`/`ai-1.0.1` 两行被"踢出"表格（Markdown 里**空行即结束表格**）——已去除；全仓脚本体检另修 1 处单元格裸竖线（厂商手册表格里**裸竖线 → `\|`**）。② **建两张地图**：新增 [`docs/README.md`](docs/README.md)（**唯一文档地图**：按角色导读 + 权威文档清单 + 已核减登记 + 维护约定）、重写 [`scripts/README.md`](scripts/README.md) 为**脚本与操作唯一清单**（场景速查表 + Shell 要求 + 分组明细；如实记录本机**无 Git Bash**、`scripts/*.sh` 暂时跑不了，并给出两条替代路径）。③ **核减过程性文档**（理由：一次性/已完成/已被取代的计划留在仓库只会制造歧义）：崖山两份（可行性分析 + 迁移实施方案）压缩为《崖山数据库与迁移约定》、知识库两份合并为《知识库实施方案与路线》、附件智能处理自测方案压缩为《附件智能处理-验收标准与现状》、双机 ARM 与 Gitea 两份并入《部署与发布全流程手册》附录 A/B、删除《embedding 端点部署方案》（平台已直接提供）《架构评估与规范化方案》（结论已在迁移对照表与 ITERATION）《流程模板图形化评估》（功能已于 v2.3 移除）。④ 根 `README.md` 增加"两张地图"入口，并把"文档地图同步""Markdown 表格两禁忌"写入硬性维护约定。 | 本轮待提交 |
 | docs-1.1 | 2026-09-20 | **重要文档同步性审计 + 目录整理（仓库上移）+ AI 前端方案评估** | ① **同步性审计**（README / ITERATION / 设计方案 vs 现状）：发现并修 **2 处**——根 README「当前版本」仍写 v3.5（改为 主系统 v3.5.1 ｜ AI ai-1.0.1 ｜ 文档 docs-1.0）、设计方案 §7 页面结构里的项目详情页签仍是 5 个（与 §6.2 的"v3.5 起最多 8 个"不一致，已统一为 8 个）；核对无误的项：数据模型 **14 张表**（V1 建 9 张含 `sys_dept`、V3 已删 → 实存 14，与设计稿一致）、崖山/MySQL 表述均已是历史口径、脚本与端口与 `scripts/README.md` 一致。② **Python 残留排查**：全仓**无** `.py`/`pyproject.toml`/`requirements*`/`__pycache__`/`.venv`/`.pytest_cache`/`.ruff_cache`；构建资产（Dockerfile/compose/yml）里无 Python 基础镜像与依赖；仅剩 Java 注释与文档中的**历史溯源提及**（如"移植自 `checks.py`"）。③ **目录整理**：删除 `project/` 下无用内容（最初静态原型 `demo/`、已被现设计稿 §11 覆盖的 `设计方案-v0.1`、npm 缓存 `.devtools/` 1660 项、跑服务留下的 `work/`、0 字节文件），把**本机专用资产**（数据库导出/口令清单/SSH 公钥 + 两个本机启动助手）收进仓库内 **`local/`（已 gitignore）**；仓库由 `Desktop\project\project-manager` **上移到 `Desktop\project-manager`**，旧 `project\` 已删除；启动助手的 `ROOT` 改为相对路径 `%~dp0..`。④ **AI 前端方案**：新增 [`docs/AI前端与集成方案.md`](docs/AI前端与集成方案.md)——评估三条路线后**否决"独立 React 前端"**，推荐**并入主系统前端**（新增「AI 与知识库」菜单 + **全局悬浮对话图标**），含知识库面板五页签设计、主系统代理与 V13（`attachment_ai_task`/`ai_index_status`/`ai_ask_log`）、nginx 同源与鉴权边界、P0~P3 分期（P0 3~5 人日）与风险对策。⑤ 新增 `scripts/check-docs.mjs` 回显扫描根（默认扫当前工作目录，在仓库外执行会扫错对象） | 本轮待提交 |
+| v3.6.0 | 2026-09-20 | **AI 与知识库 P0：并入主系统前端 + 主系统代理层（V13）** | ① **前端**：新增「AI 与知识库」菜单 `/ai`（文档库／任务队列／服务自检三个**真正可用**的页签，不放占位）；**全局悬浮问答 Drawer**（与 `/ai` 页**共用同一份对话组件**，顶部显式显示并默认跟随页面范围：项目详情页=该项目）；**引用可点击跳原文第 N 页**——为此给 `AttachmentPreviewModal` 加**纯增量**可选参数 `pageNo`（仅 PDF 拼 `#page=N`，不传时行为不变），`attachmentId` 由主系统回填、映射不到则显示"附件已删除"而不做坏链接；附件中心加索引状态标签（未解析／解析中+进度／已可检索／解析失败+原因）＋重新解析＋批量补解析；🔴 自查修掉**React #310 回归**（新增的 `useMemo` 落在 `if (!detail) return` 之后，首屏与加载后 hook 数不一致——`tsc`/`vite build` 发现不了的崩溃型缺陷）＋ `useLocation` 死引用（并纠正 `location.search` 依赖不随路由变化的问题）。验证：`npm run build` EXIT=0、`--noUnusedLocals` 清零。② **主系统后端**：**迁移 V13**（`attachment_ai_task`、`attachment` 加 `ai_index_status`/`ai_doc_id`/`ai_indexed_at`（全可空、存量零影响、NULL 归一到 NOT_PARSED）、`ai_ask_log` 审计留痕）+ `module/ai/**`（`AiServiceClient` 唯一适配 AI 原始契约且双超时、`AiScopeResolver` **权限与作用域在主系统收口**、`AiAnswerAdapter` 含 citations 回填 attachmentId、`AiChatService` 问答+留痕、`AiTaskService` 触发/重试/状态回写、`AiTaskRecoveryRunner` 启动清理残留任务、`AiHealthService` 永远给结论）；AI 不可用时 `/chat` **严格 503 不降级成"未找到"**，读接口用主系统自有记录作答；`citations` 缺失一律空数组、**绝不从 `trace.brief` 抠页码**。验证：`mvn -o test` 66 例全绿（全 mock），过程中修掉 4 个真实缺陷（含 **4xx 被误判成"AI 服务不可用"**的产品缺陷）。④ **上传后自动触发解析**（方案 §3.3 要求）：在 v3.2 两段式上传的**后台推送线程**里、附件落库成功**之后**发布事件，由**独立单线程执行器**（有界队列 200 + CallerRunsPolicy，刻意不复用上传池以免大文件解析挤掉后续上传）异步触发；**AI 失败绝不影响上传**（三层保证：监听者吞异常 + 事件单向 + 发布方再包一层 try，专门有测试钉住）；开关 `pm.ai.auto-parse`（`AI_AUTO_PARSE`，默认 true）**关闭时连事件都不发**；失败时置 `FAILED`+原因（而非 `NOT_PARSED`，否则界面显示"未解析"、没人会去查为什么没解析成）；顺带修掉一个真问题——后台线程没有 `AuthContext`，自动解析的留痕会记成"操作人为空"，故给 `OperationLogService` 加显式传操作人的重载（自动/手动/重试分别记 `AI_AUTO_PARSE`/`AI_PARSE`/`AI_RETRY`）。③ **工具集评估**：新增《AI工具集与检索编排评估》——结论是 3 个工具一个都不能删（平台给的是无状态能力，工具解决有状态编排与本地数据；平台没有"语料库"概念），但要重排分工（检索默认服务端预取、诊断字段不下发模型、未来 4 个业务查询 RPC 在模型侧合并成 1 个工具），并明确**不引入** LangChain4j/Spring AI。 | 本轮待提交 |
+| ai-1.1.0 | 2026-09-20 | **`/chat` 结构化引用 + 请求字段名对齐（AI 服务）** | 前端"引用可点击跳原文"的前置条件：`/chat` 原先只返回 `{answer,trace,scope,llm,stopped_reason,error}`，**页码/片段/分数全被丢掉**。新增请求级 `CitationRegistry`——命中在**模型看到时就带 `cite` 编号**（`doc_id+page_no` 去重、按首次命中顺序分配、只增不改、同页重命中只刷新分数），提示词要求句末按 `[cite]` 标注，响应**追加** `citations:[{index,doc_id,filename,page_no,snippet,score}]`（既有键顺序与语义一字未动，键顺序不作契约）。**顺带修掉"静默丢参"真 bug**：契约写 `doc_ids` 而 Java 字段实为 `docIds` → 按文档发 `doc_ids` 会被静默忽略、检索范围退化成"答全库"（不报错的最危险一类），已用 `@JsonProperty("doc_ids")+@JsonAlias("docIds")` 两种都收并写进契约文档；同时清掉提示词里推荐**已删除工具** `list_documents` 的旧文案。验证：`mvn -o test` **94 例全绿**（既有 81 例未改 + 新增 13 例）；**真实内网网关 e2e** 两种字段名都真的被解析（用不存在的 docId 反证），`citations` 页码与 snippet 与原文逐字一致；`verify-e2e.ps1` 修字段搬家缺陷 + **新增 citations 断言**，整脚本真跑 EXIT=0。**遗留**：AI 服务**无任何入站鉴权**（依赖网络隔离，独立待办，不在主系统侧假装修好）。 | 本轮待提交 |
+| docs-1.2 | 2026-09-20 | **开发机脚本 PowerShell 化 + 文档与脚本收口** | ① `docs-1.0` 遗留项落地：`scripts/{make-release,dev-reload,db-sql}.sh` → **Windows 原生 `.ps1`** 并删除 `.sh`（`pm-upgrade.sh` 与 `ai-backend/scripts/check.sh` 因只在 Linux/CI 跑而保留）；必须偏离 bash 的地方（无 `gzip.exe` → `.NET GZipStream`；`java -D…` 裸参数被按 `.` 拆参；PS 5.1 对原生命令 `2>$null` 抛终止性错误；`curl` 是别名）已写进脚本注释。② **编码定案**：`scripts/*.ps1` 一律 **UTF-8 带 BOM + CRLF**（实测 PS 5.1 对无 BOM 的 UTF-8 按 GBK 解析，中文字面量**在解析期就坏**；"无 BOM+中文+5.1 可跑"三者不可兼得），写入 `scripts/README.md` §0.2 并明确"别顺手改成无 BOM"。③ **验证**：三脚本 × (PS 5.1 + PS 7) 解析校验 6/6；`db-sql.ps1` **真实执行**（只读查询返回 11 行，走 `.env` 档，口令只打印长度、不打印不落盘）；`make-release.ps1`/`dev-reload.ps1` 因本机 Docker 引擎未启动**未实际执行**（只做逐段比对 + 隔离探针），其 gzip 产物的 `docker load` 闭环**登记为待验证项**。④ **文档收口**：`scripts/README.md`／根 `README.md`／`deploy/README.md`／`docs/部署与发布全流程手册.md`（§2.3 手工打包整段改为"等价说明、不可照抄"的 PowerShell 步骤，`\| gzip` 与 `ls -lh` 清零）／`jdbc/RunSql.java` 与 `demo-reset.sql` 注释／本文件 4 处失效的"当前用法"；新增《AI工具集与检索编排评估》并登记进 `docs/README.md`；`docs/AI前端与集成方案.md` 增 §9 冻结契约与 §10 前端工程规范，并**修正"nginx 加 `/ai-api/` 直连 AI 服务"的自相矛盾结论**（会让浏览器绕过主系统权限解析）。收尾：`check-docs` 19 份 / 0 问题（体检本轮真抓到 2 处自己引入的问题并已修）。 | 本轮待提交 |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -490,7 +493,8 @@
   过程性文档完成后核减，决策与实测数字进 ITERATION。
 - **可持续性（别再靠临时脚本发现）**：新增 [`scripts/check-docs.mjs`](scripts/check-docs.mjs)——文档体检：① 表格内空行断表；② 单元格裸竖线；③ 本地链接失效；④ ITERATION 总表与明细不一致；有问题退出码 1（可接 CI）。同时写入维护约定：**改完文档提交前跑一次 `node scripts/check-docs.mjs`**。
 - **未做（待确认）**：① 把 `scripts/*.sh` 改写/新增为 Windows 原生 `.cmd`/`.ps1` 等价实现
-  （本机无 Git Bash，`make-release.sh` / `dev-reload.sh` / `db-sql.sh` 目前只能装 Git Bash 或走 WSL）；
+  （本机无 Git Bash，`make-release.sh` / `dev-reload.sh` / `db-sql.sh` 目前只能装 Git Bash 或走 WSL）
+  —— **已于 `docs-1.2` 完成**：三者改写为 Windows 原生 `.ps1`（`pm-upgrade.sh` 例外，它只在 Linux 服务器上跑）；
   ② `.workbuddy/memory/` 下 7 份助手工作日志（约 1900 行，**未被 git 跟踪**）是否清理。
 
 ---
@@ -520,6 +524,146 @@
   全局悬浮对话（上下文感知作用域、出处可点击到附件页码）、主系统侧 V13（`attachment_ai_task` / `ai_index_status` / `ai_ask_log`）、
   nginx 同源代理与"浏览器永不直连 AI 服务"的鉴权边界、P0~P3 分期（P0 3~5 人日）与六条风险对策。
 - **未做（待你决策）**：① `scripts/*.sh` 是否改写为 Windows 原生 `.cmd`/`.ps1`；② `local/export`（含口令清单）是否移出仓库树。
+  —— **两项均已于 `docs-1.2` 落地**（脚本转 `.ps1`；`local/export` → `E:\env\pm-local\export`）。
+
+---
+
+### v3.6.0 — AI 与知识库 P0：并入主系统前端 + 主系统代理层（V13）+ AI 服务结构化引用（2026-09-20）
+
+> 本文与 `docs-1.2` 是**同一轮工作**的两面：本文记"做出了什么、怎么验的"，`docs-1.2` 记"文档与脚本怎么收口的"。
+> 方案依据见 [`docs/AI前端与集成方案.md`](docs/AI前端与集成方案.md)（§9 接口契约**冻结**、§10 前端工程规范）与
+> [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md)。
+
+**① 前端：AI 能力并入主系统（不单独做一套前端）**
+- 新增「AI 与知识库」菜单 `/ai`（`ADMIN`/`MANAGER` 可见）：**① 文档库**（分页/搜索/删除/重新解析）、
+  **② 任务队列**（状态筛选、失败原因、重试）、**③ 服务自检**（AI 服务/平台网关/向量后端/四个模型/文档数/待处理任务数）
+  —— 三个页签都是**真正可用**的四态页面，**不放 P1/P2 占位页签**（检索调试与评测指标属 P1/P2，本轮不建）。
+- **全局悬浮问答**：右下角常驻图标 → 右侧 `Drawer`（不打断当前操作），**与 `/ai` 页共用同一份对话组件**
+  （不写两份）；顶部显式显示"当前范围"并默认**跟随页面**（项目详情页 = 该项目）；答案用既有 `react-markdown` 渲染，
+  `toolTrace` 折叠展示，`degraded`/`notice` 用 `Alert` 明示；**"未找到"如实显示为未找到**，不显示成通用错误。
+- **引用可点击跳原文**（本轮最能建立信任的一点）：答案里的 `[n]` 对应结构化 `citations`，点击直接打开该附件并
+  **定位到第 N 页**——为此给既有预览组件 `AttachmentPreviewModal` 加了**纯增量**的可选参数 `pageNo`（仅 PDF 分支拼
+  `#page=N`，不传时行为完全不变）。`attachmentId` 由主系统在 `citations` 里回填；映射不到（附件已删）则该条
+  明确显示"附件已删除"而**不做成坏链接**。
+- 附件中心：每个附件显示 AI 索引状态标签（未解析｜解析中+进度｜已可检索｜解析失败+原因）＋「重新解析」，
+  并提供"解析未入库附件（N）"批量入口；**AI 服务不可用时明确提示"状态读不到"，不假装已知**。
+- 🔴 **自查发现并修掉一个严重回归**：批量解析用的 `useMemo` 被写在页面中段 `if (!detail) return …` **之后**，
+  首屏不执行、详情到达后才执行 → `Rendered more hooks than during the previous render`（**React #310**，
+  v3.5.1 踩过的同型缺陷，整个项目详情页会崩）。已前移到 hook 区并加注释钉住；**`tsc`/`vite build` 都发现不了这类问题**
+  （只有真跑页面才炸），故保留"提前 return 之后 hook 数必须为 0"这条结构性自查。
+  同时修掉 `useLocation` 只 import 未使用（违反 §14.7 的 `--noUnusedLocals` 清零要求）——改用路由的 `useLocation()`
+  也顺带修好了真问题：引用跳转链路的 `useEffect` 依赖 `location.search`，用全局 `window.location` 不会随路由变化触发。
+- 验证：`npm run build`（`tsc && vite build`）**EXIT=0**（4188 modules / 12.34s）、
+  `tsc --noEmit --noUnusedLocals --noUnusedParameters` **清零**；**未做浏览器级验证**（需同时起主系统与内网 AI 服务），
+  故 `/ai` 与悬浮窗目前只有"编译 + 契约"层面的保证。
+
+**② 主系统后端：代理层 + 迁移 V13**
+- **V13**（`db/migration-yashan/V13__ai_integration.sql`）：`attachment_ai_task`（谁触发/进度/doc_id/失败原因，
+  冗余 `project_id`+`filename` 便于按项目过滤与附件删除后追溯）、`attachment` 增 `ai_index_status`/`ai_doc_id`/`ai_indexed_at`
+  （**全可空、无默认值 → 存量数据零影响**，NULL 由 `Attachment.getAiIndexStatus()` 统一归一为 `NOT_PARSED`）、
+  `ai_ask_log`（审计：谁/何时/问什么/作用域 requested 与**实际 docIds**/引用数/耗时/degraded/notice/答案摘要）。
+- 新增 `backend/src/main/java/com/pmgt/module/ai/`：`AiServiceClient`（唯一知道 AI 原始契约的适配层，问答 60s / 其它 10s 双超时）、
+  `AiScopeResolver`（**权限与作用域在主系统收口**：把前端给的附件/项目校验并换算成 `docIds`，越权明确拒绝）、
+  `AiAnswerAdapter`（纯函数适配 §9 契约，含 `citations` 回填 `attachmentId`）、`AiChatService`（问答 + 留痕）、
+  `AiDocumentService`（文档库：`keyword` 同时匹配文件名与 docId）、`AiTaskService`（触发/重试/列表/状态回写）、
+  `AiTaskRecoveryRunner`（启动把残留的排队/解析中任务标失败，避免前端永远转圈）、`AiHealthService`（永远给结论不抛异常）。
+- 边界与取舍：`/chat` 在 AI 服务不可用时**严格报 503 且不降级成"未找到"**；任务/文档**读接口**在 AI 不可用时用主系统
+  自己的记录作答（写动作仍报错）；`citations` 缺失一律空数组，**绝不从 `trace.brief` 抠页码伪造引用**。
+- **验证**：`mvn -o test` **66 例全绿**（自动触发解析补完后：触发器 8 例 + 上传链路集成 6 例 + 服务层 2 例 + 原 50 例），
+  全部 mock/stub，不依赖真实 AI 服务；其中"**AI 服务不可用 → 上传仍然 SUCCESS**（status / attachmentId / progress 三项断言、
+  且上传结果不被改写）"与"开关关闭时连事件都不发"各自单独成例。
+- **自动触发解析的取舍（值得记住）**：① **失败置 `FAILED` 而非 `NOT_PARSED`**——解析确实尝试过且原因可读；
+  置 `NOT_PARSED` 会被界面显示成"未解析"，默认判断是"还没轮到"，于是没人去查为什么没解析成，
+  而"AI 服务挂了"恰恰最需要被立刻看到；上传本身仍是 SUCCESS。② **三层失败隔离**：监听者 catch → 事件单向 →
+  发布方再包一层 try（防"监听者抛异常被 `store()` 的 catch 误写成上传失败"）。③ **不复用上传线程池**：
+  只把工作转交给独立的单线程执行器（有界队列 + CallerRunsPolicy），避免一次大文件解析挤掉后续上传的吞吐。
+  ④ 顺带修掉一个真问题——**后台线程没有 `AuthContext`**，自动解析的留痕会记成"操作人为空"，
+  故给 `OperationLogService` 加"显式传操作人"的重载（原 4 参方法行为不变，改为读登录态后转调）。
+- **演示路径（设计稿 §14.6）**：`node scripts/seed-attachments.mjs` 上传即自动解析 → `/ai` 看文档库与任务队列 →
+  悬浮窗提问 → 点引用跳附件第 N 页；**边界场景**用开关演示：停掉 `ai-backend`（或 `AI_AUTO_PARSE=false`）后，
+  附件显示"解析失败（AI 服务不可用）+ 重试"而**上传依旧成功**，恢复服务后点重试即入库。
+
+**③ AI 能力服务：结构化引用（`ai-1.1.0`，本轮的前置条件）**
+- 前端"引用可点击跳原文"要求 `/chat` 返回**结构化出处**，而原实现只有人读摘要 —— 该改造**独立成一行迭代**记录，
+  见下方明细段 `### ai-1.1.0 — /chat 结构化引用 + 请求字段名对齐`。
+  **依赖关系**：`v3.6.0` 的引用功能依赖 `ai-1.1.0` —— 若部署的 AI 服务还没有 `citations` 字段，
+  前端会拿到**空引用列表（不报错、不伪造）**，页签与自检一切正常。
+
+**④ 工具集评估（回答"平台四件套就位后还要不要自写工具"）**
+- 结论：**3 个工具一个都不能删**——平台给的是"无状态能力"（文本→向量/生成），工具解决的是"有状态编排 + 本地数据"
+  （语料从哪来、切片怎么存、召回怎么融合、精确算术谁算、审计怎么留痕），**平台没有"语料库"这个概念**。
+  但要重排分工：检索默认改**服务端预取**（工具保留用于追问）、诊断字段只落日志不下发模型、未来 4 个业务查询 RPC
+  在模型侧**合并成 1 个** `query_business_data(entity, filters)`。明确**不引入** LangChain4j/Spring AI
+  （会把"检索了几次、检索到什么"藏进框架日志，与审计要求的可复现冲突）。对照企业成熟方案（Dify/RAGFlow 的
+  "检索是流程节点而非模型工具"、Anthropic 工具设计指南的"少而整合/高信号返回/错误要教会模型"）逐条落地。
+
+**未做 / 边界（不美化）**：① **V13 未在真实崖山库执行**——将在下次 `pm-backend` 启动/部署时由 `YashanMigrationRunner`
+应用（`ALTER TABLE … ADD (…)` 与 V1~V12 已成功应用的 V8/V10/V11 写法一致，但**方言未实测**）；
+② `GET /api/ai/ask-logs`（#10）属 P1 未做（表与写入已就绪）；③ 前端未做浏览器级验证；
+④ 范围选择器只拉前 500 个项目；无"全部重解析"入口；⑤ 分页是"取全量再切片"、`chunkCount` 是估算值；
+⑥ `make-release.ps1` 的 gzip 产物**未经 `docker load` 实机验证**（本机 Docker 引擎未启动、无 gzip.exe）。
+
+---
+
+### ai-1.1.0 — /chat 结构化引用 + 请求字段名对齐（AI 服务，2026-09-20）
+
+- **为什么必须做（评估时发现的真缺口）**：`/chat` 原先只返回 `{answer,trace,scope,llm,stopped_reason,error}`，
+  **页码/片段/分数全被丢掉**——`trace.brief` 只是人读摘要，前端"引用可点击跳原文第 N 页"根本做不了。
+  这也正好印证了工具集评估的结论：**"文档在第几页"这层语义平台不会替我们做**（见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md)）。
+- **引用编号怎么保证稳定**：新增请求级 `CitationRegistry`，`search_documents` 的每条命中与 `read_page` 取回的页
+  都登记；**编号在模型看到命中时就已经带上**（`cite` 字段），故模型写出的 `[1][3]` 与响应里的 `citations` 一一对应，
+  不会因为后续再检索而错位。去重键 `doc_id + page_no`，编号按首次命中顺序分配、**只增不改**；同一页再次命中只刷新分数/片段。
+  注册表**按参数传递**（`ToolAgent`/`Tools` 是单例，绝不能用 ThreadLocal/静态态——否则并发问答会串号）。
+  `/chat` 追加 `citations:[{index,doc_id,filename,page_no,snippet,score}]`：既有键的顺序与语义**一字未动**，
+  键顺序**不作契约**（JSON 对象无序）；提示词同步要求句末按 `[cite]` 标注。
+- **顺带修掉一处"静默丢参"的真 bug**：老契约写 `doc_ids`，而 Java 字段实为 `docIds`（服务没有配 SNAKE_CASE），
+  于是**按文档发 `doc_ids` 会被静默忽略、检索范围退化成"答全库"**——不报错的那种最危险。
+  已改为 `@JsonProperty("doc_ids") + @JsonAlias("docIds")` 两种都收，注释改为事实描述，并把这条坑写进
+  `ai-backend/docs/迁移方案与对照表.md` 的契约表。同时清掉提示词里仍在推荐**已删除工具** `list_documents` 的旧文案。
+- **验证**：`mvn -o test` **94 例全绿**（既有 81 例未改一字 + 新增 13 例：编号稳定性/去重/无命中为空/两种字段名反序列化）；
+  **真实内网网关 e2e**：`doc_ids`（5.24s）与 `docIds`（3.50s）两种写法都真的被解析（用不存在的 docId 反证：
+  若被忽略会退化成答全库，实测返回"没有可用文档"、`citations=[]`、不调模型），答案带 `[1]` 角标，
+  `citations` 的 `page_no` 与 snippet 与原文**逐字核对一致**。
+  `ai-backend/scripts/verify-e2e.ps1` 一并修掉"字段搬家后仍读 `data.rounds`（静默取到空值）"这个既有缺陷，
+  并**新增 citations 断言**（`index` 从 1 连续、`page_no ≥ 1`、snippet 非空；失败逐条列问题 + 打印原始返回 + 非 0 退出），
+  整脚本真跑 **EXIT=0**：`rounds=2 / tokens=4285+382 / 9.24s / 引用 1 条（P1, score=0.2608）`；
+  该脚本原本是 no-BOM + LF，与仓库约定不符（PS 5.1 会按 ANSI 解码导致中文乱码），已转为 UTF-8 带 BOM + CRLF。
+- **遗留（重要）**：**AI 服务当前没有任何入站鉴权**（无 Filter/Interceptor、无 Spring Security 依赖）。
+  主系统已按 `Authorization: Bearer <pm.ai.token>` 发送，但**对方不校验**，token 为空时连头都不发；
+  安全性目前**完全依赖网络隔离**。这是独立待办（登记于 `AiProperties` 配置注释与本文件 Backlog），
+  **不在主系统侧"单方面假装修好"**。
+
+---
+
+### docs-1.2 — 开发机脚本 PowerShell 化 + 文档收口（2026-09-20）
+
+- **`scripts/*.sh` → Windows 原生 `.ps1`**（`docs-1.0` 遗留项 ①，本机**无 Git Bash** 一直跑不了）：
+  `make-release.ps1` / `dev-reload.ps1` / `db-sql.ps1`，**删除对应 `.sh`**（避免两套漂移）；
+  `pm-upgrade.sh` 保持 `.sh`（它只在 Linux 服务器上跑）；`ai-backend/scripts/check.sh` 保留（Linux/CI 质量门）。
+- **必须偏离原脚本的地方**（都是本机事实逼出来的，已写进脚本头部注释）：① 用 .NET `GZipStream` 取代
+  `docker save | gzip`（本机**没有 gzip.exe**，且 PowerShell 管道会把二进制当文本解码）；② `java -D…` 参数**必须加引号**
+  （裸写在 `.` 处被拆成 `-Dfile` + `.encoding=UTF-8`，实测报"找不到主类"）；③ PS 5.1 在 `$ErrorActionPreference='Stop'`
+  下对原生命令做 `2>$null` 会抛**终止性**错误（照抄会让 db-sql 在容器未起时直接崩、走不到 `.env` 兜底），
+  故加 `Invoke-NativeQuiet` 帮助函数；④ 健康检查用 `curl.exe`（PS 5.1 里 `curl` 是 `Invoke-WebRequest` 别名）。
+- **编码决策（重要，别再"顺手"改）**：三个 `.ps1` 一律 **UTF-8 带 BOM + CRLF**。实测 PS 5.1 对**无 BOM** 的 UTF-8
+  脚本按 ANSI(GBK) 解析，中文字面量**在解析期就坏掉**（`中文：已就绪` → `涓枃锛氬凡灏辩华`）；
+  即"无 BOM + 中文 + 5.1 可跑"三者不可兼得。该结论已写入 `scripts/README.md` §0.2 约定。
+- **验证**：三个脚本 × (PS 5.1 + PS 7) 解析校验 **6/6 通过**；`db-sql.ps1` **真实执行**（只读 `SELECT COUNT(*) FROM project`
+  → 11 行，第 3 档连接来源 `deploy/docker/.env`，口令只打印长度、不打印不落盘，退出码 0）。
+  **`make-release.ps1` / `dev-reload.ps1` 未实际执行**（本机 Docker 引擎未启动）：只做了逐段人工比对 + 隔离探针
+  （GZipStream 往返字节一致、正则替换含 CR 行为、switch 作用域、here-string 插值等，两壳全过）。
+- **文档收口**：`scripts/README.md`（§0.1 `local/` 行、§0.2 整节重写含 BOM 约定、§1 场景速查 + 用法、§2、§5 约定）、
+  `README.md`、`deploy/README.md`、`docs/部署与发布全流程手册.md`（L86 只认 PowerShell、**§2.3「手工打包」整段重写**为
+  "等价说明、不可照抄"的 PowerShell 步骤、`| gzip` 与 `ls -lh` 清零）、`scripts/jdbc/RunSql.java` 与 `scripts/demo-reset.sql`
+  注释；本文件 4 处失效的"当前用法"（运行方式速查代码块、功能完成度两行脚本名）已改，历史明细只加注不改写。
+- **新增/登记**：`docs/AI工具集与检索编排评估.md`（已登记进 `docs/README.md`，并在 AI 侧 README 加"动工具/检索编排前必读"）；
+  `docs/AI前端与集成方案.md` 增 §9 P0 接口契约（冻结）与 §10 前端工程规范，并**修正一处自相矛盾的旧结论**
+  （原文写"nginx 加 `location /ai-api/` 让前端调它"——那会让浏览器**绕过主系统的权限解析**直接够到 AI 服务，
+  与"权限在主系统收口"冲突；已改为"前端只调主系统 `/api/ai/*`，8100 仅内网可达"）。
+- **收尾**：`node scripts/check-docs.mjs` → **19 份 Markdown / 0 问题**、ITERATION 总表与明细行数一致。
+  （本轮该体检真抓到 2 处我自己引入的问题：新文档表格里一行单元格列数不符、`迁移方案与对照表` 契约行键顺序歧义，均已修。）
+
+---
 
 ## 功能完成度
 
@@ -544,41 +688,53 @@
 | 工作台（汇总/待办/验收/逾期/最近更新） | ✅ | v0.7，v1.3 口径 = 核算单元（叶子） |
 | 项目统计（ECharts，筛选联动） | ✅ | 状态·类型构成、流程阶段分布、年度资金（预算/合同/实付，合同去重） |
 | 系统管理（用户/字典/阶段模板/日志） | ✅ | v0.8：仅管理员，写操作全留痕 |
-| 一键启动/停止 / 开发机重建 | ✅ | `deploy/windows`、`deploy/docker`、根目录 `start-dev.cmd`；**开发机一键重建** `scripts/dev-reload.sh`（v3.3.1） |
+| 一键启动/停止 / 开发机重建 | ✅ | `deploy/windows`、`deploy/docker`、根目录 `start-dev.cmd`；**开发机一键重建** `.\scripts\dev-reload.ps1`（v3.3.1 起，`docs-1.2` 由 `.sh` 转 Windows 原生 `.ps1`） |
 | 列表/附件筛选多选 | ✅ | v1.5：列表（类型/状态/年度）与附件中心（类别/归属）多选 |
 | 金额口径实时同步 | ✅ | 后端查询时实时汇总（合同 + 付款），列表/详情/资金页/统计口径一致 |
-| 部署方案 | ✅ | v3.0~v3.1：Docker（backend + frontend nginx，数据库为**外部崖山主备**）；服务器**不存源码**，只放 compose + `.env`；发版 `make-release.sh` / 升级 `pm-upgrade.sh`（自动切 `IMAGE_TAG`） |
+| 部署方案 | ✅ | v3.0~v3.1：Docker（backend + frontend nginx，数据库为**外部崖山主备**）；服务器**不存源码**，只放 compose + `.env`；发版 `.\scripts\make-release.ps1` / 升级 `pm-upgrade.sh`（自动切 `IMAGE_TAG`） |
 | 数据库国产化（崖山 Oracle 模式） | ✅ | v3.0 起替代 MySQL + Flyway；自研 `YashanMigrationRunner`；`db/migration-yashan/` **V1~V12**；主键 identity；驱动级 primary + TAF 高可用 |
 | 演示数据脚本 | ✅ | `seed-demo.mjs`（父子项目 + 每核算单元 2~5 份合同 + 付款里程碑 + 项目分工）、`seed-attachments.mjs`（阶段/合同/付款三类附件，含缺件场景）、`demo-reset.sql`（物理清空，v3.5.1） |
-| 开发机数据库工具 | ✅ | v3.5.1：`scripts/db-sql.sh` + `scripts/jdbc/RunSql.java`（无 yasql 客户端时手工查/改库，口令不打印不落盘）；脚本清单见 `scripts/README.md` |
+| 开发机数据库工具 | ✅ | v3.5.1：`scripts/db-sql.ps1` + `scripts/jdbc/RunSql.java`（无 yasql 客户端时手工查/改库，口令不打印不落盘）；脚本清单见 `scripts/README.md` |
 | 文档维护约定 | ✅ | v1.1 起：每次迭代同步更新本文档（总表 **+ 各迭代明细**）、设计稿（§0/受影响章节/§13）、README；v3.5.1 起补：**每次迭代必须用演示数据体现新功能**、涉及脚本须同步 `scripts/README.md` |
-| 附件智能处理（OCR / 大模型抽取 / 向量检索） | 🚧 进行中 | **AI 能力服务已全量 Java 化**：`ai-backend`（Spring Boot 3.3.5 / Java 17，独立构建与部署，默认 8100），接口 `/analyze`、`/ocr/pdf-info`、`/ocr/file`、`/documents`、`/upload-tasks`、`/chat`。平台 OCR + 千问对话 + Qwen3-VL Embedding/Reranker **全部在真实内网网关上验证通过**（扫描件 OCR 1.3~1.7s、抽取 ≈8s、问答 ≈10s、向量化 4096 维且余弦 0.3245 与 Python 基线**逐位一致**、PDF 文本层与 PyMuPDF **逐字节一致**）；**81 个 JUnit 用例全绿**；Docker 镜像已构建并起容器实测通过。原 Python 版已删除（知识资产迁入 `ai-backend/docs/`）。**下一步**：OpenSearch 集群部署后实测 kNN 在线路由（适配层已实现、**路由已接但未实测**）+ 建评测集 + 与主系统集成（JWT + 解析结果回写） |
+| 附件智能处理（OCR / 大模型抽取 / 向量检索） | 🚧 进行中 | **AI 能力服务已全量 Java 化**：`ai-backend`（Spring Boot 3.3.5 / Java 17，独立构建与部署，默认 8100），接口 `/analyze`、`/ocr/pdf-info`、`/ocr/file`、`/documents`、`/upload-tasks`、`/chat`。平台 OCR + 千问对话 + Qwen3-VL Embedding/Reranker **全部在真实内网网关上验证通过**（扫描件 OCR 1.3~1.7s、抽取 ≈8s、问答 ≈10s、向量化 4096 维且余弦 0.3245 与 Python 基线**逐位一致**、PDF 文本层与 PyMuPDF **逐字节一致**）；`/chat` 自 **ai-1.1.0** 起返回**结构化引用** `citations`（可跳到附件第 N 页）；**JUnit 用例 94 例全绿**（原 81 + 引用 13）；Docker 镜像已构建并起容器实测通过。原 Python 版已删除（知识资产迁入 `ai-backend/docs/`）。**下一步**：OpenSearch 集群部署后实测 kNN 在线路由（适配层已实现、**路由已接但未实测**）+ 建评测集 + **给 AI 服务加服务间鉴权**（当前无入站鉴权，仅靠网络隔离） |
+| **AI 与知识库（并入主系统，v3.6.0 起）** | 🚧 P0 已完成 | 前端：`/ai` 菜单（文档库／任务队列／服务自检）+ **全局悬浮问答**（引用可点击跳原文第 N 页）+ 附件索引状态标签与重新解析 + **上传后自动触发解析**（`AI_AUTO_PARSE`，默认开；AI 失败不影响上传，只显示"解析失败+原因"）；后端：代理层 `module/ai/**`（权限与作用域在主系统收口、`ai_ask_log` 审计留痕）+ **迁移 V13**。验证：前端 `npm run build` 0 错、后端 `mvn -o test` **66 例全绿**。**待办**：P1 检索调试与问答留痕页（`GET /api/ai/ask-logs` 已建表未开接口）、P2 受控查询（业务数据问答）、**V13 待下次启动/部署应用**、AI 服务入站鉴权 |
 | 设计稿 Q1–Q15 评审回写 | ⏳ 待办 | 待业务反馈 |
 
 ## 运行方式速查
 
-```bash
+```powershell
 # 一键启动：见 deploy/README（Windows: start-dev.cmd / 双击；Docker: deploy/docker；生产见 docs/部署与发布全流程手册.md）
 # 数据库：崖山 YashanDB（Oracle 模式）主备；后端连接用环境变量（见 README/deploy/README）：
 #   export YASHAN_MASTER_IP=10.254.212.106 YASHAN_STANDBY_IP=10.254.212.107
 #   export YASHAN_DB=PM YASHAN_USER=pm YASHAN_PASSWORD=xxx
-cd backend  && mvn spring-boot:run         # :8080（自研 Runner 自动执行 db/migration-yashan 建库，现 V1~V12）
+cd backend  && mvn spring-boot:run         # :8080（自研 Runner 自动执行 db/migration-yashan 建库，现 V1~V13）
 cd frontend && npm install && npm run dev  # :5173
 # Docker 本机（前端 nginx 对外端口见 deploy/docker/.env 的 WEB_PORT，本机约定 8088）
 
+# —— AI 与知识库（v3.6.0；AI 是**独立部署**的服务，主系统只代理它）——
+# 主系统侧配置（都有默认值，本机默认指向 http://127.0.0.1:8100）：
+#   AI_ENABLED=true（总开关） / AI_SERVICE_BASE_URL / AI_SERVICE_TOKEN（当前对方不校验） / AI_CHAT_TIMEOUT=60 / AI_TIMEOUT=10
+cd ai-backend && mvn spring-boot:run       # :8100（需 .env 里的平台网关 LLM_BASE_URL/LLM_API_KEY，见 ai-backend/README.md）
+# 主系统前端 → /api/ai/* → 主系统后端（权限/作用域/留痕）→ AI 服务 8100（仅内网，浏览器永不直连）
+# 自检与端到端：.\ai-backend\scripts\verify-e2e.ps1 -SkipBuild   # 含 citations 断言
+
 # —— 演示数据（走真实 API；详见 scripts/README.md）——
-bash scripts/db-sql.sh scripts/demo-reset.sql   # 可选：物理清空演示数据（从干净基线开始）
+.\scripts\db-sql.ps1 scripts\demo-reset.sql   # 可选：物理清空演示数据（从干净基线开始）
 node scripts/seed-demo.mjs                      # 项目/合同/付款/分工（默认 http://127.0.0.1:8088）
 node scripts/seed-attachments.mjs               # 阶段/合同/付款三类附件
 
-# —— 开发机辅助 ——
-bash scripts/dev-reload.sh [all|backend|frontend]   # 重建镜像 + 重启（自测用；不主动执行，按需）
-bash scripts/db-sql.sh <sql文件>                    # 手工查/改库（无需 yasql 客户端）
-bash scripts/make-release.sh <版本>                 # 产发布包（发版）
+# —— 开发机辅助（Windows 原生 PowerShell，**不需要 Git Bash**；5.1 与 7 都能跑）——
+.\scripts\dev-reload.ps1 [all|backend|frontend]   # 重建镜像 + 重启（自测用；不主动执行，按需）
+.\scripts\db-sql.ps1 <sql文件>                    # 手工查/改库（无需 yasql 客户端）
+.\scripts\make-release.ps1 <版本>                 # 产发布包（发版）
 ```
 
 > ⚠️ 本系统删除一律是**逻辑删除**（`deleted = 1`），而 seed 走 API 删项目 → 反复重跑会堆积历史行；
 > 直接翻数据库时请先按 `deleted = 0` 过滤。
+
+> ⚠️ **AI 相关功能的启用条件**（v3.6.0）：`ai-backend` 未启动时主系统**不报"未找到"**，而是明确提示
+> "AI 服务不可用"（自检页与附件状态标签会直接说明）；附件解析需要 AI 服务可达 + 平台网关
+> （`LLM_BASE_URL`/`LLM_API_KEY`）可用。
 
 ## 后续待办（Backlog）
 
@@ -589,7 +745,12 @@ bash scripts/make-release.sh <版本>                 # 产发布包（发版）
 5. **附件保留策略**：删除项目后附件元数据与物理文件的治理（当前刻意逻辑保留以便审计追溯）。
 6. 工程化：前端按路由代码分包（当前单包较大）、后端 profile（dev/prod）、数据库每日备份、操作日志导出。
 7. 阶段逾期提醒增强：已具备基础版，可补列表页逾期角标与全局提醒。
-8. **AI 能力服务（`ai-backend`）检索层与主系统集成**：**已全量 Java 化并验证**——Spring Boot 3 / Java 17、与主系统同栈、独立部署；平台 OCR + 千问对话 + Qwen3-VL Embedding/Reranker **全部在真实内网网关上跑通**；**81 个 JUnit 用例全绿**；Docker 镜像已构建并起容器实测通过；原 Python 版 `ai-service/` 已删除、知识资产迁入 `ai-backend/docs/`。**下一步**：① **OpenSearch 集群部署后实测 kNN 在线路由**（适配层已实现、路由已接但未实测；集群不可达/配错时**显式报错**而非静默降级）→ ② **建评测集**（30~50 附件 + 100~200 QA，recall@5 / MRR / 引用准确率 / 数字幻觉率基线）→ ③ 按 [`ai-backend/docs/知识库实施方案与路线.md`](ai-backend/docs/知识库实施方案与路线.md) 推进 **P1 表驱动异步任务**（迁移 V13 `attachment_ai_task`：上传→解析→切片→向量→索引→回写）与**主系统集成**（JWT + 解析结果回写 + 问答入口并入主系统前端）。
+8. **AI 能力服务（`ai-backend`）**：已全量 Java 化并验证（与主系统同栈、独立部署、94 例 JUnit 全绿、Docker 镜像起容器实测通过）。
+   **下一步**：① **给 AI 服务加服务间鉴权**（当前**无任何入站鉴权**，主系统已发 `Bearer` 但对方不校验，安全性完全依赖网络隔离——这是当前最该补的安全项）→ ② **OpenSearch 集群部署后实测 kNN 在线路由**（适配层已实现、路由已接但未实测；集群不可达/配错时**显式报错**而非静默降级）→ ③ **建评测集**（30~50 附件 + 100~200 QA，recall@5 / MRR / 引用准确率 / 数字幻觉率基线）→ ④ 检索编排两项调整（**待负责人批准**）：检索改**服务端预取**（工具保留用于追问）、诊断字段（`retrieval`/`reranked`）只落日志不下发模型 —— 依据与验收口径见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md) §4。
+9. **AI 与知识库 P1/P2**（P0 已完成）：P1 = `/ai` 页补**检索调试**（召回→融合→精排分数，判断"答不出来"是解析还是检索问题）与**问答留痕页**（`GET /api/ai/ask-logs`，表与写入已就绪）；P2 = 受控查询工具（预算/付款/统计，模型侧合并成 1 个 `query_business_data(entity, filters)`）+ 指标口径层 + 👍/👎 反馈进评测集。
+10. **V13 的落地验证**：迁移脚本已在库外通过评审（多列 `ALTER TABLE … ADD (…)` 与 V1~V12 已成功应用的写法一致），但**未在真实崖山库执行**——下次 `pm-backend` 启动/部署时由 `YashanMigrationRunner` 应用并登记；应用后请核对 `attachment_ai_task` / `ai_ask_log` 两表与 `attachment` 三列。部署顺序：**先 restart 主系统（跑 V13），再确认 `ai-backend` 为 ai-1.1.0**（否则前端引用为空列表）。
+11. **演示路径**（设计稿 §14.6 要求）：`node scripts/seed-attachments.mjs`（上传即自动触发解析，受 `AI_AUTO_PARSE` 开关控制）→ `/ai` 页看文档库与任务队列 → 悬浮窗提问 → 点引用跳附件第 N 页。
+12. **收尾清理（已登记，不在本轮做）**：① P0+P1 验收通过后删除 `ai-backend/static/index.html` 整个 `static/` 与 Dockerfile 里的 `COPY static/`（方案 §8.4）；② `make-release.ps1` 的 gzip 产物需在 Docker 引擎可用时跑一次 `SKIP_BUILD=1` 验证 `docker load` 闭环；③ 前端小口子：范围选择器只拉前 500 个项目（无分页懒加载）、无"全部重新解析"入口、缺浏览器级人工验收。
 
 ## 变更记录说明
 

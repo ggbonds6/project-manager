@@ -289,6 +289,14 @@ export interface AttachmentItem {
   uploadUserId?: number | null;
   uploadUserName?: string | null;
   uploadTime?: string | null;
+  /**
+   * AI 知识库索引状态（V13 的 attachment.ai_index_status）。
+   * 后端在附件列表里带上时直接用，省掉一次批量状态查询；
+   * 没带也没关系——附件中心会调 `GET /api/ai/attachments/status` 补齐（见 useAiAttachmentStatus）。
+   */
+  aiIndexStatus?: string | null;
+  /** 解析失败原因（与 aiIndexStatus=FAILED 搭配展示） */
+  aiError?: string | null;
 }
 
 /** 后台上传任务（上传记录）：文件已受理，存储写入在后台进行 */

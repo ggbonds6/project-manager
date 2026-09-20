@@ -18,7 +18,7 @@ import java.util.Map;
  *   → 模型判断需要什么信息 → 发起工具调用（如 search_documents("付款条款")）
  *   → 本地执行工具，把结果回传
  *   → 模型看结果，可能再查一次（换关键词 / 读某页原文 / 算一下金额）
- *   → 信息够了 → 给出最终答案（带来源页码）
+ *   → 信息够了 → 给出最终答案（句末带 [cite] 来源编号，前端据 cite 跳转到原文那一页）
  * </pre>
  *
  * <h2>为什么要限制轮数</h2>
@@ -177,6 +177,23 @@ public class ToolAgent {
      * 这样多轮对话时上下文能自然延续。
      */
     public AgentResult run(List<Map<String, Object>> messages, Integer maxRounds, Double timeoutSeconds) {
+        return run(messages, maxRounds, timeoutSeconds, null);
+    }
+
+    /**
+     * 跑一轮完整的"提问 → 工具 → 回答"，并把工具看到的每一处原文登记进引用表。
+     *
+     * <p>注册表是<b>请求级对象、按参数传递</b>（{@link ToolAgent} 是单例，不能持有它）：
+     * 工具返回里因此带上 {@code cite} 编号，模型写出的 {@code [1][3]} 与最终响应里的
+     * {@code citations} 才对得上（见 {@link CitationRegistry}）。
+     *
+     * @param citations 本次问答的引用注册表；{@code null} 表示不登记引用
+     */
+    public AgentResult run(
+            List<Map<String, Object>> messages,
+            Integer maxRounds,
+            Double timeoutSeconds,
+            CitationRegistry citations) {
         long startedNanos = System.nanoTime();
         List<ToolTrace> trace = new ArrayList<>();
         int promptTokens = 0;
@@ -209,7 +226,7 @@ public class ToolAgent {
 
                 for (LlmClient.ToolCall call : resp.toolCalls()) {
                     long t0 = System.nanoTime();
-                    Map<String, Object> result = tools.execute(call.name(), call.arguments());
+                    Map<String, Object> result = tools.execute(call.name(), call.arguments(), citations);
                     double cost = elapsedSeconds(t0);
 
                     // 工具结果必须回传；用 JSON 保证结构清晰、模型好解析
@@ -234,7 +251,8 @@ public class ToolAgent {
             nudge.put("role", "user");
             nudge.put("content",
                     "（已达到本轮工具调用上限。请**仅根据以上已经获得的信息**作答；"
-                            + "仍然必须标注来源页码；确实没有查到的部分，请明确写「文档中未找到」，不要猜测。）");
+                            + "仍然必须用 `[cite]` 标注来源编号（编号取自检索结果里的 cite 字段，不得自己编造）；"
+                            + "确实没有查到的部分，请明确写「文档中未找到」，不要猜测。）");
             messages.add(nudge);
 
             LlmClient.ChatResult resp = llmClient.chatMessages(messages, null, null, timeoutSeconds);

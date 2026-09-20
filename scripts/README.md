@@ -15,7 +15,7 @@
 | `deploy/windows/` | **源码模式**启动/停止前后端（本地开发） | 开发机 |
 | `deploy/docker/` | **镜像模式**部署资产（Dockerfile + compose） | 开发机构建、服务器运行 |
 | `ai-backend/scripts/` | AI 能力服务的质量门与端到端验收 | 开发机（AI 模块根） |
-| `local/`（**已 gitignore**） | **本机专用资产**：数据库导出与口令清单、两个本机启动助手（`start-project-local.cmd` / `stop-project-local.cmd`） | 本机（双击可用；绝不入库） |
+| `local/`（**已 gitignore**） | 两个**本机启动助手**（`start-project-local.cmd` / `stop-project-local.cmd`，双击可用）。⚠️ **密钥类一律放仓库外**：数据库导出与口令清单在 `E:\env\pm-local\export\` | 本机 |
 | 根目录 `start-dev.cmd` / `stop-dev.cmd` | 一键启动/停止的**通用入口**（转发到 `deploy/windows/`） | 开发机（双击即用） |
 
 > 生产服务器上**只有发布包里的 `docker-compose.yml` + `.env` + `pm-upgrade.sh`**（服务器不存源码，也不需要本目录任何脚本）。
@@ -25,20 +25,23 @@
 | 扩展名 | 需要什么 | 本机现状（实测） |
 | --- | --- | --- |
 | `.cmd` / `.bat` | Windows 原生，双击或 cmd 直接跑 | ✅ 可用 |
-| `.ps1` | PowerShell 7（`pwsh`）。**Windows PowerShell 5.1 不支持 `Invoke-RestMethod -Form`**，端到端验收脚本会失败 | ✅ `pwsh` 已装；5.1 下请用 `pwsh -File xxx.ps1` 显式调用 |
-| `.sh` | **Git Bash 或 WSL**（本项目的 `.sh` 是 bash 脚本） | ⚠️ **本机没有 Git Bash**：PATH 上的 `bash` 只是 WSL 桩，`.sh` **目前跑不了** |
+| `.ps1` | Windows 原生（PowerShell）。**5.1 与 7 都能跑**：本机默认壳是 Windows PowerShell 5.1，`pwsh` 7 也已装 | ✅ 可用；若执行策略是 Restricted，用 `powershell -ExecutionPolicy Bypass -File scripts\xxx.ps1` 调用 |
+| `.sh` | **Git Bash 或 WSL**（本项目的 `.sh` 是 bash 脚本） | ⚠️ **本机没有 Git Bash**（PATH 上的 `bash` 只是 WSL 桩）。开发机脚本**已全部改为 `.ps1`**；**仓库里只剩 `scripts/pm-upgrade.sh` 一个 `.sh`，它随发布包下发、只在 Linux 服务器上运行**，本机不需要跑它 |
 | `.mjs` | Node.js 18+ | ✅ 可用（用 `node xxx.mjs`；PowerShell 里若 `npm` 被策略拦，用 `npm.cmd`） |
 
 **结论（本机 Windows 开发）**：
-- 能用：全部 `.cmd`、`.ps1`（走 `pwsh`）、`.mjs`；
-- 不能用：`scripts/*.sh`（`make-release.sh` / `dev-reload.sh` / `db-sql.sh` / `pm-upgrade.sh`）；
-- 要跑 `.sh` 的两种办法：① 安装 [Git for Windows](https://git-scm.com/download/win)（推荐，装完 `bash scripts/xxx.sh` 即可）；
-  ② 用 WSL 发行版（`wsl bash scripts/xxx.sh`）。
-  **注意**：`.sh` 里的路径与换行按 POSIX 写，不要在 PowerShell 里直接 `.\xxx.sh` 执行。
+- 能用：全部 `.cmd`、`.ps1`（5.1 或 7）、`.mjs`；开发机脚本**已经没有 `.sh`**（唯一例外见上表）；
+- 写 `.ps1` 时**避开 pwsh 7 独有语法**（`??`、三元 `? :`、`-Parallel`、`Invoke-RestMethod -Form`），否则 5.1 下会失败；
+  唯一必须用 `pwsh -File`（7）跑的是 `ai-backend/scripts/verify-e2e.ps1`（它用了 `-Form`）；
+- `scripts/*.ps1` 文件是 **UTF-8 带 BOM**：5.1 对无 BOM 的 UTF-8 脚本会按 ANSI(GBK) 解析，中文直接变乱码。
+  ⚠️ **BOM 是刻意的，不要"顺手"改成无 BOM**：实测（PS 5.1 与 7 各跑一遍）无 BOM 时中文字面量在**解析期**就坏掉
+  （`'中文：已就绪'` → `'涓枃锛氬凡灏辩华'`），加 BOM 后 5.1 与 7 都正确 —— 也就是
+  **「无 BOM + 中文 + 5.1 可跑」三者不可兼得**；真要取掉 BOM，只能同时放弃 5.1 或删掉脚本里的中文。
+  新建 `.ps1` 请照抄现有文件的编码（编辑器里选「UTF-8 with BOM / 带 BOM 的 UTF-8」）。
 
 ### 0.3 三条硬约定（已写入团队协作记忆）
 
-1. 🚫 **不主动重建镜像**：`dev-reload.sh` / `make-release.sh` 耗时且会重启容器 —— **需要时先问**。
+1. 🚫 **不主动重建镜像**：`dev-reload.ps1` / `make-release.ps1` 耗时且会重启容器 —— **需要时先问**。
 2. 🚫 **不为前端改动起浏览器**（也不要为此装浏览器自动化）：前端做到「类型检查 + 构建 + 数据/接口核对」即收尾，
    交互效果由用户刷新页面确认。
 3. 🚫 **`demo-reset.sql` 只允许用于开发机/演示环境**：它**物理删除**演示数据（含附件元数据），生产环境走保留策略。
@@ -46,6 +49,10 @@
 ---
 
 ## 1. 场景速查（最常用的一张表）
+
+> 下表的 `.\scripts\*.ps1` 都是**本机 Windows 原生用法**（Windows PowerShell 5.1 或 `pwsh` 7 都能跑），**不需要 Git Bash**；
+> 若执行策略为 Restricted，改用 `powershell -ExecutionPolicy Bypass -File scripts\xxx.ps1`。
+> 只有服务器上的 `pm-upgrade.sh` 仍用 bash（它只在 Linux 服务器运行）。
 
 | 我要做什么 | 命令 | Shell | 说明 |
 | --- | --- | --- | --- |
@@ -56,12 +63,12 @@
 | AI 服务端到端验收（真实平台网关） | `pwsh -File ai-backend\scripts\verify-e2e.ps1` | pwsh 7 | 自动起服务→自检→平台 OCR→抽取→上传任务→问答，并打印 Python 基线对比 |
 | 灌演示数据 | `node scripts/seed-demo.mjs` → `node scripts/seed-attachments.mjs` | Node | 默认打 `http://127.0.0.1:8088`（Docker 前端端口） |
 | **改完文档后做体检**（建议每次提交前） | `node scripts/check-docs.mjs` | Node | 查四类问题：表格内空行断表、单元格裸竖线、本地链接失效、ITERATION 总表与明细不一致 |
-| 从干净基线灌演示数据 | `bash scripts/db-sql.sh scripts/demo-reset.sql` → 上面两步 | Git Bash | 物理清空后重灌（见 §5） |
-| 手工查/改数据库 | `bash scripts/db-sql.sh <sql文件>` | Git Bash | 无需 yasql 客户端，口令不落盘 |
+| 从干净基线灌演示数据 | `.\scripts\db-sql.ps1 scripts/demo-reset.sql` → 上面两步 | PowerShell | 物理清空后重灌（见 §2.2） |
+| 手工查/改数据库 | `.\scripts\db-sql.ps1 <sql文件>` | PowerShell | 无需 yasql 客户端，口令不落盘 |
 | 本地测试部署（镜像模式，前后端） | `deploy\docker\` 下按 `deploy/README.md` §2 | cmd | 本机 Docker Desktop；前端对外端口见 `.env` 的 `WEB_PORT`（本机约定 8088） |
 | 本地测试部署（AI 服务） | `docker compose -f ai-backend/docker-compose.yml up -d --build` | cmd | 镜像 `pm-ai-backend:local`，卷 `./work:/app/work` |
-| 迭代自测（改完代码重建镜像） | `bash scripts/dev-reload.sh [all\|backend\|frontend]` | Git Bash | **按需执行，不主动跑**（约定 ①） |
-| 发版打包 | `bash scripts/make-release.sh v3.x.y` | Git Bash | 产出 `dist/pm-release-v3.x.y/`（镜像 + compose + `.env.example` + `pm-upgrade.sh`） |
+| 迭代自测（改完代码重建镜像） | `.\scripts\dev-reload.ps1 [all\|backend\|frontend]` | PowerShell | **按需执行，不主动跑**（约定 ①） |
+| 发版打包 | `.\scripts\make-release.ps1 v3.x.y` | PowerShell | 产出 `dist/pm-release-v3.x.y/`（镜像 + compose + `.env.example` + `pm-upgrade.sh`） |
 | 服务器首次部署 | 见 `docs/部署与发布全流程手册.md` §3~§5 | 服务器 bash | 发布目录只需 `docker-compose.yml` + `.env` |
 | 服务器升级 | 在服务器运行目录 `bash pm-upgrade.sh pm-images-arm64-v3.x.y.tar.gz` | 服务器 bash | 自动 `docker load` + 切 `.env` 的 `IMAGE_TAG` + `up -d` |
 | 服务器重启/查看 | `docker compose up -d` / `docker compose ps` / `docker compose logs -f --tail 100` | 服务器 | 详见手册 §6 |
@@ -75,8 +82,8 @@
 
 | 脚本 | 用途 | 用法 |
 | --- | --- | --- |
-| `make-release.sh` | **一键发版**：构建 arm64 镜像 → `docker save` → 产出 `dist/pm-release-<版本>/`（镜像包 + `docker-compose.yml` + `.env.example` + `pm-upgrade.sh` + 部署步骤） | `bash scripts/make-release.sh v3.5.0`；镜像已存在只重打包：`SKIP_BUILD=1 bash scripts/make-release.sh v3.5.0` |
-| `dev-reload.sh` | **开发机一键重建**：重建镜像 + 重启 + 轮询健康检查（不产发布包） | `bash scripts/dev-reload.sh all\|backend\|frontend` |
+| `make-release.ps1` | **一键发版**：构建 arm64 镜像 → `docker save` → 产出 `dist/pm-release-<版本>/`（镜像包 + `docker-compose.yml` + `.env.example` + `pm-upgrade.sh` + 部署步骤） | `.\scripts\make-release.ps1 v3.5.0`；镜像已存在只重打包：`$env:SKIP_BUILD='1'; .\scripts\make-release.ps1 v3.5.0` |
+| `dev-reload.ps1` | **开发机一键重建**：重建镜像 + 重启 + 轮询健康检查（不产发布包） | `.\scripts\dev-reload.ps1 all\|backend\|frontend` |
 
 ### 2.2 演示数据
 
@@ -84,14 +91,14 @@
 | --- | --- | --- |
 | `seed-demo.mjs` | 演示数据主脚本：父子项目、每核算单元 2~5 份合同（施工主合同 / 监理 / 第三方测评 / 预算编制 / 方案评估）、主合同 5 个付款里程碑（30/40/20/7/3，含部分付款差额）、项目分工（HW/SW 模板） | `node scripts/seed-demo.mjs [baseUrl]` |
 | `seed-attachments.mjs` | 三类附件（阶段 / 合同 / 付款凭证），走真实上传接口；**故意让约 2/5 的已付款少传一类凭证**，用于验证「报销缺件提醒」 | `node scripts/seed-attachments.mjs [baseUrl]` |
-| `demo-phase-guides.sql` | 阶段说明 / 关键材料的演示文案（直接改库） | 用 `db-sql.sh` 执行 |
-| `demo-project-overviews.sql` | 项目概览（介绍 Markdown + 功能模块清单）演示内容 | 用 `db-sql.sh` 执行 |
-| `demo-reset.sql` | **物理**清空演示数据（解决逻辑删除导致的历史行堆积） | `bash scripts/db-sql.sh scripts/demo-reset.sql` |
+| `demo-phase-guides.sql` | 阶段说明 / 关键材料的演示文案（直接改库） | 用 `db-sql.ps1` 执行 |
+| `demo-project-overviews.sql` | 项目概览（介绍 Markdown + 功能模块清单）演示内容 | 用 `db-sql.ps1` 执行 |
+| `demo-reset.sql` | **物理**清空演示数据（解决逻辑删除导致的历史行堆积） | `.\scripts\db-sql.ps1 scripts/demo-reset.sql` |
 
 **推荐顺序**（要从干净基线开始时）：
 
-```bash
-bash scripts/db-sql.sh scripts/demo-reset.sql   # ① 物理清空（可选，仅开发/演示环境）
+```powershell
+.\scripts\db-sql.ps1 scripts/demo-reset.sql   # ① 物理清空（可选，仅开发/演示环境）
 node scripts/seed-demo.mjs                      # ② 项目 / 合同 / 付款 / 分工
 node scripts/seed-attachments.mjs               # ③ 附件
 ```
@@ -106,7 +113,7 @@ node scripts/seed-attachments.mjs               # ③ 附件
 
 | 文件 | 作用 |
 | --- | --- |
-| `db-sql.sh` | 包装脚本：自动取连接信息（优先 `DB_URL/DB_USER/DB_PASSWORD` → 运行中的 `pm-backend` 容器环境变量 → `deploy/docker/.env`），再调用执行器；**口令不打印、不落盘** |
+| `db-sql.ps1` | 包装脚本：自动取连接信息（优先 `DB_URL/DB_USER/DB_PASSWORD` → 运行中的 `pm-backend` 容器环境变量 → `deploy/docker/.env`），再调用执行器；**口令不打印、不落盘** |
 | `jdbc/RunSql.java` | 极简 JDBC 执行器（JDK 源码文件模式运行，无需 `javac`）；切句规则与 `YashanMigrationRunner` 一致；`SELECT` 打印表格 |
 
 `demo-reset.sql` 清理范围：`project_contract` / `project_division` / `project_overview` / `project_phase` /
@@ -164,4 +171,5 @@ AI 服务的构建与发布（独立镜像、独立端口）见 [`docs/部署与
 2. 脚本头部写清 **用途 / 用法 / 前置条件**，并把踩过的坑写进注释；
 3. 涉及数据库的：**不要把口令写进脚本**，走环境变量或 `.env`；
 4. 涉及演示数据的：新功能要能被数据体现出来（见 [`README.md`](../README.md) 文档维护约定）；
-5. **优先提供 Windows 原生入口**：能用 `.cmd`/`.ps1` 就别只给 `.sh`（本机没有 Git Bash，`.sh` 目前跑不了，见 §0.2）。
+5. **只提供 Windows 原生入口**：开发机脚本一律 `.cmd` / `.ps1`，**不要再新增 `.sh`**（本机没有 Git Bash，见 §0.2）；
+   只有「随发布包下发、在 Linux 服务器上跑」的脚本才用 `.sh`（目前只有 `pm-upgrade.sh`）。

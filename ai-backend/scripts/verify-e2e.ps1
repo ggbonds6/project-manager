@@ -1,4 +1,4 @@
-# AI 能力服务（Java 版）· 端到端真实验收
+﻿# AI 能力服务（Java 版）· 端到端真实验收
 #
 # 为什么要有这个脚本：迁移的验收标准不是"能编译"，而是"对着真实内网网关跑出与 Python 版同级的数字"。
 # 手工 curl 容易漏项、也难复现，所以固化成一条命令，产出可直接对比的证据。
@@ -26,6 +26,60 @@ $java = Join-Path $env:JAVA_HOME "bin\java.exe"
 $base = "http://127.0.0.1:$Port"
 $utf8 = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $utf8
+
+# ── 引用断言（2026-09-20 加）──────────────────────────────────────────────
+# 单独成函数是为了能被单独调用/复用，也让"什么算合格"只有一处定义：
+#   citations 非空、index 从 1 连续、page_no ≥ 1、snippet / doc_id / filename 非空，
+#   并且 data.llm 必须在（rounds 与 tokens 都住在它里面，路径写错会静默打印空值）。
+# 断言失败 → 打印 /chat 实际返回的原始 JSON 并 throw（脚本因此以非 0 退出）。
+function Assert-Citations {
+    param(
+        [Parameter(Mandatory = $true)] $Data,
+        [Parameter(Mandatory = $true)] $Payload
+    )
+    $problems = @()
+    if ($null -eq $Data.llm) {
+        $problems += "data.llm 缺失（rounds / prompt_tokens / completion_tokens 都在它里面）"
+    }
+    if ($Data.PSObject.Properties.Name -notcontains "citations") {
+        $problems += "data.citations 字段缺失（前端拿不到结构化出处列表）"
+    }
+    else {
+        # 外层再包一层 @()：只有一条引用时 PS 会把它摊成标量，索引与 .Count 都会变得不可靠
+        $citations = @(@($Data.citations) | Where-Object { $null -ne $_ })
+        if ($citations.Count -eq 0) {
+            $problems += "data.citations 为空（本次问答没有登记任何引用）"
+        }
+        for ($i = 0; $i -lt $citations.Count; $i++) {
+            $c = $citations[$i]
+            if ([int]$c.index -ne ($i + 1)) {
+                $problems += "citations[$i].index 应为 $($i + 1)，实际 $($c.index)（编号必须从 1 连续）"
+            }
+            if ([int]$c.page_no -lt 1) {
+                $problems += "citations[$i].page_no 应 ≥ 1，实际 $($c.page_no)"
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$c.snippet)) {
+                $problems += "citations[$i].snippet 为空"
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$c.doc_id)) {
+                $problems += "citations[$i].doc_id 为空"
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$c.filename)) {
+                $problems += "citations[$i].filename 为空"
+            }
+        }
+    }
+    if ($problems.Count -gt 0) {
+        Write-Host "`n引用断言失败（$($problems.Count) 项）：" -ForegroundColor Red
+        foreach ($p in $problems) {
+            Write-Host "  - $p" -ForegroundColor Red
+        }
+        Write-Host "`n/chat 实际返回（原始 JSON）：" -ForegroundColor Red
+        Write-Host ($Payload | ConvertTo-Json -Depth 10)
+        throw "citations 断言未通过：$($problems -join '；')"
+    }
+    return @($Data.citations).Count
+}
 
 if (-not $SkipBuild) {
     Write-Host "== 构建 ==" -ForegroundColor Cyan
@@ -112,14 +166,30 @@ try {
     $chat = Invoke-RestMethod "$base/chat" -Method Post -ContentType "application/json; charset=utf-8" `
         -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -TimeoutSec 900
     $sw.Stop()
-    Write-Host ("rounds={0} tokens={1}+{2} 墙钟={3:N2}s" -f `
-        $chat.data.rounds, $chat.data.prompt_tokens, $chat.data.completion_tokens, $sw.Elapsed.TotalSeconds)
+    # ⚠️ rounds / prompt_tokens / completion_tokens 在 data.llm 里，**不在 data 顶层**。
+    # 按顶层取数不会报错，只会静默拿到 $null（打印成空）——2026-09-20 修，别再改回去。
+    Write-Host ("rounds={0} tokens={1}+{2} 墙钟={3:N2}s stopped_reason={4}" -f `
+        $chat.data.llm.rounds, $chat.data.llm.prompt_tokens, $chat.data.llm.completion_tokens, `
+        $sw.Elapsed.TotalSeconds, $chat.data.stopped_reason)
     if ($chat.data.trace) {
         Write-Host "工具调用轨迹："
         $chat.data.trace | ForEach-Object { Write-Host ("  [{0}] {1} {2} ({3:N2}s){4}" -f `
             $_.round, $_.name, ($_.arguments | ConvertTo-Json -Compress), $_.elapsed, $(if ($_.is_error) { " ERROR" } else { "" })) }
     }
     Write-Host "答案：`n$($chat.data.answer)"
+
+    # ── 引用（citations）明细 + 断言 ──────────────────────────────────────
+    # 为什么必须断言、不能只打印：citations 是"答案里的 [1] 能跳到附件第 N 页"的唯一依据，
+    # 空表 / 编号跳号 / 页码非法在服务端都是 200 OK，到前端只表现为"点了没反应"。
+    if ($chat.data.PSObject.Properties.Name -contains "citations" -and @($chat.data.citations).Count -gt 0) {
+        Write-Host "`n引用表（index → 附件页码）："
+        foreach ($c in $chat.data.citations) {
+            Write-Host ("  [{0}] {1} P{2} score={3}`n      {4}" -f $c.index, $c.filename, $c.page_no, $c.score, $c.snippet)
+        }
+    }
+    $citationCount = Assert-Citations -Data $chat.data -Payload $chat
+    Write-Host ("`n✅ 引用断言通过：citations 共 {0} 条（index 从 1 连续、page_no ≥ 1、snippet 非空）" -f $citationCount) `
+        -ForegroundColor Green
 
     Write-Host "`n== 验收基线（Python 版实测，供对比）==" -ForegroundColor Cyan
     Write-Host "  向量化 4096 维；余弦 0.3245；语义 0.7605 > 0.2133；重排 0.9903 > 0.0278 > 0.0014"

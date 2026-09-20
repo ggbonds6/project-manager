@@ -15,7 +15,7 @@ import java.sql.Statement;
  * 需要手工查/改数据（排障、清演示数据、核对字段）时用它兜底。</p>
  *
  * <p>连接信息全部来自环境变量，<b>不落盘、不打印口令</b>：
- * {@code DB_URL} / {@code DB_USER} / {@code DB_PASSWORD}（由 {@code scripts/db-sql.sh} 注入）。</p>
+ * {@code DB_URL} / {@code DB_USER} / {@code DB_PASSWORD}（由 {@code scripts/db-sql.ps1} 注入）。</p>
  *
  * <p>JDK 11+ 可直接以「源码文件模式」运行，无需 javac：</p>
  * <pre>
@@ -114,7 +114,7 @@ public class RunSql {
     private static String require(String key) {
         String v = System.getenv(key);
         if (v == null || v.isBlank()) {
-            System.err.println("缺少环境变量 " + key + "（请通过 scripts/db-sql.sh 运行）");
+            System.err.println("缺少环境变量 " + key + "（请通过 scripts/db-sql.ps1 运行）");
             System.exit(2);
         }
         return v;

@@ -31,6 +31,13 @@ import java.util.Set;
  *       上下文迅速膨胀，且容易让模型"学样"重复调用；</li>
  *   <li>只保留最近 {@link #MAX_HISTORY_TURNS} 轮，更早的丢弃（长对话对文档问答的价值递减）。</li>
  * </ul>
+ *
+ * <h2>结构化引用</h2>
+ *
+ * <p>每次问答新建一份 {@link CitationRegistry} 并传进工具循环：模型看到的每条命中/整页原文都带
+ * {@code cite} 编号，答案里的 {@code [1]} 与响应里的 {@code citations[0]} 是同一处出处，
+ * 前端据此跳到附件第 {@code page_no} 页。注册表<b>只在这里创建</b>（工具与编排器都是单例，
+ * 不能持有请求级状态）。
  */
 @Service
 public class QaService {
@@ -57,6 +64,7 @@ public class QaService {
 
         private final String answer;
         private final List<Map<String, Object>> trace;
+        private final List<Map<String, Object>> citations;
         private final List<Map<String, Object>> scope;
         private final Map<String, Object> llm;
         private final String stoppedReason;
@@ -65,12 +73,14 @@ public class QaService {
         public QaResult(
                 String answer,
                 List<Map<String, Object>> trace,
+                List<Map<String, Object>> citations,
                 List<Map<String, Object>> scope,
                 Map<String, Object> llm,
                 String stoppedReason,
                 String error) {
             this.answer = answer;
             this.trace = trace;
+            this.citations = citations == null ? List.of() : citations;
             this.scope = scope;
             this.llm = llm;
             this.stoppedReason = stoppedReason;
@@ -83,6 +93,16 @@ public class QaService {
 
         public List<Map<String, Object>> getTrace() {
             return trace;
+        }
+
+        /**
+         * 结构化引用表：{@code index / doc_id / filename / page_no / snippet / score}，顺序 = 编号顺序。
+         *
+         * <p>前端用它把答案里的 {@code [1]} 变成"跳到某附件第 N 页"的链接；
+         * 模型没有引用任何文档时是空列表（不是 {@code null}）。
+         */
+        public List<Map<String, Object>> getCitations() {
+            return citations;
         }
 
         public List<Map<String, Object>> getScope() {
@@ -110,6 +130,9 @@ public class QaService {
             out.put("llm", llm);
             out.put("stopped_reason", stoppedReason);
             out.put("error", error);
+            // ⚠️ 新增字段一律**追加在末尾**：既有键的名字、顺序、语义都不动，
+            // 老调用方（主系统）按 key 取值，加字段对它完全透明。
+            out.put("citations", citations);
             return out;
         }
     }
@@ -127,6 +150,7 @@ public class QaService {
      * @param docIds    限定检索范围；为空则用全部文档
      * @param history   历史问答（只回放 user/assistant 纯文本，截断到最近 6 轮）
      * @param maxRounds 工具调用轮数上限；null 取 {@link ToolAgent#DEFAULT_MAX_ROUNDS}
+     * @return 答案 + 调用轨迹 + <b>结构化引用表</b>（见 {@link CitationRegistry}，无引用时为空列表）
      */
     public QaResult ask(
             String question, List<String> docIds, List<Map<String, Object>> history, Integer maxRounds) {
@@ -138,6 +162,7 @@ public class QaService {
                     "> ⚠️ 请先输入问题。",
                     List.of(),
                     List.of(),
+                    List.of(),
                     Map.of(),
                     "done",
                     "问题为空");
@@ -145,14 +170,18 @@ public class QaService {
 
         List<Map<String, Object>> docs = scopedDocs(docIds);
         if (docs.isEmpty()) {
-            return new QaResult(NO_DOC_ANSWER, List.of(), List.of(), Map.of(), "done", "没有可用文档");
+            return new QaResult(NO_DOC_ANSWER, List.of(), List.of(), List.of(), Map.of(), "done", "没有可用文档");
         }
+
+        // 引用表**每次问答新建一份**：工具是单例，编号是请求级状态，绝不能放进 Bean/static/ThreadLocal
+        CitationRegistry citations = new CitationRegistry();
 
         BuiltMessages built = buildQaMessages(q, docs, history);
         ToolAgent.AgentResult result = agent.run(
                 built.messages(),
                 maxRounds == null ? ToolAgent.DEFAULT_MAX_ROUNDS : maxRounds,
-                (double) Math.max(1, settings.getGateway().getTimeoutSeconds()));
+                (double) Math.max(1, settings.getGateway().getTimeoutSeconds()),
+                citations);
 
         String answer = result.getText();
         if (answer == null || answer.isEmpty()) {
@@ -180,6 +209,7 @@ public class QaService {
         return new QaResult(
                 answer,
                 result.traceMaps(),
+                citations.toList(),
                 built.scope(),
                 llm,
                 result.getStoppedReason(),

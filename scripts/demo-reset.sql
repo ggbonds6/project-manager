@@ -10,7 +10,7 @@
 -- 本脚本把演示数据**物理删掉**，让库回到"干净基线"，随后再跑 seed 就是全新的一批。
 --
 -- 用法（开发机）：
---   bash scripts/db-sql.sh scripts/demo-reset.sql
+--   .\scripts\db-sql.ps1 scripts/demo-reset.sql
 --   node scripts/seed-demo.mjs
 --   node scripts/seed-attachments.mjs
 --

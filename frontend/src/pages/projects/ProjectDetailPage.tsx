@@ -38,12 +38,20 @@ import {
   PaperClipOutlined,
   PlusOutlined,
   ReloadOutlined,
+  RobotOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
 import dayjs, { Dayjs } from 'dayjs';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useLocation, useParams } from 'react-router-dom';
 import './flow.css';
 import { attachmentApi, attachmentUrl, contractApi, divisionApi, paymentApi, projectApi } from '@/api/project';
+import AttachmentAiStatusTag from '@/components/ai/AttachmentAiStatusTag';
+import {
+  AI_PREVIEW_ATTACHMENT_PARAM,
+  AI_PREVIEW_FILENAME_PARAM,
+  useAttachmentPreview,
+} from '@/components/ai/useAttachmentPreview';
+import { useAiAttachmentStatus } from '@/hooks/useAiAttachmentStatus';
 import ProjectFormModal from '@/components/ProjectFormModal';
 import PhaseEditModal from '@/components/PhaseEditModal';
 import AttachmentUploadModal from '@/components/AttachmentUploadModal';
@@ -92,6 +100,10 @@ const statusMeta = (s?: string) => (s ? PROJECT_STATUS[s] : undefined);
 export default function ProjectDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  // 用路由的 location（而不是 window.location）：URL 查询参数变化要能带动依赖它的 effect 重跑
+  // （`?tab=attach&aiPreviewAttachmentId=N` 这条 AI 引用跳转链路就靠它），
+  // 同时也避免只 import 不使用的死引用（维护约定要求 `--noUnusedLocals` 清零）。
+  const location = useLocation();
   const { user } = useAuth();
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [payments, setPayments] = useState<PaymentItem[]>([]);
@@ -521,6 +533,50 @@ export default function ProjectDetailPage() {
   const [attachTypeFilter, setAttachTypeFilter] = useState<string[]>([]);
   const [groupFilter, setGroupFilter] = useState<string[]>([]);
 
+  /**
+   * AI 索引状态（需求②：附件列表要能看到"是否已可检索"）。
+   *
+   * - 只有进入附件中心页签才发请求（避免每次打开项目都白跑一次批量状态查询）；
+   * - 状态以批量接口 `#8` 为准，附件记录里若自带 aiIndexStatus 则作为兜底，
+   *   两者都没有时显示"未解析"而不是空白——用户需要知道"这个附件还不能被检索"。
+   */
+  /**
+   * 当前页签（受控）。
+   * 初值支持 URL 参数：AI 引用跳转用 `?tab=attach` 直接落到附件中心，
+   * 这样首帧就是目标页签，不会先闪一下默认页签再跳。
+   * 注意容器项目没有 phases 页签，故仅在非容器时才认 `tab=phases`。
+   */
+  const initialTab = (() => {
+    const t = new URLSearchParams(location.search).get('tab');
+    if (t === 'attach') return 'attach';
+    if (!isContainer && t === 'phases') return 'phases';
+    return isContainer ? 'info' : 'phases';
+  })();
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const attachmentIds = useMemo(() => attachments.map((a) => a.id), [attachments]);
+  const aiStatus = useAiAttachmentStatus(attachmentIds, activeTab === 'attach');
+
+  /**
+   * 需要（重新）解析的附件：状态为"未解析"或"解析失败"的。
+   * 状态优先取批量接口，其次取附件记录自带字段，都没有时按"未解析"处理
+   * （AI 服务不可用时 aiStatus.error 会给出提示，不会让人误以为"已经入库了"）。
+   *
+   * ⚠️ 这个 `useMemo` **必须留在本处（所有提前 return 之前）**：它原先被写在页面中段的
+   * `if (!detail) return …` 之后，首屏 detail 为空时不执行、加载完成后才开始执行 →
+   * 「Rendered more hooks than during the previous render」（React #310，v3.5.1 踩过一次的同型缺陷；
+   * `tsc`/`vite build` 都发现不了，只有真跑页面才会炸）。
+   */
+  const aiPendingIds = useMemo(
+    () =>
+      attachments
+        .filter((a) => {
+          const s = aiStatus.map[a.id]?.indexStatus ?? a.aiIndexStatus ?? 'NOT_PARSED';
+          return s === 'NOT_PARSED' || s === 'FAILED';
+        })
+        .map((a) => a.id),
+    [attachments, aiStatus.map],
+  );
+
   // 附件在线预览 / 操作日志分页
   const [previewAtt, setPreviewAtt] = useState<AttachmentItem | null>(null);
   const [logPage, setLogPage] = useState(1);
@@ -530,6 +586,32 @@ export default function ProjectDetailPage() {
   // 新建子项目时预设父项目
   const [presetParent, setPresetParent] = useState<number | null>(null);
   const [editingChild, setEditingChild] = useState(false);
+
+  /**
+   * 从 AI 问答/文档库点引用跳进来时（`?tab=attach&aiPreviewAttachmentId=N`）自动打开该附件预览。
+   *
+   * 为什么要支持这个入口：引用出处只保证 attachmentId + 文件名 + 页码，而本页的预览数据
+   * （AttachmentItem）是现成的，跳过来预览最省事、也不会打断对话里的其它引用。
+   * 用 useAttachmentPreview 构造最小 AttachmentItem，与 AI 模块内的就地预览是同一实现。
+   */
+  const aiPreview = useAttachmentPreview();
+  /** 已处理过的参数值：避免关闭预览后被同一个 URL 参数反复弹开 */
+  const handledPreviewRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!id) return;
+    const params = new URLSearchParams(location.search);
+    const aid = params.get(AI_PREVIEW_ATTACHMENT_PARAM);
+    // 已处理标记带上项目 id：从 AI 跳到项目 B、再跳到项目 C 时参数值相同也要各弹一次
+    const handledKey = `${id}:${aid}`;
+    if (handledPreviewRef.current === handledKey) return;
+    handledPreviewRef.current = handledKey;
+    void aiPreview.open({
+      attachmentId: Number(aid),
+      filename: params.get(AI_PREVIEW_FILENAME_PARAM),
+    });
+    // aiPreview.open 每次渲染都是新引用，故不进依赖：这里只在 URL 参数变化时执行一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, location.search]);
 
   const onProjectSaved = async (values: ProjectForm) => {
     setSubmitting(true);
@@ -1968,6 +2050,14 @@ export default function ProjectDetailPage() {
     );
   })();
 
+  /** 逐个触发解析（串行：解析是重活，同时扔几十个只会让队列更难看清进度） */
+  const reparseAllPending = async () => {
+    for (const aid of aiPendingIds) {
+      await aiStatus.reparse(aid);
+    }
+    message.success(`已提交 ${aiPendingIds.length} 个附件的解析任务，可在「AI 与知识库 → 任务队列」查看进度`);
+  };
+
   const attachContent = (() => {
     const visible = grouped.filter((g) => {
       if (attachTypeFilter?.length && !g.items.some((it) => !!it.attachType && attachTypeFilter.includes(it.attachType)))
@@ -1992,6 +2082,26 @@ export default function ProjectDetailPage() {
           )}
           {/* 统一的上传入口：随时查看后台进度与历史记录（不依赖上传弹窗是否打开） */}
           <UploadTaskCenter />
+          {/*
+            批量补解析：只处理"未解析/解析失败"的附件——这两种才是真的没被 AI 读到；
+            不加"全部重解析"，避免一次点击把整个项目的附件重新排队（成本高且没必要）。
+          */}
+          {canEdit && aiPendingIds.length > 0 ? (
+            <Tooltip title="对尚未入库或上次解析失败的附件逐个触发解析；解析在后台进行">
+              <Button
+                icon={<RobotOutlined />}
+                loading={aiStatus.parsingIds.length > 0}
+                onClick={() => void reparseAllPending()}
+              >
+                解析未入库附件（{aiPendingIds.length}）
+              </Button>
+            </Tooltip>
+          ) : null}
+          {aiStatus.error ? (
+            <Tooltip title={aiStatus.error}>
+              <Tag color="warning">AI 服务不可用，附件索引状态暂时读不到</Tag>
+            </Tooltip>
+          ) : null}
           <Select
             mode="multiple"
             allowClear
@@ -2107,6 +2217,16 @@ export default function ProjectDetailPage() {
                         <FileTextOutlined />
                         <span>{a.fileName}</span>
                         {a.attachType ? <Tag>{attachTypeName(a.attachType)}</Tag> : null}
+                        {/* AI 索引状态：让用户一眼看出"这个附件能不能被问答检索到" */}
+                        <AttachmentAiStatusTag
+                          status={aiStatus.map[a.id]}
+                          fallbackIndexStatus={a.aiIndexStatus}
+                          fallbackError={a.aiError}
+                          canManage={canEdit}
+                          parsing={aiStatus.parsingIds.includes(a.id)}
+                          onReparse={() => void aiStatus.reparse(a.id)}
+                          compact
+                        />
                         <span style={{ color: '#8c8c8c', fontSize: 12 }}>{fmtFileSize(a.fileSize)}</span>
                         <span style={{ color: '#8c8c8c', fontSize: 12 }}>
                           {a.uploadUserName || '-'} · {fmtDateTime(a.uploadTime)}
@@ -2281,7 +2401,9 @@ export default function ProjectDetailPage() {
     <div>
       {header}
       <Tabs
-        defaultActiveKey={isContainer ? 'info' : 'phases'}
+        // 受控：AI 引用跳转要能直接落到"附件中心"页签（`?tab=attach`）
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           ...(isContainer
             ? []
@@ -2354,6 +2476,8 @@ export default function ProjectDetailPage() {
         />
       )}
       {previewAtt && <AttachmentPreviewModal item={previewAtt} onClose={() => setPreviewAtt(null)} />}
+      {/* AI 引用跳转过来的预览（?aiPreviewAttachmentId=N）：与列表里的预览共用同一组件 */}
+      {aiPreview.el}
       {contractModalEl}
       {divisionModalEl}
     </div>

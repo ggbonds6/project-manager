@@ -49,6 +49,13 @@ import java.util.Set;
  * <p>{@code search_documents} 的实际实现在检索层（{@link SearchPort}）：
  * 向量召回 + 关键词召回 → Reranker 精排。工具这一层只做"参数容错 + 结果整形"，
  * <b>工具签名不变</b>——这正是当初把检索单独分层的意义。
+ *
+ * <h2>结构化引用（cite）</h2>
+ *
+ * <p>{@code search_documents} 的每条命中与 {@code read_page} 的每一页都会登记进
+ * <b>本次问答的</b> {@link CitationRegistry}，并在返回里带上 {@code cite} 编号；
+ * 模型据此写 {@code [1][3]}，前端据此跳到附件第 N 页。注册表由 {@code QaService} 每次问答新建、
+ * <b>显式传参</b>进来（工具是单例，不能持有请求级状态）。
  */
 @Component
 public class Tools {
@@ -90,13 +97,27 @@ public class Tools {
 
     /** 在文档中检索相关段落。{@code docId} 为空则检索全部已上传文档。 */
     public Map<String, Object> searchDocuments(String query, Integer topK, String docId) {
+        return searchDocuments(query, topK, docId, null);
+    }
+
+    /**
+     * 在文档中检索相关段落，并把每条命中登记到本次问答的引用表里。
+     *
+     * <p>⚠️ <b>{@code cite} 必须在这一层就写进命中</b>，不能等最后再统一编号：
+     * 模型是靠"命中里带的 cite"来写 {@code [1][2]} 的，编号必须<b>在模型看到命中时就已经存在</b>，
+     * 否则模型只能自己编页码，前端拿到答案里的编号也对不上引用表。
+     *
+     * @param citations 本次问答的引用注册表；{@code null} 表示不登记（老调用点/单测的纯检索用法）
+     */
+    public Map<String, Object> searchDocuments(
+            String query, Integer topK, String docId, CitationRegistry citations) {
         int k = normalizeTopK(topK);
         SearchPort.SearchResult result = searchPort.search(query == null ? "" : query, k, docId);
         List<Map<String, Object>> hits = new ArrayList<>();
         if (result != null && result.hits() != null) {
             for (SearchPort.Hit hit : result.hits()) {
                 if (hit != null) {
-                    hits.add(hit.toMap());
+                    hits.add(hitMap(hit, citations));
                 }
             }
         }
@@ -125,12 +146,43 @@ public class Tools {
         return topK == null ? 5 : topK;
     }
 
+    /**
+     * 把一条命中整形给模型：复制成<b>保序可变</b> Map，再补上 {@code cite} 编号。
+     *
+     * <p>为什么要复制：{@link SearchPort.Hit#toMap()} 是"只读快照"，
+     * 而 {@code cite} 是<b>本次问答才有的一次性状态</b>（每次问答的编号表都不一样），
+     * 往共享对象上写会把上一次请求的编号带进下一次。复制一份再写，边界清楚。
+     */
+    private static Map<String, Object> hitMap(SearchPort.Hit hit, CitationRegistry citations) {
+        Map<String, Object> out = new LinkedHashMap<>(hit.toMap());
+        if (citations != null) {
+            out.put("cite", citations.register(
+                    hit.docId(), hit.filename(), hit.pageNo(), hit.text(), hit.score()));
+        }
+        return out;
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // 工具 2：读整页
     // ══════════════════════════════════════════════════════════════════
 
     /** 读取指定文档的某一页原文（核对上下文用）。 */
     public Map<String, Object> readPage(String docId, Integer pageNo) {
+        return readPage(docId, pageNo, null);
+    }
+
+    /**
+     * 读取某页原文，并把这一页登记进本次问答的引用表。
+     *
+     * <p>为什么整页也要登记：模型有两种引用路径——检索命中片段、或直接读整页核对。
+     * 两条路径都必须能落到引用表里，否则"答案引用了 read_page 看到的原文"就成了无出处的内容。
+     * 同一页先被检索登记过时，这里只是<b>取回原来的编号</b>，不会产生第二个号。
+     *
+     * <p>⚠️ 空白页/越界页在上面就返回错误了：没有正文可引，<b>不登记</b>。
+     *
+     * @param citations 本次问答的引用注册表；{@code null} 表示不登记
+     */
+    public Map<String, Object> readPage(String docId, Integer pageNo, CitationRegistry citations) {
         StoredDoc doc = docStore == null ? null : docStore.get(docId);
         if (doc == null) {
             return error("找不到文档 " + docId + "；文档清单见 system 提示词。");
@@ -153,6 +205,11 @@ public class Tools {
         out.put("text", text.length() > MAX_PAGE_CHARS
                 ? text.substring(0, MAX_PAGE_CHARS) + "…（本页过长，已截断）"
                 : text);
+        if (citations != null) {
+            // 分数传 0.0：整页读取没有检索分数，前端可据此区分"检索命中"与"主动读页"
+            // （若同一页先前被检索命中过，注册表会保留那次更高的分数）
+            out.put("cite", citations.register(doc.getDocId(), doc.getFilename(), pageNo, text, 0.0));
+        }
         return out;
     }
 
@@ -369,7 +426,9 @@ public class Tools {
                 "search_documents",
                 "在已上传文档中检索相关段落，返回页码与原文片段。"
                         + "**回答任何关于文档内容的问题前，都必须先用本工具检索**，"
-                        + "不要凭记忆或常识作答。可多次调用，换不同关键词。",
+                        + "不要凭记忆或常识作答。可多次调用，换不同关键词。"
+                        + "每条命中都带 `cite` 编号：引用该内容时必须在句末写 `[cite]`"
+                        + "（如 `[1]`、`[1][3]`），编号只能用这里返回的，不得自己编造。",
                 props(
                         "query", property("string", "检索关键词或问题，如“付款条款”“中标金额”"),
                         "top_k", property("integer", "返回片段数，默认 5，最多 10"),
@@ -377,7 +436,8 @@ public class Tools {
                 List.of("query")));
         schemas.add(function(
                 "read_page",
-                "读取某份文档指定页的完整原文。当检索片段不足以判断、需要看上下文时使用。",
+                "读取某份文档指定页的完整原文。当检索片段不足以判断、需要看上下文时使用。"
+                        + "返回里的 `cite` 是该页在本次问答里的引用编号，引用这页内容时用它标注（`[cite]`）。",
                 props(
                         "doc_id", property("string",
                                 "文档 ID（见 system 提示词里的文档清单，或 search_documents 的返回）"),
@@ -446,16 +506,33 @@ public class Tools {
      * 执行工具。<b>任何异常都转成结构化错误返回给模型</b>，不让它中断整个问答。
      */
     public Map<String, Object> execute(String name, Map<String, Object> arguments) {
+        return execute(name, arguments, null);
+    }
+
+    /**
+     * 执行工具（带本次问答的引用注册表）。
+     *
+     * <p>注册表只影响 {@code search_documents} / {@code read_page} 的返回里多一个 {@code cite}，
+     * {@code calculate} 与错误分支完全不受影响。
+     *
+     * @param citations 本次问答的引用注册表；{@code null} 表示不登记
+     */
+    public Map<String, Object> execute(
+            String name, Map<String, Object> arguments, CitationRegistry citations) {
         Map<String, Object> args = arguments == null ? Map.of() : arguments;
         try {
             if ("search_documents".equals(name)) {
                 return searchDocuments(
                         asString(args.get("query")),
                         asInt(args.get("top_k"), (Integer) null),
-                        asString(args.get("doc_id")));
+                        asString(args.get("doc_id")),
+                        citations);
             }
             if ("read_page".equals(name)) {
-                return readPage(asString(args.get("doc_id")), asInt(args.get("page_no"), (Integer) null));
+                return readPage(
+                        asString(args.get("doc_id")),
+                        asInt(args.get("page_no"), (Integer) null),
+                        citations);
             }
             if ("calculate".equals(name)) {
                 return calculate(asString(args.get("expression")));

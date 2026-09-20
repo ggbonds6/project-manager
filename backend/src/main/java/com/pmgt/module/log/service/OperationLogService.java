@@ -21,12 +21,26 @@ public class OperationLogService {
     }
 
     public void log(String bizType, Long bizId, String action, String detail) {
-        OperateLog log = new OperateLog();
         AuthContext.Current current = AuthContext.get();
-        if (current != null) {
-            log.setUserId(current.userId());
-            log.setUserName(current.name());
-        }
+        log(bizType, bizId, action, detail,
+                current == null ? null : current.userId(),
+                current == null ? null : current.name());
+    }
+
+    /**
+     * 显式指定操作人（后台线程用）。
+     *
+     * <p>为什么需要它：{@code AuthContext} 是 ThreadLocal，只存在于处理 HTTP 请求的那个线程。
+     * 上传完成后的自动解析发生在<b>后台线程</b>，若走原方法，日志会写出一条「操作人为空」的记录——
+     * 审计上等于查不到"谁触发的这次解析"。
+     *
+     * <p>只加重载、不改原方法：既有调用点（十余处）行为必须保持不变。
+     */
+    public void log(String bizType, Long bizId, String action, String detail,
+                    Long userId, String userName) {
+        OperateLog log = new OperateLog();
+        log.setUserId(userId);
+        log.setUserName(userName);
         log.setBizType(bizType);
         log.setBizId(bizId);
         log.setAction(action);
