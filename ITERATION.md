@@ -15,6 +15,7 @@
 | 需求基线 | `docs/政府信息化项目管理系统-设计方案.md`（设计与实现同步稿，Q1–Q15 处置状态见 §11） |
 | 脚本清单 | `scripts/README.md`（发版打包 / 演示数据 / 开发机数据库工具） |
 | 当前版本 | **v3.5.1**（2026-09-17） |
+| ai-service | **`ai-0.5.0`**（2026-09-18）：独立构建部署（GPU 机、独立镜像/发版，不动主系统）；附件解析 + 平台 OCR + 文档库/问答，**检索链路（Embedding 召回 + Reranker 精排）已接通**；见 `ai-service/README.md` |
 | 仓库 | GitHub `ggbonds6/project-manager`（main 分支，全程 git 管理） |
 
 ---
@@ -56,7 +57,10 @@
 | v3.4.0 | 2026-09-17 | 合同管理 tab + 项目分工 tab | **合同管理**：一个项目（含子项目）可签多份合同——施工合同（主合同）/ 第三方测评 / 方案评估 / 监理服务 / 项目设计 / 预算编制。迁移 **V10** 为 `contract` 扩充政府合同常见字段（合同类型、甲方、签订·生效·工期起止日期、合同状态、收款户名/开户行/账号、验收标准、质保期/质保金、结算金额；**乙方沿用 `vendor_name`** 不再另设 `party_b` 以免冗余）；新增字典 `CONTRACT_TYPE`(7 项)、`CONTRACT_STATUS`(5 项)。**项目分工**：新增 `project_division` 表——`parent_id` 支持「模块 → 子模块」层级，记录负责方（甲/乙/双方）、甲乙负责人、计划开发·调试·上线日期、进度 0–100、状态、备注；新增字典 `DIVISION_STATUS`(4 项)。**前端**：项目详情页新增两个 tab（置于「资金情况」之后）——「合同管理」用**折叠列表**（收起只露 类型/状态/编号/金额/已付/乙方，展开依次为 ①合同双方 ②**付款账户**（黄底高亮、账号等宽字体，付款前必核）③金额·质保·验收标准 ④该合同的付款节点），「项目分工」用**树形表格**（负责方标签、甲乙负责人两行、三阶段计划、进度条、状态标签；操作列支持「编辑 / 加子模块 / 删除（级联）」）；配色统一在 `config/tagDict.ts`（`CONTRACT_TYPE_TAGS` / `CONTRACT_STATUS_TAGS` / `DIVISION_STATUS_TAGS` / `OWNER_SIDE_TAGS`），与字典 code 一一对应。**后端**：`Contract` 实体/DTO/`apply()` 扩展 14 个字段；新增 `ProjectDivision` 实体 + Mapper + Controller（列表返回**扁平结构**由前端组树；删除**级联子模块**；校验上级同项目且**防循环引用**）。**实测**：V10 迁移执行成功（共 **10** 个脚本）、两个新字典就位；分工新增「数据采集模块」+「数据校验子模块」并正确返回层级；合同新字段映射正常 | `5ce3467` |
 | v3.5.0 | 2026-09-17 | 资金/合同职责重划分：资金情况改为以付款为主线 + 合同附件独立归属 + Mock 数据充实 |**问题**：两个 tab 都在讲合同（资金情况以合同为父节点折叠、合同管理也挂付款明细），职责重叠、各自都不完整。**重划分**——「资金情况」= 一笔付款一条记录，「合同管理」= 合同登记 + 合同附件。**迁移 V11**：`payment` 补付款过程字段（`pay_method` 付款方式 / `handler` 经办人 / `invoice_no` 发票号 / `voucher_no` 记账凭证号 / `payee_name`·`payee_bank`·`payee_account` **收款账户快照**，付款当时留痕）；新增字典 `PAY_METHOD`(5 项) 与 `PAY_REQUIRED_ATTACH`（报销所需附件清单，界面据此做缺件提醒）；`ATTACH_TYPE` 扩 8 项（发票 / 付款审批单 / 法务意见书 / 合同会签表 / 授权委托书 / 履约保函 / 合同变更协议 / 供应商资质）；**历史合同附件归位**（`attach_type=CONTRACT` 且挂在项目/阶段上的，统一改挂 `biz_type=CONTRACT` + `biz_id=合同id`）；`attachment` 新增 `(biz_type,biz_id)` 索引。**后端**：`Payment` 实体 / `PaymentSaveRequest` / `PaymentVO` / `apply()` 扩 7 字段；附件 `BIZ_TYPES` 增加 `CONTRACT`；`GET /projects/{id}/attachments` 汇总本项目**合同链**（自身+各级父项目）上的合同附件并补 `bizName`（合同名），上传记录接口同步补 `bizName`。**前端**：「资金情况」弃用「合同为父的折叠面板」，改为**表格 + 可展开行**——列 = 付款节点（含触发条件）/ 状态 / 实付·计划金额 / 付款日期 / 付款方式 / 关联合同（类型标签）/ 收款方 / **报销凭证 n/4** / 操作；展开行只放**关联信息**（付款明细与留痕、本次付款的收款账户快照、报销所需附件清单带缺件红标与逐项上传、已上传凭证列表）；顶部汇总卡 + 筛选（状态 / 合同 / 关键词）+ **风险提示条**（未关联合同的付款、已付款但报销缺件）；「合同管理」把付款明细表换成**付款进度结论**（节点数 / 已付 / 待付 / 已付笔数，并指向资金情况），新增**合同附件区**（按 合同正本 / 法务与审批 / 招标与投标 / 担保与保证 / 其他 分组展示 + 上传，`bizType=CONTRACT`）；附件中心新增「合同：xxx」分组；付款登记表单补付款方式 / 经办人 / 发票号 / 凭证号 / 收款账户（**新增时默认从合同带入**）；配色新增 `PAY_METHOD_TAGS`。**Mock 数据**：`seed-demo.mjs` 重写为 v4——每个核算单元 **2~4 份合同**（施工主合同 88% + 监理 2.5% + 第三方测评 3.5% + 预算编制 1.2%，供应商档案含收款账户与乙方项目经理）、主合同 **5 个付款里程碑**（30/40/20/7/3）含部分付款与差额场景、**项目分工**按 HW/SW 模板生成模块与子模块（含风险阻塞项）；`seed-attachments.mjs` 扩为三类附件（阶段 / 合同 / 付款凭证），并**故意让约 2/5 的已付款少传一类凭证**用于验证缺件提醒。**🔴 顺带修掉一个结构性缺陷（V12）**：原先把「项目挂合同」交给 `project.contract_id` **单个指针**，导致**一个项目实际只能有一份合同**——再登记第二份会覆盖指针、把上一份变成孤儿，而 `cleanupOrphanContracts` 下次会把它**悄悄逻辑删除**（数据会丢）。V10 的「一个项目多合同」其实只做了一半（灌数据时暴露：9 个项目只留下 9 份合同）。**迁移 V12** 新建 `project_contract` 关联表作为**权威关联**（一个项目 N 份合同，一份合同 1 个项目），回填历史并**排除已逻辑删除的项目**；`project.contract_id` 保留但语义收窄为「主合同」指针，由新增的 `ContractLinkService.syncPrimaryContract` 自动指向 MAIN 类型合同（无 MAIN 取最早一份），使项目卡片/统计里既有的「合同金额」口径继续表示主合同。新增 `module/project/service/ContractLinkService` 统一承载「某项目可见哪些合同 / 某合同覆盖哪些项目 / 重建与解除关联 / 清孤儿合同」，并改造 `ContractController`（列表 MAIN 优先排序、增删改走关联表）、`PaymentController`（付款归属校验，多合同时不允许「猜」归属）、`AttachmentController`（合同附件可见范围）、`ProjectService`（级联删除解除关联、孤儿清理按关联表且在用项目）、`StatsService`（合同年度归集、已付汇总）。**实测（修后）**：V11 / V12 迁移均成功（共 **12** 个脚本）；同一项目 **3~4 份合同**（施工主合同 + 监理 + 第三方测评 + 预算编制），全库 **25 份合同 / 77 笔付款 / 128 条项目分工 / 399 个附件**（阶段 217 · 合同 102 · 付款凭证 80），主合同指针与关联表一致（有效关联 25 条 = 合同 25 份） | `9b43b60` |
 | v3.5.1 | 2026-09-17 | 修复前端 React #310 + 演示数据补全 + 死代码清理 | **🔴 React #310（hook 顺序）**：v3.5.0 新加的 6 个 hook（`payNodeOrder`/`contractById` 两个 `useMemo`、三个筛选 `useState`、`filteredPayments`）被放在了组件里 `if (!detail) return …` **之后**——首屏（`detail` 为 null）走提前 return 少调这些 hook，加载完成后再调，数量不一致即抛 `Rendered more hooks than during the previous render`（#310）。修复：全部**前移到提前 return 之前**，并加注释说明"hook 必须在任何提前 return 之前"。已加结构性自检：组件内提前 return 之后 hook 数为 **0**（共 34 个 hook 全在其前）。**演示数据补全**：合同补 `contractStatus`（按推进度自动给 DONE/CHANGED/ACTIVE）、`settleAmount`（结算后才有）、`remark`、服务类合同的 `scopeRemark/验收标准`；新增 **4 份"方案评估"合同（状态=待签订、无付款记录）**用于演示状态标签与"零付款节点"的合同；核算单元合同数由 2~4 份扩到 **2~5 份**。**新增开发机工具**：`scripts/demo-reset.sql`（**物理**清空演示数据，解决"逻辑删除导致库里堆积 `deleted=1` 历史行、翻库时误以为当前数据缺字段"）、`scripts/db-sql.sh` + `scripts/jdbc/RunSql.java`（开发机无 yasql 客户端时手工查/改库，连接信息自动从容器环境变量或 `.env` 取，**口令不打印不落盘**）、`scripts/README.md`（脚本清单与用法）。**死代码清理**：前端 `tsc --noUnusedLocals --noUnusedParameters` **清零**（ProjectDetailPage 的 `Timeline`/`Typography`/未用 `useWatch`，以及 FlowTemplateDesigner/PhaseEditModal/ProjectOverviewPanel/StatsPage/SystemPage 的既有未使用导入）；后端未使用导入 **8 处清零** + 删掉死方法 `ContractController.normalize`（另 3 个疑似死方法是 `this::method` 方法引用，经核对**保留**）；`seed-attachments.mjs` 删掉只写不读的 `nameCache`。**实测**：清库重灌后 **29 份合同 / 77 笔付款 / 128 条项目分工 / 412 个附件**（阶段 217 · 合同 114 · 付款凭证 81）；`contract` 表 `deleted=1` 行数 **0**、在用合同字段缺失 **0**（仅 `settle_amount` 有 21 份为空——未结算，符合业务）；合同状态分布 ACTIVE 16 / DONE 6 / DRAFT 4 / CHANGED 3；类型分布 MAIN 9 / SUPERVISE 9 / EVAL 4 / TEST 4 / BUDGET 3。**约定（两条，用户明确要求）**：① 前端改动不再由 AI 起浏览器做端到端验证（结构性检查 + 数据/接口核对即可，交互效果由用户刷新确认）；② **不主动重建镜像**（`dev-reload.sh`/`make-release.sh` 耗时且会重启容器，需要时先问）。两条已写入部署手册 §2.1、`scripts/README.md` §5 与项目记忆。**文档补齐（用户指出「没更新完」）**：`ITERATION.md`「各迭代明细」补 11 个缺失版本（v1.7 / v2.1~v2.4 为历史遗留，v3.2.0~v3.5.1 为本轮相关），现**总表 33 行 == 明细 33 段**；「项目速览」「功能完成度」「运行方式速查」「后续待办」同步重写。《设计方案》逐章同步：§5.3 附件归属改四类、§5.4 补付款留痕与收款账户快照、**新增 §5.5 合同字段**、§6.2 页签五→**八**、§8 表数 **11→14**（补录 `attachment_upload_task`）、§13 差异清单时点 v3.0→**v3.5.1** 并补 21~32 条（第 27 条显式修正第 8 条的旧口径）、§14 维护约定补「总表与明细两处版本须一一对应」；修正目录 4 条失效锚点。 | `e76a183`、`7e65171` |
-| ai-0.4.0 | 2026-09-18 | **ai-service：移除本地 OCR + P0 规范化** | **只走内网平台 OCR**：同页实测平台 `PaddleOCR-VL-1.6-0.9B` 金额（`7,780,000.00`/`5,446,000.00`/`2,334,000.00`）与大写「柒佰柒拾捌万元整」**全对**，本地 RapidOCR **金额全丢**（只有合同编号）→ 删除 `ocr_engine.py`、`scripts/selfcheck_ocr.py` 与 `rapidocr-onnxruntime`/`pillow`/`[paddle]` extra，`OCR_PROVIDER`/`OCR_DPI`/`OCR_WORKERS` 废弃，平台不可用**报错不降级**，镜像去掉 `libgl1`/`libglib2.0-0`/`libgomp1` 与构建期 OCR 自检（改为只校验包能导入）；**P0 规范化**：ruff（lint+format）+ pytest（大写金额解析 / 平台 OCR 响应解析 / 任务状态机 / `calculate` 白名单）+ 依赖加上下界 + `print`→`logging`，新增 `[dev]`/`[scripts]` extra 与 `scripts/check.sh`/`check.cmd`（**本机优先、Docker 兜底**；Python 装于 `E:\env\python-3.11.9`、venv 在 `E:\env\venvs\pm-ai`，`ruff check + format --check + pytest` 本机 **0.2 秒**跑完）；工具集 **4→3**（删 `list_documents`）、`calculate` 改 `Decimal` 并去掉 `**`/`//`/`%`；版本 `0.1.0`→**`0.4.0`**；**Java 迁移最大障碍（本地 OCR 无 Java 等价物）随之消失**，但时机不变（等检索层与接口冻结） | `9e7ea27`（四份文档归档）、`0440563`（v0.4.0）；v0.3 基线 `4240363` |
+| ai-0.4.0 | 2026-09-18 | **ai-service：移除本地 OCR + P0 规范化** | **只走内网平台 OCR**：同页实测平台 `PaddleOCR-VL-1.6-0.9B` 金额（`7,780,000.00`/`5,446,000.00`/`2,334,000.00`）与大写「柒佰柒拾捌万元整」**全对**，本地 RapidOCR **金额全丢**（只有合同编号）→ 删除 `ocr_engine.py`、`scripts/selfcheck_ocr.py` 与 `rapidocr-onnxruntime`/`pillow`/`[paddle]` extra，`OCR_PROVIDER`/`OCR_DPI`/`OCR_WORKERS` 废弃，平台不可用**报错不降级**，镜像去掉 `libgl1`/`libglib2.0-0`/`libgomp1` 与构建期 OCR 自检（改为只校验包能导入）；**P0 规范化**：ruff（lint+format）+ pytest（大写金额解析 / 平台 OCR 响应解析 / 任务状态机 / `calculate` 白名单）+ 依赖加上下界 + `print`→`logging`，新增 `[dev]`/`[scripts]` extra 与 `scripts/check.sh`/`check.cmd`（**本机优先、Docker 兜底**；Python 装于 `E:\env\python-3.11.9`、venv 在 `E:\env\venvs\pm-ai`，`ruff check + format --check + pytest` 本机 **0.2 秒**跑完）；工具集 **4→3**（删 `list_documents`）、`calculate` 改 `Decimal`（**返回字符串** `result`/`rounded_2`，避免 JSON 浮点丢分位）并去掉 `**`/`//`/`%`；版本 `0.1.0`→**`0.4.0`**；**Java 迁移最大障碍（本地 OCR 无 Java 等价物）随之消失**，但时机不变（等检索层与接口冻结） | `9e7ea27`（四份文档归档）、`0440563`（v0.4.0）；v0.3 基线 `4240363` |
+| ai-0.5.0 | 2026-09-18 | **ai-service：检索链路接通（Embedding 召回 + Reranker 精排）** | 平台已部署 **Qwen3-VL-Embedding-8B**（**固定 4096 维**；⚠️ 平台实际部署**不支持 MRL 降维**，传 `dimensions` 实测 **HTTP 400**，故 `VEC_EMBED_DIMENSIONS=0` 表示**不传**）与 **Qwen3-VL-Reranker-8B**（网关 `http://10.254.208.35:8090/v1`，与千问对话/平台 OCR **共用同一把 sk**，手册 `ai-service/Qwen3-VL-Embedding-Reranker调用手册.md`）；新增 `vec_client.py`（纯 urllib：`/embeddings`、Jina 风格 `/rerank`、`GET /models` 探活、`cosine`）、`retrieval.py`（**三步链路**：向量召回 + 关键词召回（字符 2-gram + IDF，原在 `tools.py`，本轮**搬迁**）→ 按 (doc_id, page_no, 文本 sha1) 去重融合 → Reranker 精排取 top_k）、`scripts/vec_try.py`（`--health` / `--selftest` / `--ingest` / `--search` / `--top-k` / `--doc-id` / `--offline`）、`tests/test_retrieval.py`（5 条离线用例：精排顺序生效 / 向量不可用降级关键词且 note 写明 / 切片向量走缓存（第二次只为 query 编码）/ 切片键随内容变化 / **`VEC_BACKEND=opensearch` 显式报错**）；`tools.search_documents` 改为**委托** `retrieval.search()`（工具签名不变，返回体新增 `retrieval`/`reranked`/`note`）；新增配置 `VEC_BASE_URL`/`VEC_API_KEY`（默认复用 `LLM_*`，`VEC_TIMEOUT=300`）/`VEC_EMBED_MODEL`/`VEC_RERANK_MODEL`/`VEC_EMBED_DIMENSIONS=0`（**不传 dimensions**；平台不支持 MRL 降维，实际 4096 维）/`RETRIEVAL_RECALL=50`/`RETRIEVAL_TOP_K=5`/`VEC_BACKEND=local`/`OPENSEARCH_*`（索引 `pm-ai-chunks`）；`GET /health?with_vec=true` 返回 `vec` 块（ok/detail/models/backend/embed_model/rerank_model/dimensions）；向量缓存在 `work/vectors/<doc_id>.json`（含 model/dimensions，切片内容变了自动失效；**向量与索引都是可重建物，不进主系统**）；向量服务不可用时**降级为关键词检索**并在 `note` 写明原因（与 OCR 降级性质不同：答案仍带页码来源）；**实测**：开发机跑通**离线接线演练**（`--offline`：解析一个文本型 PDF → 1 个切片 → 混合检索命中并带页码与分数），质量门 **55 用例**全绿 + `ruff check` / `ruff format --check` 通过；**未验证（如实）**：开发机连不上政务内网网关（`URLError: timed out`），真实向量化/重排/语义判别**尚未验证**，需在有内网访问的机器上跑 `python scripts/vec_try.py`（默认自检）；**检索层存储选型统一为 OpenSearch**（崖山内核自带向量能力仅作备选、不作选型基线），**适配层尚未实现**（`VEC_BACKEND` 只支持 `local`，配置成 `opensearch` 会显式报错而非静默降级），**下一步：部署 OpenSearch 并补适配层** | 本轮待提交 |
+
+| ai-1.0.0 | 2026-09-20 | **AI 能力服务全量 Java 化：`ai-service`（Python/FastAPI）→ `ai-backend`（Spring Boot 3.3.5 / Java 17）** | 与主系统**同栈**、仍**独立构建与部署**（默认 8100）。四类能力全部移植：**平台 OCR**（`PlatformOcrClient`：批量 ≤16 页/请求、并发 12、"批量响应 blocks 在 `results[i]` 不在顶层"的坑、失败页占位**不兜底**、健康探针带 TTL 缓存）、**PDF 解析**（PDFBox 3 替代 PyMuPDF：页数 / 逐页文本 / 按 DPI 渲染 JPEG q85）、**确定性校验**（`Checks`：`BigDecimal` 大写金额解析与互校、比例合计容差 ±1、数值写法规整、答案数字可溯源；Java 正则显式 `UNICODE_CHARACTER_CLASS`，`BigDecimal` 一律 `compareTo` + `stripTrailingZeros` 归一）、**大模型**（`LlmClient` / `Prompts`（提示词**逐字照搬**）/ `ToolAgent`（8 轮工具循环 + 轮数用尽禁用工具再问）/ `QaService`（单条 system 必须在最前）/ `AnalyzeService`）、**检索链路**（`VecClient` + `RetrievalService`：字符 2-gram + IDF 关键词 + 向量召回 → 去重融合 → Reranker 精排；向量缓存 `work/vectors/`；向量/重排不可用**降级关键词并写 note**）；新增 `OpenSearchIndex` kNN 适配层（**未实测**：集群未部署；配 `opensearch` 时**显式报错、不静默降级**）。接口层：`/health`（`with_ocr`/`with_llm`/`with_vec` 三探测）、`/analyze`、`/ocr/pdf-info`、`/ocr/file`、`/documents`（增删查）、`/upload-tasks`（**先返回、后台解析**、状态机、取消/移除、重启把残留标失败）、`/chat`；响应形状与 Python 版**逐字段一致**（成功 `{code,data}`，失败 HTTP 状态码 + `{"detail"}`）。**踩坑（都已写进代码注释）**：Lombok 注解处理器必须显式配 `annotationProcessorPaths`（否则满屏"找不到符号"、看着像缺类）；`@Async` 自调用走不到代理（改显式线程池提交）；`StoredDoc.PageInfo.page_no` 必须 `@JsonProperty`（否则页码静默丢失、整页被误判成空白页）；`.env` 需 `spring.config.import` 才等价于 Python 的 dotenv。**实测（真实内网网关 `10.254.208.35:8090`）**：扫描件平台 OCR 正确识别《中标通知书》正文；`/analyze` 8.73s（tokens 1375+779）输出带 `[P1]` 来源与置信度的结构化 markdown；上传任务 `QUEUED→DONE` 1.47s；`/chat` 10.27s、工具轨迹 `search_documents×2 → read_page`，对上"中标金额"给出金额并主动标注"千分位是中文逗号、**存疑**请核对原件"，对"付款方式"如实回答**文档中未找到**并给出依据。**66 个 JUnit 用例全绿**；`Checks` 与 Python 版做过 **35 个用例的逐字段差分对照，完全一致**。Python 侧代码/脚本/文档的清理见下一轮 | 本轮待提交 |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -301,7 +305,8 @@
   `pandas` / `openpyxl` 移入 **`[scripts]` extra**（只有一次性摸底脚本用），`pillow` 删除。
   **CI 仍未做**（属 P1）。
 - **工具集 4 → 3**：删掉 `list_documents`——文档清单已由 **system 提示词直接注入**，模型再调一次属重复劳动；
-  `calculate` 改为**全程 `Decimal` 精确计算**并收紧运算符：**去掉 `**` / `//` / `%`**，只放开 `+ - * /` 与括号（`9**9**9` 能瞬间打满 CPU）。
+  `calculate` 改为**全程 `Decimal` 精确计算**并收紧运算符：**去掉 `**` / `//` / `%`**，只放开 `+ - * /` 与括号（`9**9**9` 能瞬间打满 CPU）；
+  **返回值是字符串**（`result` / `rounded_2`，Java 侧对应 `BigDecimal` + 字符串返回），避免 JSON 浮点丢分位精度。
 - **版本**：`0.1.0` → **`0.4.0`**（`pyproject.toml`；README §8 同步改为"实际版本口径"）。
 - **配套文档同步**：`ai-service/README.md`（§13 改写为"只走平台 OCR"+ 两条理由 + 不降级行为；环境变量表、目录结构、§8 版本现状重写；新增 **§15 质量门**）、
   `ai-service/.env.example`（删本地引擎变量、补 `OCR_SEAL_MIN_PIXELS` 等平台参数注释）、
@@ -310,6 +315,110 @@
 - **下一步**：P0 落实 embedding 来源 → P1 表驱动异步任务（主系统迁移 V13 `attachment_ai_task`）→ P2 混合检索 + 评测集，
   施工图见 [`ai-service/docs/知识库落地实施方案.md`](ai-service/docs/知识库落地实施方案.md)。
 - **文档一致性**：本文档「总表行数 == 明细段数」的集合级校验随之由 **33 == 33** 变为 **34 == 34**（新增 `ai-0.4.0` 一行 + 对应明细一段）。
+
+### ai-0.5.0 — ai-service v0.5.0：检索链路接通（Embedding 召回 + Reranker 精排）
+
+> 独立服务 `ai-service/` 的迭代，**与主系统版本号分开编号**（`ai-` 前缀）。
+> 上一轮 `ai-0.4.0` 做的是**质量与收敛**（P0 规范化 + 移除本地 OCR 引擎），本轮把**检索层**接上——
+> 也就是《知识库总体架构与演进路线》§0.2 里那三类"缺的东西"中的**检索层**。
+
+- **本轮前提：平台能力已就位**。网关 `http://10.254.208.35:8090/v1` 已部署
+  **`Qwen3-VL-Embedding-8B`**（**固定 4096 维**；⚠️ 平台实际部署**不支持 MRL 降维**——
+  传 `dimensions` 实测 **HTTP 400**（`does not support matryoshka representation`），
+  手册写的"64~4096"与**实际部署不符**，故 `VEC_EMBED_DIMENSIONS=0` 表示**不传**）与 **`Qwen3-VL-Reranker-8B`**，
+  与千问对话、平台 OCR **共用同一把 sk**（配置默认复用 `LLM_BASE_URL` / `LLM_API_KEY`，不新增密钥）。
+  → 这推翻了此前"平台网关不提供 embedding（`POST /v1/embeddings` 返回 404）"的判断，
+  也让"本地自建 TEI embedding 端点"那条路线不再必要（文档里作为历史推演保留，口径已改）。
+- **新增 `src/pm_ai/vec_client.py`（Embedding / Reranker 客户端，纯 `urllib`，不引新依赖）**：
+  `embed_texts(texts, instruction=None, dimensions=None)` → `POST /embeddings`，**返回顺序与入参一致**；
+  带 `instruction` 时走 `messages`（system 角色）形式，此时**不传 `dimensions`**（手册只给了这两种组合）；
+  `rerank(query, documents, top_k=None)` → `POST /rerank`（Jina 风格），返回 `[(原始下标, 分数)]` 降序——
+  ⚠️ **上游按原顺序返回 `results`，下标是入参下标，不能当排名用**；
+  `health(timeout=10)` → `GET /models` 探活（**不消耗配额**）；另有 `cosine(a,b)` 工具函数。
+- **新增 `src/pm_ai/retrieval.py`（三步链路）**：
+  ① **召回**：向量召回（`Qwen3-VL-Embedding-8B`）+ 关键词召回（字符 2-gram + IDF，原实现在 `tools.py`，本轮**搬迁**到这里）；
+  ② **融合**：按 `(doc_id, page_no, 文本 sha1)` 去重（向量命中优先，关键词补齐）；
+  ③ **精排**：Reranker 逐对打分，取 `top_k`。
+  向量缓存在 **`work/vectors/<doc_id>.json`**（含 `model` / `dimensions`，**切片内容变了自动失效**）——
+  向量与索引都是**可重建物**，删掉重算即可，**不进主系统**。
+- **降级行为（与 OCR 降级性质不同，刻意区分）**：向量服务不可用时**降级为关键词检索**，
+  并在结果 `note` 里写明原因（如"向量服务不可用（…），本次仅用关键词召回"）。
+  理由：答案**仍然带页码来源**、召回变少是**可见的**（"没找到"看得见），
+  不会像 OCR 静默降级那样产出"看起来正常、实际内容全丢"的结果。
+- **索引后端可切（但只实现了一个）**：`VEC_BACKEND=local`（默认，进程内余弦、零部署）→ `opensearch`（**正式选型**）。
+  ⚠️ **`opensearch` 适配层尚未实现、集群也尚未部署**：配置成 `opensearch` 时 `retrieval._check_backend()`
+  **显式抛错**（由 `tests/test_retrieval.py::test_unimplemented_backend_fails_fast` 钉住），
+  **不静默退回进程内检索**——静默降级会把"以为在用集群"和"实际在进程内算"混在一起，属最难排查的一类问题。
+  切片键已按内容指纹生成，**可直接当索引 `_id` 做幂等 upsert**。
+  **下一步：部署 OpenSearch 并补适配层**（选型与字段见 `docs/知识库落地实施方案.md`）。
+- **`src/pm_ai/tools.py` 改为委托**：`search_documents` 现在只做"参数容错 + 结果整形"并调用 `retrieval.search()`，
+  **工具签名不变**（`search_documents(query, top_k, doc_id)`），返回体新增 `retrieval`（hybrid/keyword）、
+  `reranked`、`note` 三个键；关键词实现已从该文件移出。→ 提示词与问答编排**零改动**，
+  这正是当初把检索单独分层留下的替换位。
+- **新增 `scripts/vec_try.py`（链路验证脚本）**：`--health` / `--selftest`（对应调用手册 §7.1 的三项功能验收：
+  向量化维度、语义判别、重排排序）/ `--ingest <PDF>`（解析→切片→入库）/ `--search "<查询>"` /
+  `--top-k` / `--doc-id`；另有 **`--offline`**：用**确定性伪向量 / 伪重排**跑通接线（网关不可达时用，
+  **结果无语义**，只看"有没有结果、顺序是否由重排决定、缓存是否命中"）。
+- **新增配置项**（`config.py`，`.env` / `.env.example` 由用户另行维护）：`VEC_BASE_URL`（默认复用 `LLM_BASE_URL`）、
+  `VEC_API_KEY`（默认复用 `LLM_API_KEY`）、`VEC_TIMEOUT`(300)、`VEC_EMBED_MODEL`、`VEC_RERANK_MODEL`、
+  `VEC_EMBED_DIMENSIONS`(**0**，＝不传 dimensions；平台不支持 MRL 降维，实际 4096 维)、`RETRIEVAL_RECALL`(50)、`RETRIEVAL_TOP_K`(5)、`VEC_BACKEND`(local)、
+  `OPENSEARCH_URL` / `OPENSEARCH_INDEX`(`pm-ai-chunks`) / `OPENSEARCH_USER` / `OPENSEARCH_PASSWORD`。
+- **HTTP 自检**：`GET /health?with_vec=true` 返回 `vec` 块（`ok` / `detail` / `models` / `backend` /
+  `embed_model` / `rerank_model` / `dimensions`），走 `GET /models` 探活，不消耗配额。
+- **测试**：新增 `tests/test_retrieval.py` **5 条纯离线用例**（精排顺序确实生效 / 向量不可用时降级为关键词且 `note` 写明 /
+  切片向量走缓存（第二次只为 query 编码）/ 切片键随内容变化 / `VEC_BACKEND=opensearch` 显式报错）。
+  质量门现为 **55 个用例全绿**，`ruff check` 与 `ruff format --check` 均通过。
+- **实测（如实写，不夸大）**：
+  - ✅ **已跑通**：开发机**离线接线演练**（`--offline`）——解析一个文本型 PDF → **1 个切片** →
+    混合检索命中、结果**带页码与分数**；质量门 55 用例全绿。
+  - ❌ **未验证**：开发机**连不上内网网关**（`URLError: timed out`；`10.254.208.35` 是政务内网地址），
+    所以**真实模型的向量化 / 重排 / 语义判别尚未在开发机验证**——需在有内网访问的机器上跑
+    `python scripts/vec_try.py`（默认自检）确认，见 `ai-service/README.md` §13。
+- **检索层存储选型统一为 OpenSearch**（项目负责人明确决定）：**以 OpenSearch 为准**；
+  **崖山 YashanDB 自带的向量能力（v23.5.4.100 AI Edition 的 `VECTOR` + HNSW + `SEARCH INDEX`）
+  只作为备选，不作为选型基线**（把选型从"待确认的崖山版本号"上摘下来）。
+  **OpenSearch 目前尚未部署**；过渡期用 `VEC_BACKEND=local`。
+- **文档同步**：`ai-service/README.md`（新增 **§13 检索链路：Embedding 召回 + Reranker 精排**，
+  §14/§15/§16 顺延并修正全部交叉引用；§5 目录结构与 §6 接口表补齐；§7 与 §12.6 改为"已接通"+OpenSearch 口径；
+  §16.1 测试要点四条→**五条**、用例数 **55**）、
+  `ai-service/docs/知识库落地实施方案.md`（选型改为 OpenSearch 为准、崖山降为备选、补 `retrieval.py` 对接位置）、
+  `ai-service/docs/知识库总体架构与演进路线.md`（§7 P2 统一为 OpenSearch；附表工具数 4→3；
+  检索层两处更新为"已由 `retrieval.py` 实现"）、
+  `ai-service/docs/架构评估与规范化方案.md`（文末追加本轮更新节）。
+- **文档一致性**：本文档「总表行数 == 明细段数」的集合级校验随之由 **34 == 34** 变为 **35 == 35**
+  （新增 `ai-0.5.0` 一行 + 对应明细一段）。
+
+### ai-1.0.0 — AI 能力服务 Java 化：与主系统同栈、独立部署（2026-09-20）
+
+- **为什么迁**：一套工具链/一套发布脚本/一套人；Python 侧剩下的都是过渡件（本地向量缓存、单页调试前端）。
+  **为什么仍独立部署**：平台 OCR、大模型、向量化都在 GPU 机上，AI 能力无论如何都要单独发版——合并进主系统只会把"AI 发版"绑死"业务发版"。
+- **模块结构**：`ai-backend/`（Maven 独立模块，`com.pmgt.ai`）：
+  `common/{config,web,util}`（配置 / 统一响应与异常 / 进度回调）、
+  `module/{ocr,doc,check,store,retrieval,llm,task,system}`（每个模块 service + controller + 单测）。
+- **必须保留的踩坑结论（写进代码注释，并有测试钉住）**：批量 OCR 响应 `blocks` 在 `results[i]`；
+  平台不返回置信度（不许编）；150 DPI/JPEG 足够（体积差 17 倍）；印章默认关（会编造文字）；
+  Embedding 不支持 MRL 降维（传 `dimensions` → 400）；Rerank 返回的是**入参下标**；
+  `calculate` 只放行 `+ - * / ( )` 且全程 `BigDecimal`、返回字符串；思维链默认关；system 消息只能一条且在最前。
+- **我负责的接线层**：`UploadTask`/`UploadTaskService`（阶段加权进度、取消/移除、重启标失败、落盘只留 100 条）、
+  6 个 controller、`ApiResponse`/`ApiException`/`GlobalExceptionHandler`（对齐 FastAPI 的 `{"detail"}`，含上传超限 413）、
+  `TempUploads`（300MB 上限 + 路径穿越防护）、`BeansConfig`（`DocStore` 显式装配）、`AsyncConfig`。
+- **验收证据（真实网关）**：
+  | 项 | 结果 |
+  | --- | --- |
+  | 自检 `/health?with_ocr=true&with_vec=true` | 网关可达、两个向量模型在列、OCR 探针 ok |
+  | 平台 OCR（扫描件 1 页） | `engine=platform`，识别出《中标通知书》正文（项目负责人/中标日期等） |
+  | 抽取 `/analyze`（文本型 PDF） | `llm.ok=true`、tokens 1375+779、8.73s、带 `[P1]` 来源与置信度 |
+  | 上传任务 `/upload-tasks` | `QUEUED → DONE`、percent 100、1.47s、doc_id 正常 |
+  | 问答 `/chat` | 10.27s；轨迹 `search_documents×2 → read_page`；金额正确并**主动存疑**；未找到项如实说明 |
+  | 单元测试 | `mvn test` → **66 passed** |
+  | 与 Python 差分 | `Checks` 35 个用例逐字段一致（含 detail 文案、页码、status） |
+- **运行方式**：`mvn -B -DskipTests package` → `java -jar target/pm-ai-backend-1.0.0-SNAPSHOT.jar`；
+  质量门 `bash ai-backend/scripts/check.sh`（或 `scripts\check.cmd`）；端到端验收 `pwsh -File ai-backend/scripts/verify-e2e.ps1`；
+  凭据放 `ai-backend/.env`（变量名与 Python 版一致，运维无需改脚本）。
+- **下一步（本轮未做，属清理与收口）**：删除 Python 侧 `ai-service/`（代码/脚本/文档），
+  把两份只读手册（平台 OCR、Embedding/Reranker）迁到 `ai-backend/docs/`，
+  统一 ITERATION/README/设计文档与部署资产到 `ai-backend` 这一条主线；
+  OpenSearch 集群部署后补适配层实测并切 `VEC_BACKEND=opensearch`。
 
 ---
 
@@ -344,7 +453,7 @@
 | 演示数据脚本 | ✅ | `seed-demo.mjs`（父子项目 + 每核算单元 2~5 份合同 + 付款里程碑 + 项目分工）、`seed-attachments.mjs`（阶段/合同/付款三类附件，含缺件场景）、`demo-reset.sql`（物理清空，v3.5.1） |
 | 开发机数据库工具 | ✅ | v3.5.1：`scripts/db-sql.sh` + `scripts/jdbc/RunSql.java`（无 yasql 客户端时手工查/改库，口令不打印不落盘）；脚本清单见 `scripts/README.md` |
 | 文档维护约定 | ✅ | v1.1 起：每次迭代同步更新本文档（总表 **+ 各迭代明细**）、设计稿（§0/受影响章节/§13）、README；v3.5.1 起补：**每次迭代必须用演示数据体现新功能**、涉及脚本须同步 `scripts/README.md` |
-| 附件智能处理（OCR / 大模型抽取） | 🚧 进行中 | 独立服务 `ai-service/`（同仓库、**独立构建与部署**，需 GPU 机），见 `ai-service/README.md`。已有 4 个提交：骨架 → Docker 化 + 端到端自测 → 文档分析前端 + 文档库/问答框架 → **平台 OCR + 上传任务队列（v0.3）**；本轮 **`ai-0.4.0`** 完成 **P0 规范化**（ruff/pytest/依赖加界/日志）与**移除本地 OCR 引擎**（只走内网平台 OCR）；环境变量 `OCR_PROVIDER`/`OCR_DPI`/`OCR_WORKERS` 已废弃。**下一步**：检索层（embedding + 混合检索 + 评测集）与主系统集成 |
+| 附件智能处理（OCR / 大模型抽取） | 🚧 进行中 | 独立服务 `ai-service/`（同仓库、**独立构建与部署**，需 GPU 机），见 `ai-service/README.md`。已有 5 个提交：骨架 → Docker 化 + 端到端自测 → 文档分析前端 + 文档库/问答框架 → **平台 OCR + 上传任务队列（v0.3）** → **`ai-0.4.0`** P0 规范化（ruff/pytest/依赖加界/日志）+ 移除本地 OCR 引擎（只走内网平台 OCR，环境变量 `OCR_PROVIDER`/`OCR_DPI`/`OCR_WORKERS` 已废弃）；**本轮 `ai-0.5.0`** 接上**检索链路（Embedding 召回 + Reranker 精排）**——`VEC_BACKEND=local`（进程内余弦）为过渡，**OpenSearch 为正式选型**，适配层尚未实现。**下一步**：部署 OpenSearch 并补适配层 + 建评测集 + 与主系统集成 |
 | 设计稿 Q1–Q15 评审回写 | ⏳ 待办 | 待业务反馈 |
 
 ## 运行方式速查
@@ -381,7 +490,7 @@ bash scripts/make-release.sh <版本>                 # 产发布包（发版）
 5. **附件保留策略**：删除项目后附件元数据与物理文件的治理（当前刻意逻辑保留以便审计追溯）。
 6. 工程化：前端按路由代码分包（当前单包较大）、后端 profile（dev/prod）、数据库每日备份、操作日志导出。
 7. 阶段逾期提醒增强：已具备基础版，可补列表页逾期角标与全局提醒。
-8. **`ai-service`（附件智能处理）检索层与主系统集成**：开发**已恢复并推进到 v0.3**（平台 OCR + 上传任务队列），v0.4.0 完成 P0 规范化与本地引擎移除；下一步按 [`ai-service/docs/知识库落地实施方案.md`](ai-service/docs/知识库落地实施方案.md) 推进——**P0 落实 embedding 来源 + P1 表驱动异步任务（迁移 V13 `attachment_ai_task`，上传→解析→切片→向量→索引→回写）+ P2 混合检索与评测集**，最后结果回写主系统并问答入口并入主系统前端。
+8. **`ai-service`（附件智能处理）检索层与主系统集成**：开发**已恢复并推进到 v0.5.0**（平台 OCR + 上传任务队列 + P0 规范化 + 本地引擎移除），**本轮 `ai-0.5.0` 接上检索链路**（Embedding 召回 + Reranker 精排）；原"**P0 落实 embedding 来源**"**已完成**——平台网关已部署 `Qwen3-VL-Embedding-8B` / `Qwen3-VL-Reranker-8B`。**下一步**：**部署 OpenSearch 并补适配层**（切 `VEC_BACKEND=opensearch`；当前只支持 `local`，配置成 `opensearch` 会**显式报错**而非静默降级）→ **建评测集** → 按 [`ai-service/docs/知识库落地实施方案.md`](ai-service/docs/知识库落地实施方案.md) 推进 **P1 表驱动异步任务**（迁移 V13 `attachment_ai_task`，上传→解析→切片→向量→索引→回写）与**主系统集成**（结果回写主系统 + 问答入口并入主系统前端）。
 
 ## 变更记录说明
 
