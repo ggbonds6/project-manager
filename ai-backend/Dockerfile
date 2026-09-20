@@ -14,7 +14,7 @@ RUN mvn -B -q -Dmaven.test.skip=true package
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app
-# 中文文件名/内容相关的编码与 Java 版 Python 侧一致：显式 UTF-8，避免附件名乱码
+# 附件名与内容一律 UTF-8（历史踩坑：编码不一致会导致中文附件名/内容乱码）
 ENV LANG=C.UTF-8 \
     JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -XX:MaxRAMPercentage=75"
 COPY --from=build /app/target/pm-ai-backend-*.jar app.jar
