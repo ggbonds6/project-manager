@@ -1,0 +1,29 @@
+# 本地 / 内网验证用的单容器编排（生产发布走 deploy/ 那套）
+# 用法：cp .env.example .env && vi .env
+#      docker compose up -d --build
+name: pm-ai
+
+services:
+  ai-backend:
+    build:
+      context: ..
+      dockerfile: ai-backend/Dockerfile
+    image: pm-ai-backend:local
+    container_name: pm-ai-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AI_PORT: "8100"
+      WORK_DIR: /app/work
+    ports:
+      - "${AI_PORT:-8100}:8100"
+    volumes:
+      # 产物持久化：临时上传、文档库、向量缓存（都是可重建物）
+      - ./work:/app/work
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8100/health?with_ocr=false"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

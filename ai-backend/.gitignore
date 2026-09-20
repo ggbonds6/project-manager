@@ -1,0 +1,8 @@
+# 运行产物与本地配置不入库
+target/
+work/
+.env
+*.log
+.idea/
+.vscode/
+*.iml

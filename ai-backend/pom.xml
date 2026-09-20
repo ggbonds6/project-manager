@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      AI 能力服务（Java 版）——与主系统同栈（Spring Boot 3 + Java 17），但**独立构建与部署**。
+      为什么独立部署：两台国产 ARM 服务器没有 GPU，平台 OCR / 大模型 / 向量化都在 GPU 机上，
+      AI 能力无论如何都要单独发版；同栈买到的是"一套工具链、一套发布脚本、一套人"。
+
+      历史：本服务原为 Python（FastAPI）实现，迁移对照表见 docs/迁移方案与对照表.md。
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.5</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.pmgt</groupId>
+    <artifactId>pm-ai-backend</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <name>pm-ai-backend</name>
+    <description>政府信息化项目管理系统 - AI 能力服务（附件解析 / 平台 OCR / 大模型抽取问答 / 向量检索）</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <pdfbox.version>3.0.3</pdfbox.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- PDF：文本层提取 + 页面渲染成图。替代 Python 侧的 PyMuPDF（用得上的 API 很少，见迁移对照表） -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>${pdfbox.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              ⚠️ 必须显式声明 Lombok 注解处理器路径。
+              否则 javac 不会自动发现它（本机实测：@Getter/@Slf4j 全部不生效，
+              报"找不到符号 getWorkDir()/log"一大片，看起来像缺类、其实是注解没处理）。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <annotationProcessorPaths>
+                        <path>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                            <version>${lombok.version}</version>
+                        </path>
+                    </annotationProcessorPaths>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
+                        </exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
