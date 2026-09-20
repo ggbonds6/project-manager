@@ -40,7 +40,7 @@ type %USERPROFILE%\.ssh\id_ed25519.pub
 ## 5. 切换 remote 为 SSH
 
 ```bat
-cd /d C:\Users\yjc\Desktop\project\project-manager
+cd /d C:\Users\yjc\Desktop\project-manager
 git remote set-url origin git@github.com:ggbonds6/project-manager.git
 git remote -v        REM 应显示 git@github.com:...
 ```
@@ -65,7 +65,7 @@ ssh -T git@github.com
 ## 7. 推送（示例）
 
 ```bat
-cd /d C:\Users\yjc\Desktop\project\project-manager
+cd /d C:\Users\yjc\Desktop\project-manager
 git status                     REM 先看改动
 git add -A
 git commit -m "feat: 说明你的改动"

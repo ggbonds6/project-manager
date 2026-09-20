@@ -15,6 +15,7 @@
 | `deploy/windows/` | **源码模式**启动/停止前后端（本地开发） | 开发机 |
 | `deploy/docker/` | **镜像模式**部署资产（Dockerfile + compose） | 开发机构建、服务器运行 |
 | `ai-backend/scripts/` | AI 能力服务的质量门与端到端验收 | 开发机（AI 模块根） |
+| `local/`（**已 gitignore**） | **本机专用资产**：数据库导出与口令清单、两个本机启动助手（`start-project-local.cmd` / `stop-project-local.cmd`） | 本机（双击可用；绝不入库） |
 | 根目录 `start-dev.cmd` / `stop-dev.cmd` | 一键启动/停止的**通用入口**（转发到 `deploy/windows/`） | 开发机（双击即用） |
 
 > 生产服务器上**只有发布包里的 `docker-compose.yml` + `.env` + `pm-upgrade.sh`**（服务器不存源码，也不需要本目录任何脚本）。

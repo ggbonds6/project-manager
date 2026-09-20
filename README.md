@@ -22,7 +22,8 @@
 .
 ├─ docs/         设计与部署文档
 ├─ deploy/       部署资产（docker 生产镜像 / windows 开发脚本）
-├─ scripts/      发版打包 + 演示数据 + 开发机辅助工具（清单见 scripts/README.md）
+├─ scripts/      发版打包 + 演示数据 + 开发机辅助工具 + 文档体检（清单见 scripts/README.md）
+├─ local/        **本机专用资产**（数据库导出、口令清单、本机启动助手）——已 gitignore，不入库
 ├─ ai-backend/   AI 能力服务（Spring Boot 3 / Java 17，与主系统同栈、独立构建与部署 · ai-1.0.1）
 ├─ frontend/     React 前端
 └─ backend/      Spring Boot 后端
@@ -119,4 +120,5 @@
 9. 收尾顺手清理无效代码（未使用导入 / 死方法 / 只写不读的变量）；
 10. 提交说明引用对应验证结果。
 
-当前版本：**v3.5**（数据库已切换崖山 YashanDB Oracle 模式）（详见 [`ITERATION.md`](ITERATION.md) 迭代总表与功能完成度）。
+当前版本：主系统 **v3.5.1** ｜ AI 能力服务 **ai-1.0.1**（Java 版，独立构建与部署）｜ 文档与脚本 **docs-1.0**
+（数据库已切换崖山 YashanDB Oracle 模式）（详见 [`ITERATION.md`](ITERATION.md) 迭代总表与功能完成度）。
