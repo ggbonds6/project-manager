@@ -186,4 +186,22 @@ class PdfReaderTest {
         }
         return file;
     }
+
+    /**
+     * 挡的是：换行符被"顺手改回" {@code \r\n}。
+     *
+     * <p>PDFBox 默认给 {@code \r\n}、PyMuPDF 给 {@code \n}——实测同一份 9 行的电子版 PDF 两边字符数
+     * 正好差 9（191 vs 182），空白页则是 {@code "\r\n"} vs {@code ""}（1 vs 0）。
+     * 归一之后 Java 与 Python 的输出**逐字节可比**（四份样本实测：182==182、扫描件 0==0），
+     * 也避免 {@code \r} 混进喂给模型的提示词与检索切片里。
+     */
+    @Test
+    @DisplayName("换行归一：\\r\\n / \\r → \\n，且 null / 空串安全")
+    void normalizesNewlines() {
+        assertThat(PdfReader.normalizeNewlines("a\r\nb\r\n")).isEqualTo("a\nb\n");
+        assertThat(PdfReader.normalizeNewlines("a\rb")).isEqualTo("a\nb");
+        assertThat(PdfReader.normalizeNewlines("a\nb")).isEqualTo("a\nb");
+        assertThat(PdfReader.normalizeNewlines("")).isEmpty();
+        assertThat(PdfReader.normalizeNewlines(null)).isEmpty();
+    }
 }

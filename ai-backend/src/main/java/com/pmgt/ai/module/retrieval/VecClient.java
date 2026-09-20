@@ -19,7 +19,7 @@ import java.util.List;
 /**
  * Qwen3-VL Embedding / Reranker 客户端（平台网关，纯 HTTP）。
  *
- * <p>手册：{@code ai-service/Qwen3-VL-Embedding-Reranker调用手册.md}
+ * <p>手册：{@code ai-backend/docs/Qwen3-VL-Embedding-Reranker调用手册.md}（随迁移从 Python 侧迁入）
  * <ul>
  *   <li>向量化 {@code POST {base}/embeddings} → {@code {"data":[{"index":i,"embedding":[...]}]}}</li>
  *   <li>重排　 {@code POST {base}/rerank}　　 → {@code {"results":[{"index":i,"relevance_score":s}]}}</li>

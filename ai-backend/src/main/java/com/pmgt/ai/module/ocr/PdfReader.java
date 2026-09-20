@@ -207,12 +207,30 @@ public class PdfReader {
 
     // ── 内部实现 ────────────────────────────────────────────────────
 
-    /** 取单页文本：1 基页码，与 Python 的 {@code page.get_text()} 一一对应。 */
+    /**
+     * 取单页文本：1 基页码，与 Python 的 {@code page.get_text()} 一一对应。
+     *
+     * <p>⚠️ **换行符必须归一成 {@code \n}**：PDFBox 用 {@code \r\n}，PyMuPDF 用 {@code \n}——
+     * 实测同一份 9 行的电子版 PDF，两边字符数正好差 9（191 vs 182），扫描件一侧则是
+     * {@code "\r\n"} vs {@code ""}。归一之后 Java 与 Python 的文本可以逐字节比对，
+     * 也避免 {@code \r} 混进喂给模型的提示词与检索切片里。
+     */
     private static String stripPage(PDDocument doc, int pageNo) throws IOException {
         PDFTextStripper stripper = new PDFTextStripper();
         stripper.setStartPage(pageNo);
         stripper.setEndPage(pageNo);
-        return stripper.getText(doc);
+        String text = normalizeNewlines(stripper.getText(doc));
+        // 整页空白时 PDFBox 会给 "\r\n"、PyMuPDF 给 ""；上面归一后是 "\n"，这里再收成 ""，
+        // 使"空白页"在两边完全一致（否则 chars_per_page 会差 1，看着像两边读了不同的东西）。
+        return text.isBlank() ? "" : text;
+    }
+
+    /** {@code \r\n} / {@code \r} → {@code \n}（对齐 PyMuPDF 的输出形态）。 */
+    static String normalizeNewlines(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        return text.replace("\r\n", "\n").replace('\r', '\n');
     }
 
     private static void writeImage(BufferedImage image, Path file, String ext, int quality) throws IOException {

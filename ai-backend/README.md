@@ -57,3 +57,17 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
   失败页在响应里以 `failed_pages` + `notes` 显式暴露，需人工复核。
 - **检索降级是可见的**：向量服务不可用时退化为关键词检索，并在结果 `note` 里写明。
 - **`VEC_BACKEND=opensearch` 在集群未部署/未配置时显式报错**，不静默退回 `local`。
+
+## 文档索引
+
+| 文档 | 用途 |
+| --- | --- |
+| [`docs/迁移方案与对照表.md`](docs/迁移方案与对照表.md) | **入口文档**：Python → Java 的模块对照、必须原样保留的踩坑结论、HTTP 契约与验证协议 |
+| [`docs/平台能力实测结论.md`](docs/平台能力实测结论.md) | **与语言无关的实测结论**：平台 OCR 渲染/并发/印章、确定性校验、大模型与检索链路的全部实测数字与依据（换实现语言也不该丢的部分） |
+| [`docs/平台OCR调用使用手册.md`](docs/平台OCR调用使用手册.md) | 平台 OCR（PaddleOCR-VL）的 HTTP 接口、印章与手写体、性能基线与排障（**由 ai-service 迁入**） |
+| [`docs/Qwen3-VL-Embedding-Reranker调用手册.md`](docs/Qwen3-VL-Embedding-Reranker调用手册.md) | Embedding / Reranker 的接口、维度与性能基线、召回—精排配比（**由 ai-service 迁入**） |
+| [`docs/知识库落地实施方案.md`](docs/知识库落地实施方案.md) | 施工图：embedding 来源、检索层选型、P1「上传即索引」、P2 检索层与评测集、改动清单与风险登记 |
+| [`docs/知识库总体架构与演进路线.md`](docs/知识库总体架构与演进路线.md) | 为什么这么做：四层架构、结构化数据与向量数据如何结合、Agent/MCP 的定位与时机、P1~P4 路线 |
+| [`docs/架构评估与规范化方案.md`](docs/架构评估与规范化方案.md) | 前端并入主系统、Python vs Java 的迁移代价评估、规范化（把注释里的踩坑知识变成测试） |
+| [`docs/embedding端点部署方案.md`](docs/embedding端点部署方案.md) | **自建 TEI embedding 端点**的选型与部署（**已被平台能力取代**，正文一字未删，保留作历史推演与退路） |
+

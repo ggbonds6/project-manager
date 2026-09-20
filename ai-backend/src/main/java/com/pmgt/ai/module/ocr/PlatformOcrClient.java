@@ -33,7 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * 平台 OCR 客户端（PaddleOCR-VL，走内网平台网关）。对应 Python 的 {@code pm_ai/platform_ocr.py}。
  *
- * <p>接口契约见仓库根 {@code ai-service/平台OCR调用使用手册.md}；只用 JDK 的
+ * <p>接口契约见 {@code ai-backend/docs/平台OCR调用使用手册.md}（随迁移从 Python 侧迁入）；只用 JDK 的
  * {@link HttpClient} + Jackson，不引第三方 HTTP 客户端。
  *
  * <table border="1">

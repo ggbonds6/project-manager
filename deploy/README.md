@@ -6,9 +6,14 @@
 | --- | --- | --- |
 | `deploy/docker` | **生产部署（唯一方式）**：后端 jar + 前端 nginx 一体化镜像 | 两台服务器（离线 `docker load`） |
 | `deploy/windows` | 源码模式启动（`mvn spring-boot:run` + Vite） | 开发机本地开发 |
+| `ai-backend/`（**独立**） | **AI 能力服务**（Spring Boot 3 / Java 17）：附件解析 / 平台 OCR / 抽取问答 / 向量检索 | 独立镜像 `pm-ai-backend`、单独发版；**不在本发布包内**（见部署手册 §8） |
 
 仓库根目录的 `start-dev.cmd` / `stop-dev.cmd` 为 Windows 通用启动入口（内部调用 `deploy\windows\*`）。
 原 `deploy/linux`（Linux 源码直跑脚本）已移除——开发机为 Windows，服务器不存源码，该脚本无执行场景。
+
+> **AI 能力服务不在这套发布物里，不是漏了**：它必须**独立部署、独立发版**（平台 OCR / 大模型 / 向量化都在 GPU 机上，
+> 主系统那两台 ARM 服务器没有 GPU）。构建、配置、启动、运维风险见
+> [`docs/部署与发布全流程手册.md`](../docs/部署与发布全流程手册.md) §8。
 
 ---
 

@@ -11,7 +11,8 @@
 param(
     [int]$Port = 8101,
     [switch]$SkipBuild,
-    [string]$SamplesDir = "..\ai-service\work\samples"
+    # 合成样本随 Python 侧清理一并迁入 ai-backend（work/ 不入库）
+    [string]$SamplesDir = "work\samples"
 )
 
 $ErrorActionPreference = "Stop"

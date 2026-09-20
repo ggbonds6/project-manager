@@ -22,12 +22,15 @@ import java.util.Map;
 /**
  * OpenSearch kNN 索引适配层（{@code backend=opensearch} 时启用）。
  *
- * <p>⚠️⚠️ <b>未实测</b>：集群尚未部署，本类<b>没有对真实集群跑过任何一次调用</b>——
+ * <p>⚠️⚠️ <b>已接线、未实测</b>：集群尚未部署，本类<b>没有对真实集群跑过任何一次调用</b>——
  * 所有字段名、查询结构都只是按 OpenSearch kNN 文档与《知识库落地实施方案》写出来的。
+ * 调用链已经通了（{@code RetrievalService.search} 在 {@code backend=opensearch} 时会走
+ * {@link #ensureIndexOnce} → {@link #upsertAll} → {@link #search}），所以命中结果里的
+ * {@code note} 会带上"OpenSearch 路由已接线、未实测"这句话：<b>看到它就知道这条路径还没被验证过</b>。
  * 集群部署后<b>必须按 {@code docs/迁移方案与对照表.md} §5 的验证协议验证</b>：
  * <ol>
  *   <li>建索引：{@code PUT /<index>}，确认 mapping 里 {@code vector} 是 {@code knn_vector}、
- *       {@code dimension} 与实际向量维度一致（平台 {code 4096}）、{@code space_type=cosinesimil}；</li>
+ *       {@code dimension} 与实际向量维度一致（平台 {@code 4096}）、{@code space_type=cosinesimil}；</li>
  *   <li>写入：{@code POST /_bulk}，同一份文档写两遍，确认 {@code _id}（切片键）幂等、文档数不翻倍；</li>
  *   <li>查询：{@code search} 返回的 {@code page_no} 与文档库里的页码一致，且
  *       <b>与 local 后端（进程内余弦）的 top-k 顺序对得上</b>——顺序对不上说明字段或 space_type 写错了；</li>
@@ -39,6 +42,11 @@ import java.util.Map;
  * 什么都不做——守卫在 {@code RetrievalService.checkBackend()} 里，检索时才生效。
  * "启动即失败"会让开发机（没有集群）根本跑不起来，那不是我们想要的安全。
  *
+ * <p><b>绝不静默退回 local</b>：{@code backend=opensearch} 时 url 为空 / 集群不可达 / 索引状态异常，
+ * 都在检索时<b>显式抛 {@link VecClient.VecException}</b>，错误文案直接指向该查什么
+ * （"OPENSEARCH_URL 未配置"、"集群不可达（http://…）：ConnectException: …"）。宁可让使用者看到一条
+ * 明确报错，也不要让他拿到一个"以为在用集群、其实在进程内算"的结果。
+ *
  * <p>id 设计：{@code _id} = 切片键 {@code (docId, pageNo, 内容 sha1 前 12 位)}——
  * 内容变了 id 就变（新切片），内容没变重复写入就是覆盖（幂等 upsert），不需要额外的版本号或重建流程。
  */
@@ -47,7 +55,12 @@ public class OpenSearchIndex {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    private final AiSettings settings;
+    /**
+     * 配置。<b>刻意是 protected</b>：本类未实测，离线测试需要一个"能替换掉 HTTP 层"的替身，
+     * 子类要能读到 url/index 名并覆写 {@link #health} / {@link #search}（见
+     * {@code RetrievalServiceTest} 的 {@code StubIndex}）。生产代码不该用它做别的事。
+     */
+    protected final AiSettings settings;
 
     public OpenSearchIndex(AiSettings settings) {
         this.settings = settings;
@@ -78,8 +91,13 @@ public class OpenSearchIndex {
     public record ChunkDoc(String id, String docId, String filename, int pageNo, String text, float[] vector) {
     }
 
-    /** kNN 命中的一行。 */
-    public record SearchHit(String docId, String filename, int pageNo, double score, String text) {
+    /**
+     * kNN 命中的一行。
+     *
+     * <p>{@code score} 来自 OpenSearch 的 {@code _score}：索引用 {@code space_type=cosinesimil}，
+     * 所以它与 local 后端的余弦分同一量纲（这一点<b>未实测</b>，集群起来后要对着 local 的 top-k 核）。
+     */
+    public record SearchHit(String chunkKey, String docId, String filename, int pageNo, double score, String text) {
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -182,6 +200,7 @@ public class OpenSearchIndex {
             for (JsonNode row : rows) {
                 JsonNode source = row.path("_source");
                 hits.add(new SearchHit(
+                        source.path("chunk_key").asText(""),
                         source.path("doc_id").asText(""),
                         source.path("filename").asText(""),
                         source.path("page_no").asInt(0),
@@ -192,9 +211,71 @@ public class OpenSearchIndex {
         return hits;
     }
 
-    /** 幂等写路径：把文档库里的一组切片写进索引。 */
+    /**
+     * 索引是否已建好（{@code HEAD /<index>}）：用于"首次检索时确保索引存在"。
+     *
+     * <p>只看 HTTP 200/404：
+     * <ul>
+     *   <li>200 → 已存在；</li>
+     *   <li>404 → 尚未创建（<b>不是错误</b>，随后 {@link #ensureIndex} 会建）；</li>
+     *   <li>其余（401 鉴权、5xx 集群异常、连不上）→ 抛 {@link VecClient.VecException}，
+     *       由 {@code RetrievalService} 显式冒泡——<b>不静默退回 local</b>。</li>
+     * </ul>
+     */
+    public void ensureIndexOnce(int dimension) {
+        HttpResponse<String> response;
+        try {
+            HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+            response = client.send(
+                    HttpRequest.newBuilder()
+                            .uri(URI.create(url() + "/" + indexName()))
+                            .timeout(Duration.ofSeconds(15))
+                            .method("HEAD", HttpRequest.BodyPublishers.noBody())
+                            .build(),
+                    HttpResponse.BodyHandlers.ofString());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new VecClient.VecException("OpenSearch 请求被中断：" + e.getMessage(), e);
+        } catch (Exception e) {
+            throw new VecClient.VecException("集群不可达（" + url() + "）："
+                    + e.getClass().getSimpleName() + ": " + e.getMessage(), e);
+        }
+        if (response.statusCode() == 200) {
+            return;
+        }
+        if (response.statusCode() == 404) {
+            ensureIndex(dimension);
+            return;
+        }
+        throw new VecClient.VecException("集群返回 HTTP " + response.statusCode() + "（HEAD " + indexName() + "）："
+                + (response.body() == null ? "" : response.body()));
+    }
+
+    /**
+     * 幂等写路径：把文档库里的一组切片写进索引。
+     *
+     * <p>调用方（{@code RetrievalService}）负责算向量；这里只管"{@code _id} = 切片键"的 upsert 语义。
+     *
+     * @param dimension 实际向量维度（{@code VEC_EMBED_DIMENSIONS=0} 时取上游返回的长度，平台 4096）
+     */
     public int indexChunks(List<DocStore.Chunk> chunks, List<float[]> vectors, int dimension) {
-        ensureIndex(dimension);
+        List<ChunkDoc> docs = toDocs(chunks, vectors);
+        if (docs.isEmpty()) {
+            return 0;
+        }
+        ensureIndexOnce(dimension);
+        upsertAll(docs);
+        return docs.size();
+    }
+
+    /**
+     * 切片 + 向量 → 写入文档（{@code _id} = 切片键）。
+     *
+     * <p>⚠️ 这里按<b>下标</b> zip，所以调用方必须保证两个 List 一一对应。
+     * {@code RetrievalService} 走的是"逐切片按切片键取向量"的写法（向量 Map 的迭代顺序没有保证，
+     * 直接 zip {@code values()} 会让向量挂到别的切片上），本方法留给"手上本来就是并排数组"的调用方。
+     */
+    public List<ChunkDoc> toDocs(List<DocStore.Chunk> chunks, List<float[]> vectors) {
         List<ChunkDoc> docs = new ArrayList<>();
         for (int i = 0; i < chunks.size() && i < vectors.size(); i++) {
             DocStore.Chunk chunk = chunks.get(i);
@@ -206,11 +287,16 @@ public class OpenSearchIndex {
                     chunk.text(),
                     vectors.get(i)));
         }
-        upsertAll(docs);
-        return docs.size();
+        return docs;
     }
 
-    /** 删除某个文档的全部切片（按 {@code doc_id} 条件删，用 {@code delete_by_query}）。 */
+    /**
+     * 删除某个文档的全部切片（按 {@code doc_id} 条件删，用 {@code delete_by_query}）。
+     *
+     * <p>当前 {@code RetrievalService} <b>没调它</b>：文档删除后的陈旧切片检索时会因为
+     * 切片键（含内容指纹）在本地文档库里找不到而被丢弃，不会污染结果；
+     * 但索引会留下垃圾，量大时应接上（{@code DocStore.delete} 之后调用）。
+     */
     public void deleteDoc(String docId) {
         ObjectNode body = MAPPER.createObjectNode();
         body.putObject("query").putObject("term").put("doc_id", docId);

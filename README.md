@@ -20,8 +20,7 @@
 ├─ docs/         设计与部署文档
 ├─ deploy/       部署资产（docker 生产镜像 / windows 开发脚本）
 ├─ scripts/      发版打包 + 演示数据 + 开发机辅助工具（清单见 scripts/README.md）
-├─ ai-backend/   AI 能力服务（Spring Boot 3 / Java 17，与主系统同栈、独立构建与部署 · ai-1.0.0）
-├─ ai-service/   AI 能力服务（Python/FastAPI，**已被 ai-backend 取代，待清理**）
+├─ ai-backend/   AI 能力服务（Spring Boot 3 / Java 17，与主系统同栈、独立构建与部署 · ai-1.0.1）
 ├─ frontend/     React 前端
 └─ backend/      Spring Boot 后端
 ```
