@@ -106,6 +106,8 @@ if (fs.existsSync(iteration)) {
 
 const total = Object.values(problems).reduce((n, arr) => n + arr.length, 0);
 const titles = { tableBlank: '表格内空行', cellPipe: '单元格裸竖线', link: '本地链接失效', iteration: 'ITERATION 一致性' };
+// 回显扫描根：本工具默认扫**当前工作目录**——在仓库外执行会扫到无关目录（实测踩过一次）
+console.log(`扫描根：${root}`);
 for (const [key, arr] of Object.entries(problems)) {
   if (!arr.length) continue;
   console.log(`\n❌ ${titles[key]}（${arr.length}）`);
