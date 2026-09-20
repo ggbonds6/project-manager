@@ -487,6 +487,7 @@
   《架构评估与规范化方案》《流程模板图形化评估》三份已作废/已移除的文档。
 - **同步机制**：主系统与 AI 能力服务文档改动**双向登记** `docs/README.md`；一个主题只留一份权威文档；
   过程性文档完成后核减，决策与实测数字进 ITERATION。
+- **可持续性（别再靠临时脚本发现）**：新增 [`scripts/check-docs.mjs`](scripts/check-docs.mjs)——文档体检：① 表格内空行断表；② 单元格裸竖线；③ 本地链接失效；④ ITERATION 总表与明细不一致；有问题退出码 1（可接 CI）。同时写入维护约定：**改完文档提交前跑一次 `node scripts/check-docs.mjs`**。
 - **未做（待确认）**：① 把 `scripts/*.sh` 改写/新增为 Windows 原生 `.cmd`/`.ps1` 等价实现
   （本机无 Git Bash，`make-release.sh` / `dev-reload.sh` / `db-sql.sh` 目前只能装 Git Bash 或走 WSL）；
   ② `.workbuddy/memory/` 下 7 份助手工作日志（约 1900 行，**未被 git 跟踪**）是否清理。

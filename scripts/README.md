@@ -54,6 +54,7 @@
 | AI 服务质量门（编译 + 单测） | `cd ai-backend && scripts\check.cmd`（或 `mvn -B test`） | cmd | 当前基线 **81 用例** |
 | AI 服务端到端验收（真实平台网关） | `pwsh -File ai-backend\scripts\verify-e2e.ps1` | pwsh 7 | 自动起服务→自检→平台 OCR→抽取→上传任务→问答，并打印 Python 基线对比 |
 | 灌演示数据 | `node scripts/seed-demo.mjs` → `node scripts/seed-attachments.mjs` | Node | 默认打 `http://127.0.0.1:8088`（Docker 前端端口） |
+| **改完文档后做体检**（建议每次提交前） | `node scripts/check-docs.mjs` | Node | 查四类问题：表格内空行断表、单元格裸竖线、本地链接失效、ITERATION 总表与明细不一致 |
 | 从干净基线灌演示数据 | `bash scripts/db-sql.sh scripts/demo-reset.sql` → 上面两步 | Git Bash | 物理清空后重灌（见 §5） |
 | 手工查/改数据库 | `bash scripts/db-sql.sh <sql文件>` | Git Bash | 无需 yasql 客户端，口令不落盘 |
 | 本地测试部署（镜像模式，前后端） | `deploy\docker\` 下按 `deploy/README.md` §2 | cmd | 本机 Docker Desktop；前端对外端口见 `.env` 的 `WEB_PORT`（本机约定 8088） |
@@ -112,6 +113,23 @@ node scripts/seed-attachments.mjs               # ③ 附件
 **保留**：`sys_user`、`dict_item`、`phase_tpl`、`phase_template`、`schema_version`；`operate_log` 默认保留。
 
 > 附件**元数据**会被删，已落盘 / 已上 OBS 的**物理文件不会删**（变成无引用垃圾）。开发环境可接受，生产不要用。
+
+---
+
+### 2.4 文档体检（`check-docs.mjs`）
+
+整理文档时踩过的两类坑**都会静默把表格渲染打断**，所以固化成工具，提交前跑一次（在仓库根执行）：
+
+```bash
+node scripts/check-docs.mjs          # 有问题时退出码 1，可直接放进 CI/提交前钩子
+```
+
+| 检查项 | 为什么 |
+| --- | --- |
+| 表格内空行 | Markdown 里**空行即结束表格**，后面的行会渲染成普通段落（曾把 ITERATION 最新两行踢出表格） |
+| 单元格裸竖线 | 未转义的 `\|` 会被当成多一列，必须写成 `\|`（例如 `` `local\|obs` ``） |
+| 本地链接失效 | 只查相对路径链接（http/mailto/锚点跳过），防止文档核减后留下断链 |
+| ITERATION 一致性 | 「迭代总表」数据行数必须等于「各迭代明细」段数（仓库硬约定） |
 
 ---
 
