@@ -41,6 +41,19 @@ $ErrorActionPreference = 'Stop'
 # 本机控制台默认 936(GBK)：按 UTF-8 输出，避免中文乱码
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
+# ── 锚定到仓库根（脚本位于 scripts/ 下）─────────────────────────────
+# ★ 必须同时改"两套当前目录"，否则第 3 步会报
+#   「使用"1"个参数调用"Create"时发生异常:未能找到路径 …\dist\… 的一部分」：
+#     · PowerShell 的 $PWD（Set-Location 改的是它）—— cmdlet 与外部程序按它解析相对路径；
+#     · .NET 的进程当前目录 [Environment]::CurrentDirectory —— [System.IO.File]::Create /
+#       ReadAllText 这类 **.NET API 按它解析相对路径**，且 Set-Location 不会同步它。
+#   本机实测复现路径：PowerShell 在 C:\Users\<你> 启动 → cd 进仓库 → $PWD 是仓库，
+#   但 .NET 当前目录仍是主目录 → 于是 New-Item 建了仓库下的 dist（cmdlet 按 $PWD），
+#   而在写 tar.gz 时 .NET 去 C:\Users\<你>\dist 找 → 目录不存在。同步后从任何目录调用都对。
+$repoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $repoRoot
+[System.IO.Directory]::SetCurrentDirectory($repoRoot)
+
 # 跑原生命令并静默它的 stderr，返回 @{ Output = <stdout 行>; ExitCode = <退出码> } 形式对象
 # 等价于 bash 的 `cmd 2>/dev/null`。必须包一层函数：PS 5.1 在 $ErrorActionPreference='Stop' 下
 # 对原生命令做 stderr 重定向会被当成**终止性错误**（5.1 独有行为），函数内临时降为 Continue 规避。

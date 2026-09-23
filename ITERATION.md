@@ -726,6 +726,21 @@
   已在 `scripts/README.md` §0.2 给出两种修法并注明取舍：① **一次性持久**（推荐）`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
   —— 仓库脚本**无 Zone.Identifier 网络锁定标记**，实测 `RemoteSigned` 下可正常加载（PS 5.1 与 7 均验）；
   ② **免副作用** `powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 <版本>`（不改机器策略，每次带上）。
+- **追加 2（同一轮，随后一次提交）**：修掉 `make-release.ps1` 第 3 步的真实 bug —— 从"**主目录启动的 PowerShell 里 `cd` 进仓库**"调用时，
+  打包在 GZip 那一步抛 `未能找到路径 C:\Users\<你>\dist\… 的一部分`。根因是 PowerShell 有**两套当前目录**：
+  `$PWD`（`Set-Location` 改它；cmdlet 与外部程序按它解析）与 .NET 的 `[System.IO.Directory]::GetCurrentDirectory()`
+  （`[System.IO.File]::Create` 等按它解析，**`Set-Location` 不同步**）。于是 `New-Item` 按 `$PWD` 在仓库下建好了目录，
+  而写 tar.gz 的 .NET 调用去了用户主目录。修法：脚本开头锚定仓库根并**同步 .NET 当前目录**
+  （`Set-Location` + `[System.IO.Directory]::SetCurrentDirectory`），顺带让脚本**可以从任何目录调用**（不再要求先 `cd` 到仓库根）；
+  该约定已写入 `scripts/README.md` §0.2 供后续脚本照做。
+  **实测验证**：故意从 `C:\`（仓库外）调用 → 全部命中构建缓存，**14.2 秒**产出
+  `dist/pm-release-v3.6.1/`（镜像包 **150.9 MB** + compose + `.env.example` + `pm-upgrade.sh` + 服务器部署步骤），退出码 0。
+- **顺带记下实测构建耗时（回答"要不要优化速度"）**：首次真构建 backend **451s**（其中 `RUN mvn package` **222s**，
+  其余为拉 arm64 基础镜像，**一次性**）、frontend **240s**（其中 `RUN npm run build` **218s**）。
+  即"改代码后重建两端"≈ **7.3 分钟/次**；而两端都没改时（本例）**14.2 秒**。慢的两个原因已定位：
+  ① 两个 Dockerfile 的构建阶段**没钉 `--platform=$BUILDPLATFORM`**，导致 `mvn`/`npm` 也在 QEMU 模拟里跑；
+  ② Maven 依赖下载发生在 `RUN mvn package` 这一层内，**没有 BuildKit cache mount**，源码一变这层就重建 → 依赖每轮重下。
+  **优化方案已给出、待批准后再改**（改动会触发一次真构建，用于对比数字）。
 
 ---
 

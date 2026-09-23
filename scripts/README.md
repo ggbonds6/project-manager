@@ -47,6 +47,18 @@
      想还原就 `Set-ExecutionPolicy -Scope CurrentUser Undefined`。
   2. **免副作用（不改机器策略，每次带上）**：`powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 <版本>`
      —— 已实测 PS 5.1 与 7 都能加载；`.cmd` 里也可以这么调。
+- ⚠️ **写 `.ps1` 的硬约定：用 .NET API 处理相对路径前，必须同步"进程当前目录"**。
+  PowerShell 有**两套**当前目录：`$PWD`（`Set-Location` 改的是它，cmdlet 与外部程序按它解析）与
+  .NET 的 `[System.IO.Directory]::GetCurrentDirectory()`（`[System.IO.File]::Create/ReadAllText` 等**按它解析**），
+  **`Set-Location` 不会同步后者**。踩过的坑：`make-release.ps1` 从"主目录启动的 PowerShell 里 `cd` 进仓库"调用时，
+  `New-Item` 按 `$PWD` 在仓库下建好了 `dist\…`，而 `[System.IO.File]::Create($tarGz)` 去 `C:\Users\<你>\dist\…` 找 →
+  报 `未能找到路径 …\dist\… 的一部分`。**修法（脚本开头三行，三个脚本已统一）**：
+  ```powershell
+  $repoRoot = Split-Path -Parent $PSScriptRoot
+  Set-Location -LiteralPath $repoRoot
+  [System.IO.Directory]::SetCurrentDirectory($repoRoot)   # ★ 关键这一行
+  ```
+  好处不只是修 bug：脚本从此**可以从任何目录调用**，不再要求"必须先 cd 到仓库根"。
 
 ### 0.3 三条硬约定（已写入团队协作记忆）
 
