@@ -14,7 +14,7 @@
 | 附件存储 | 抽象 `AttachmentStorage`：默认本地盘，可切**华为 OBS**（`app.storage.type`）；归属分四类 `PROJECT` / `PROJECT_PHASE` / `CONTRACT` / `PAYMENT` |
 | 需求基线 | `docs/政府信息化项目管理系统-设计方案.md`（设计与实现同步稿，Q1–Q15 处置状态见 §11） |
 | 脚本清单 | `scripts/README.md`（发版打包 / 演示数据 / 开发机数据库工具） |
-| 当前版本 | **v3.6.2**（2026-09-23） |
+| 当前版本 | **v3.7.0**（2026-09-23） |
 | ai-backend | **`ai-1.1.0`**（2026-09-20）：Java 版 AI 能力服务（Spring Boot 3.3.5 / Java 17，**与主系统同栈**），**独立构建与部署**（默认 8100、独立镜像与发版，不动主系统）；附件解析 + 平台 OCR + 文档库/问答 + **检索链路（Embedding 召回 + Reranker 精排）** + **结构化引用 `citations`**（答案按 `[n]` 标注、可跳附件第 N 页）；接口 `/analyze`、`/documents`、`/upload-tasks`、`/chat`；**发版链路与主系统对齐**（`make-release.ps1 -Project ai`，见 v3.6.2）；见 `ai-backend/README.md`。原 Python 版 `ai-service/` **已删除**（知识资产迁入 `ai-backend/docs/`） |
 | 仓库 | GitHub `ggbonds6/project-manager`（main 分支，全程 git 管理） |
 
@@ -72,6 +72,7 @@
 | v3.6.3 | 2026-09-23 | **服务器"一个根 + 两个隔离项目 + 一个统一入口"：`main/` + `ai/` + `pm.sh`** | 起因是 6 条现状问题：目录假设过时（主系统 `pm/app`+`pm/releases`，AI 又写在 `pm-ai/…`，两个项目散在两棵树）、`pm-upgrade.sh` 只认主系统（只切 `IMAGE_TAG`、只认 `pm-backend`）、没有统一启停、本地一键启动不含 AI、两套发布包内容不一致、路径散落多处。改动：① **服务器布局**：`/home/lhim/pm/{pm.sh, main/, ai/}`，每个项目目录含 compose + `.env` + `.env.example` + 部署步骤 + `releases/` 镜像包，**发布包按同一树形产出**（`scp -r dist/<包>/* …:/home/lhim/pm/` 一次到位）；② **新 `scripts/pm.sh`（716 行，取代并删除 `pm-upgrade.sh`）**：唯一入口 `start\|stop\|restart\|status\|logs\|upgrade <main\|ai> <镜像包>\|help`，**start 先起 ai 再起 main、stop 反序**，`upgrade` 自动 load + 切对应 `.env` 的 `IMAGE_TAG`/`AI_IMAGE_TAG`（备份 `.env.bak`）+ 重启 + 健康检查；main 的健康检查**要求 body 含 `"db":"up"`**（`/api/health` 恒 200，只看状态码会把"库不通"误报成可用）；两包装错会被拒绝（exit 2）；**工程名=目录名**（不传 `-p`，与手工 `docker compose` 同一工程）；③ **本地一键启动含 AI**：`start-dev.cmd` 第 4 步拉起 AI（失败只警告不拖垮主系统、缺 `.env` 给提示），`stop-dev.cmd` 加 8100；④ **模板/编排**：`.env.example` 补 `AI_IMAGE_TAG`/`AI_BIND_IP`/`AI_WORK_DIR`，`ai-backend/docker-compose.deploy.yml` 去掉写死的 `name: pm-ai`（否则"工程名=目录名"对 AI 不成立）；⑤ **文档**：手册新增 **§0.4 从旧布局迁移**（工程名变化会撞固定容器名、必须搬旧 `.env`、**别用 `cp -r` 覆盖新编排**）并全篇改口径，`deploy/README`、`ai-backend/README`、根 `README` 同步。**验证**：`pm.sh` 在容器 Ubuntu bash 里 `bash -n` exit 0（本机无可用 bash：WSL 默认发行版没有 `/bin/bash`）+ 参数分支逐条实测；**不重新构建**（`SKIP_BUILD=1`）重打两个包，两棵树逐项核对（`pm.sh` 与源逐字节一致、compose 与源逐字节一致、`AI_IMAGE_TAG` 已预填且无 BOM）、gzip 解压 CRC 通过；顺手修掉步骤文本里 `${WEB_PORT:-8080}` 被 PowerShell 当变量展开成空串的真 bug。 | `abbb0bb` |
 | v3.6.4 | 2026-09-23 | **部署流程"一页纸"重排（消除"没有明确流程/解释太多/步骤分散"）+ 容器名冲突的现场提示** | 起因是运维在真机上按手册操作时反馈"文档太乱、没有一个明确的流程、太多解释性内容、流程分散"，同时实际踩到 `container name "/pm-backend" is already in use`（`docker stop` 不解开占用；工程名从 `app` 变 `main` 而容器名写死）。改动：① **手册 §0 整段重写为"照抄即可"的线性清单**（0.1 主系统 6 步 / 0.2 AI 服务 5 步 / 0.3 日常操作 / 0.4 旧布局迁移 4 条命令 / 0.5 最常见 3 个报错 → 一条命令 / 0.6 速查），**不放解释性内容**（要"为什么"再往后翻），原 §0.1~§0.3 的背景与目录约定压缩进 §0.6（实测数字与踩坑结论一条没丢）；② `deploy/README.md` §1 与手册 §0 改为**逐行同一套命令**（含"让主系统连上它"）；③ 补两条易错点：**滚动升级显式成步**（先升一台验收再升第二台）、**AI 自检口径**（`with_ocr=false` 只是探活，完整自检要 `with_ocr=true&with_vec=true` + 界面自检页四项全绿）；④ 修掉 §0 重排后 §2.2/§2.4/§8.4 共 4 处过期交叉引用（`§0.3/§0.1` → `§0.6`）；⑤ `pm.sh` 的 `upgrade` 失败分支原来只给一句"排查：bash pm.sh logs main"，现在**直接把补救命令打出来**（`docker rm -f pm-backend pm-frontend pm-ai-backend`，并说明"`stop` 不解开占用、必须 `rm`" + 本地卷名随工程名变化的提醒）。验证：`pm.sh` 容器内 `bash -n` 通过、补丁段逐行核对；`check-docs` 19 份 / 0 问题。 | `fa4c426` |
 | v3.6.6 | 2026-09-23 | **修生产 500（运行期缺 `reactive-streams`）+ 深度自检 + OBS 缺对象日志** | 生产反馈：手动点附件解析报 **500「系统繁忙」**、自动解析从不产生任务。真机日志根因：`NoClassDefFoundError: org/reactivestreams/Publisher` —— 后端 AI 代理用 Spring 6.1 `RestClient` 走 multipart，而 `MultipartBodyBuilder` 的常量池本身就引用 `Publisher`，项目只依赖 `spring-boot-starter-web`（无 webflux/reactor）→ 该类在运行期链接失败（**问答 `/chat` 同一条路径也会 500**）。**教训**：66 个单测全绿却线上炸，真因不是"mock 掩盖"，而是 **`AiServiceClientTest` 从未覆盖 `submitParse`（multipart）这条路径**；故修法 = `backend/pom.xml` 补 `org.reactivestreams:reactive-streams`（版本由 BOM 管 → 1.0.4）**＋ 新增真 socket 回归测试**（JDK `HttpServer` + 真 `RestClient`，5 例；实测"修依赖前 3 条红、修后全绿"）。另修：① 服务自检三个模型从「未知」改为**三态（可用/不可用/未探测）+「深度自检」按钮**（`GET /api/ai/health?deep=true` → `with_llm&with_vec`，深探走长超时）；② OBS 缺对象时 WARN 打出 **bucket + 完整 object key + file_path + 核对提示**（用户可见 404 不变）。验证：`mvn -o test` **75 例全绿**、前端 build 0 错、镜像内运行期自检 `Publisher` 加载成功（旧镜像 `ClassNotFoundException`）、两个镜像均 arm64。 | `5c0bcc4` |
+| v3.7.0 | 2026-09-23 | **P2 受控查询：结构化事实走主系统受控查询 RPC + 口径同源 + 评测集** | 需求来自用户实测：问"某项目某阶段有几个附件"，**模型只数出已入库的 1 个**——AI 侧只有 `search_documents / read_page / calculate`，**看不到任何业务数据**。定案走 **B 方案（受控查询 + 口径 + 评测集）**：AI 不直连库、不生成 SQL，结构化事实一律反向回调主系统的受控查询接口，并把"口径"与"验收量尺"一并做出来。**为什么不做 A 方案（把"项目事实块"注入提示词）**：注入的是**一次性快照**，用户一改数据答案就错，且模型无法回答"具体某一阶段/某一笔付款"这类需要收窄的追问；快照还会随会话膨胀、把事实源搬到 AI 侧，与"主系统是唯一事实源"的既定边界相反。① **主系统**：4 个 RPC（`projects`/`contracts`/`payments`/`stats`）+ `scope_token`（同 `JWT_SECRET`、`typ=ai_scope`、`jti`、上限 **300s**，越权**在 mapper 之前**拒绝且对库查询 **0 次**）；口径抽 `ProjectMetricsService` 复用（与详情页**逐位一致由构造保证**，不是靠约定）；`AiQueryEntity` 字段白名单**即 400 提示原文**；`operate_log` 逐次留痕 + `ai_ask_log` 记查询次数/entity（**迁移 V14**）；附件预览加 `Cache-Control: private` + `ETag` + 304（并修掉 `file_size` 为空时发字面量 `"null"` 的 Content-Length 缺陷）；`stats` 支持 `projectIds` 收窄。② **AI 侧**：条件注册的**第 4 个工具** `query_business_data`（**不传 `biz_query` 时行为与本版本前逐字节一致**）+ 四条路由铁律（A 系统事实必须查系统／B 文档内容仍走文档并给 `[cite]`／C 引用系统数字必须带口径与数据时间、混用分开陈述／D 不许用 `calculate` 反推系统已有数字）+ 错误映射（403/4xx/空结果/5xx 四类话术，明确"**空结果 ≠ 调用失败**"），工具超时 **20s**。③ **前端**：系统数据区块（值 + 口径 + 数据时间，与文档引用**视觉区分**）、问答超时 **180s**、全屏预览**不再重建 iframe**（不再重复下载）。④ **评测集**：`eval/smoke-30.json` 35 题 + `scripts/eval-ai.mjs`（真值取自**页面接口**、`--scope-token` 交叉校验、`--dry` 数据集体检、漂移快照）。**验证**：backend **147 例**、ai-backend **129 例**、前端 build **0 错**、`check-docs` **0 问题**、三镜像 **arm64**、两个包 **`docker load` 成功**、`--list-truth` **20/20**。**未验证**（照实登记）：真机 nginx 反代下回调连通性、崖山 `FETCH FIRST n ROWS ONLY` 实际执行、`operate_log/ai_ask_log` 真实落库、V14 在真库的 ALTER、OBS `getObjectMetadata` 的 ETag 取值、180s 长问答后段仍能查（目前只有单测推理）、`/api/ai/chat` 全链路未打真实系统（评测用 mock 跑通判定链）、§11 交叉校验因拿不到 `scope_token` 恒 `n/a`。 | 本轮待提交 |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -881,6 +882,61 @@
   已按库内 `file_path` 精确挑出并复制到 `dist/obs-upload/2026/09/`（412 个文件，0.4MB；`dist/` 已 gitignore），
   **数据库无需任何修改**；把这批补传到桶的 `uploads/2026/09/` 即可（**不要清空桶**，会删掉服务器上传的那批）。
 
+### v3.7.0 — P2 受控查询：结构化事实走主系统受控查询 RPC + 口径同源 + 评测集（2026-09-23）
+
+- **需求来源（用户实测）**：问"**某项目某阶段有几个附件**"，模型只数出**已入库的 1 个**。原因不是模型笨——
+  AI 侧手里只有 `search_documents / read_page / calculate`，**根本看不到业务数据**，只能把"文档库里搜到的条数"当成"附件数"。
+- **定案：B 方案（受控查询 + 口径 + 评测集）**。为什么不做 **A 方案（把"项目事实块"注入提示词）**：
+  ① 注入的是**一次性快照**——用户一改数据（传了个附件、改了金额）答案立刻变错，而错得**看不出来**（模型会照抄旧快照并言之凿凿）；
+  ② 快照是"整块"的，答不了"**某个具体阶段**有几个附件""**某一笔**付款付了多少"这类需要**收窄**的追问，只能把整棵树都塞进提示词；
+  ③ 快照随会话膨胀，且把"业务事实源"搬到了 AI 侧——与既定边界（**主系统是唯一事实源、AI 服务无状态**）相反。
+  B 方案把"取数"留在主系统、把"口径"做成**同源实现**、把"验收"做成**可复跑的评测集**，三者缺一不可（只有受控查询没有评测集，等于没人知道答案对不对）。
+- **主系统侧**：
+  - **4 个 RPC**：`POST /api/ai/query/{entity}`，entity ∈ `projects`／`contracts`／`payments`／`stats`。入参只收**结构化字段过滤**，不收 SQL/表达式/字段名拼接。
+  - **scope 令牌**：与用户 JWT **同一把 `JWT_SECRET`**、`typ=ai_scope` 区分类型、带 `jti` 便于排查定位，`projects` 即授权范围，
+    **上限 300s**（`ScopeTokenService.MAX_TTL_SECONDS`，配大了会被夹回、只能配小）。
+  - **越权在 mapper 之前拒绝**：拒绝路径**对库的查询次数为 0**（不给越权请求留下任何读库痕迹），绝不接受 body 里的 projectId 越权查询。
+  - **口径同源**：统计口径抽到 `ProjectMetricsService`，**项目详情页与受控查询 RPC 共用同一份实现**——
+    "AI 说的数 == 页面上的数"因此是**由构造保证**的，而不是靠两边各写一遍再人工对。
+  - **`AiQueryEntity` 字段白名单即 400 提示原文**：非法 filters 的报错**直接列出该 entity 支持的全部字段**（错误信息本身教会调用方怎么改）。
+  - **留痕**：`operate_log` 逐次记录（谁/entity/返回行数/耗时）；`ai_ask_log` 记 `biz_query_count`（用了几次系统查询）与 `biz_entities`（查了哪些 entity）。
+  - **迁移 V14**：`ai_ask_log` 加 `biz_query_count INT NOT NULL DEFAULT 0`（存量行读出 0 = P0/P1 确实没用过系统数据，语义自洽）与 `biz_entities VARCHAR(200 CHAR) NULL`。
+  - **附件预览缓存**：加 `Cache-Control: private` + `ETag` + `304`；顺带修掉 `file_size` 为空时把字面量 `"null"` 当 Content-Length 发出去的缺陷。
+  - **`stats` 支持 `projectIds` 收窄**（一次问多个项目的聚合，不必逐个项目各查一遍）。
+- **AI 侧**：
+  - **第 4 个工具 `query_business_data`，条件注册**：主系统传了 `biz_query` 才注册；**不传时工具集与行为与本版本前逐字节一致**（可前后分批发版）。
+  - **四条路由铁律**（写死在提示词里）：**A** 系统事实（项目/合同/付款/附件数量/统计）**必须查系统**，查不到就说"系统里没有"，不许用文档或常识顶上；
+    **B** 文档内容（条款、验收标准原文）仍走文档检索并给 `[cite]` 页码；**C** 引用系统数字**必须带口径与数据时间**、两类信息混用时**分开陈述**；
+    **D** **不许用 `calculate` 反推系统已有的数字**（能查的只能查，算出来的必须标明是估算——两者在审计上不是一回事）。
+  - **错误映射四类话术**：403 授权范围 / 4xx 参数 / **空结果** / 5xx 调用失败；**明确"空结果 ≠ 调用失败"**——把"没数据"说成"系统坏了"或反之，都会让用户得到错误结论。
+  - **工具超时 20s**（比整轮问答短得多，避免一个查不通的 RPC 拖死整轮）。
+- **一条刻意的行为变更**：开通受控查询（传了 `biz_query`）时，**即使当前没有已上传文档，也不再走"还没有可问答的文档"这条兜底**——
+  因为此时"项目有几个附件""合同金额多少"这类问题**不依赖任何文档**，继续用旧兜底会把本可以答对的问题拦成拒答。**不传 `biz_query` 时旧兜底与全部行为不变。**
+- **前端**：新增「系统数据」区块（**值 + 口径 + 数据时间**，与文档引用**视觉区分**，避免用户把系统事实当成文档原文）；
+  问答超时 **180s**（与主系统 `AI_CHAT_TIMEOUT` 对齐）；**全屏预览不再重建 iframe**（此前每次全屏都重新下载一遍附件）。
+- **评测集**：`eval/smoke-30.json`（**35 题**）+ `scripts/eval-ai.mjs`。设计要点：**真值取自页面接口**（用户看到的那套），
+  runner 每次运行**现场算真值再比对**；`--dry` 做数据集体检（不发请求，可作质量门）；`--scope-token` 做"页面接口 vs 受控查询"两条路径交叉校验；
+  `--write-truth` 写漂移快照。**真机后端上 20/20 真值解析成功并与 SQL 逐位一致**；页码类 **9 道文档题待人工标注**（`citation_pages` 全为 null，引用命中率恒 `n/a`——如实登记）。
+- **造题期间发现的两件事**（都写进 `eval/README.md`）：
+  ① `reactive-streams` 缺失**已在前一版（v3.6.6）修掉**，本版不再重复叙述、只作引用（不然会让人以为本版还在修它）；
+  ② 造题期间**库被灌了演示数据**，真值随实测漂移：阶段附件 **31→34**、READY 文档 **3→6**、付款 **0→9 条**、中标额 **NULL→1884960**——
+  题库已按**新真值**改，并加了**漂移检测**（快照值 vs 现场值不一致时直接打出来，避免"数字悄悄过期、评测还全绿"）。
+- **验证数字**：backend `mvn -o test` **147 例全绿**；ai-backend `mvn -o test` **129 例全绿**；前端 `npm run build` **0 错**；
+  `node scripts/check-docs.mjs` **0 问题**（20 份）；`eval-ai.mjs --dry` 数据集体检 **exit 0**；三个镜像全部 **arm64/linux**；
+  两个发布包 **`docker load` 均成功**（`pm-backend:v3.7.0` / `pm-frontend:v3.7.0` / `pm-ai-backend:v1.1.0`）；
+  从 **load 出来**的镜像里 `docker cp` 出 `app.jar`，确认含 `BOOT-INF/lib/reactive-streams-1.0.4.jar` 与新类
+  `AiQueryController`/`ScopeTokenService`，AI 镜像内含 `BizQueryClient`；`--list-truth` **20/20**。
+- **未验证清单（照实抄，不美化）**：
+  1. **真机 nginx 反代下的回调连通性**（AI → `PM_AI_QUERY_CALLBACK_URL` → 主系统），本地只有单测与 mock；
+  2. **崖山 `FETCH FIRST n ROWS ONLY` 的实际执行**（分页/限量语法未在真库跑过）；
+  3. **`operate_log` / `ai_ask_log` 的真实落库**（含 V14 两列）；
+  4. **V14 在真库的 `ALTER`**（沿用 V8/V10/V11 已成功应用的多列写法，但方言未实测）；
+  5. **OBS `getObjectMetadata` 的 ETag 取值**（304 协商在 OBS 存储下的实际表现）；
+  6. **180s 长问答后段仍能查**（scope_token 300s 覆盖得住 180s 这件事，目前**只有单测推理**，没有真机长跑）；
+  7. **`/api/ai/chat` 全链路未打真实系统**（评测用 mock 跑通了判定链，真实链路未端到端跑）；
+  8. **§11 交叉校验因拿不到 `scope_token` 恒 `n/a`**。
+- **出包**：`dist/pm-release-v3.7.0/`（主系统，前后端都改了故两端都重建）与 `dist/pm-ai-release-v1.1.0/`（AI，新增工具属特性版本故走 minor）。
+
 ---
 
 ## 功能完成度
@@ -914,8 +970,8 @@
 | 演示数据脚本 | ✅ | `seed-demo.mjs`（父子项目 + 每核算单元 2~5 份合同 + 付款里程碑 + 项目分工）、`seed-attachments.mjs`（阶段/合同/付款三类附件，含缺件场景）、`demo-reset.sql`（物理清空，v3.5.1） |
 | 开发机数据库工具 | ✅ | v3.5.1：`scripts/db-sql.ps1` + `scripts/jdbc/RunSql.java`（无 yasql 客户端时手工查/改库，口令不打印不落盘）；脚本清单见 `scripts/README.md` |
 | 文档维护约定 | ✅ | v1.1 起：每次迭代同步更新本文档（总表 **+ 各迭代明细**）、设计稿（§0/受影响章节/§13）、README；v3.5.1 起补：**每次迭代必须用演示数据体现新功能**、涉及脚本须同步 `scripts/README.md` |
-| 附件智能处理（OCR / 大模型抽取 / 向量检索） | 🚧 进行中 | **AI 能力服务已全量 Java 化**：`ai-backend`（Spring Boot 3.3.5 / Java 17，独立构建与部署，默认 8100），接口 `/analyze`、`/ocr/pdf-info`、`/ocr/file`、`/documents`、`/upload-tasks`、`/chat`。平台 OCR + 千问对话 + Qwen3-VL Embedding/Reranker **全部在真实内网网关上验证通过**（扫描件 OCR 1.3~1.7s、抽取 ≈8s、问答 ≈10s、向量化 4096 维且余弦 0.3245 与 Python 基线**逐位一致**、PDF 文本层与 PyMuPDF **逐字节一致**）；`/chat` 自 **ai-1.1.0** 起返回**结构化引用** `citations`（可跳到附件第 N 页）；**JUnit 用例 94 例全绿**（原 81 + 引用 13）；Docker 镜像已构建并起容器实测通过。原 Python 版已删除（知识资产迁入 `ai-backend/docs/`）。**下一步**：OpenSearch 集群部署后实测 kNN 在线路由（适配层已实现、**路由已接但未实测**）+ 建评测集 + **给 AI 服务加服务间鉴权**（当前无入站鉴权，仅靠网络隔离） |
-| **AI 与知识库（并入主系统，v3.6.0 起）** | 🚧 P0 已完成 | 前端：`/ai` 菜单（文档库／任务队列／服务自检）+ **全局悬浮问答**（引用可点击跳原文第 N 页）+ 附件索引状态标签与重新解析 + **上传后自动触发解析**（`AI_AUTO_PARSE`，默认开；AI 失败不影响上传，只显示"解析失败+原因"）；后端：代理层 `module/ai/**`（权限与作用域在主系统收口、`ai_ask_log` 审计留痕）+ **迁移 V13**。验证：前端 `npm run build` 0 错、后端 `mvn -o test` **66 例全绿**。**待办**：P1 检索调试与问答留痕页（`GET /api/ai/ask-logs` 已建表未开接口）、P2 受控查询（业务数据问答）、**V13 待下次启动/部署应用**、AI 服务入站鉴权 |
+| 附件智能处理（OCR / 大模型抽取 / 向量检索） | 🚧 进行中 | **AI 能力服务已全量 Java 化**：`ai-backend`（Spring Boot 3.3.5 / Java 17，独立构建与部署，默认 8100），接口 `/analyze`、`/ocr/pdf-info`、`/ocr/file`、`/documents`、`/upload-tasks`、`/chat`。平台 OCR + 千问对话 + Qwen3-VL Embedding/Reranker **全部在真实内网网关上验证通过**（扫描件 OCR 1.3~1.7s、抽取 ≈8s、问答 ≈10s、向量化 4096 维且余弦 0.3245 与 Python 基线**逐位一致**、PDF 文本层与 PyMuPDF **逐字节一致**）；`/chat` 自 **ai-1.1.0** 起返回**结构化引用** `citations`（可跳到附件第 N 页），并支持**受控查询**（工具 `query_business_data`：项目/合同/付款/统计口径，条件注册、超时 20s）；**JUnit 用例 129 例全绿**（v3.7.0）；Docker 镜像已构建并起容器实测通过。原 Python 版已删除（知识资产迁入 `ai-backend/docs/`）。**下一步**：OpenSearch 集群部署后实测 kNN 在线路由（适配层已实现、**路由已接但未实测**）+ **给 AI 服务加服务间鉴权**（当前无入站鉴权，仅靠网络隔离） |
+| **AI 与知识库（并入主系统，v3.6.0 起）** | 🚧 P0/P2 已完成 | 前端：`/ai` 菜单（文档库／任务队列／服务自检）+ **全局悬浮问答**（引用可点击跳原文第 N 页）+ 附件索引状态标签与重新解析 + **上传后自动触发解析**（`AI_AUTO_PARSE`，默认开；AI 失败不影响上传，只显示"解析失败+原因"）+ **v3.7.0「系统数据」区块**（值 + 口径 + 数据时间，与文档引用视觉区分）；后端：代理层 `module/ai/**`（权限与作用域在主系统收口、`ai_ask_log` 审计留痕）+ **迁移 V13/V14** + **v3.7.0 受控查询 4 个 RPC**（`/api/ai/query/{entity}`，scope_token 上限 300s、越权在 mapper 之前拒绝）。验证：前端 `npm run build` 0 错、后端 `mvn -o test` **147 例全绿**、ai-backend **129 例全绿**、评测集 `eval/smoke-30.json` 35 题 + `--list-truth` 20/20。**待办**：P1 检索调试与问答留痕页（`GET /api/ai/ask-logs` 已建表未开接口）、**V13/V14 待下次启动/部署应用**、AI 服务入站鉴权、9 道文档题页码待人工标注 |
 | 设计稿 Q1–Q15 评审回写 | ⏳ 待办 | 待业务反馈 |
 
 ## 运行方式速查
@@ -925,13 +981,15 @@
 # 数据库：崖山 YashanDB（Oracle 模式）主备；后端连接用环境变量（见 README/deploy/README）：
 #   export YASHAN_MASTER_IP=10.254.212.106 YASHAN_STANDBY_IP=10.254.212.107
 #   export YASHAN_DB=PM YASHAN_USER=pm YASHAN_PASSWORD=xxx
-cd backend  && mvn spring-boot:run         # :8080（自研 Runner 自动执行 db/migration-yashan 建库，现 V1~V13）
+cd backend  && mvn spring-boot:run         # :8080（自研 Runner 自动执行 db/migration-yashan 建库，现 V1~V14）
 cd frontend && npm install && npm run dev  # :5173
 # Docker 本机（前端 nginx 对外端口见 deploy/docker/.env 的 WEB_PORT，本机约定 8088）
 
 # —— AI 与知识库（v3.6.0；AI 是**独立部署**的服务，主系统只代理它）——
 # 主系统侧配置（都有默认值，本机默认指向 http://127.0.0.1:8100）：
-#   AI_ENABLED=true（总开关） / AI_SERVICE_BASE_URL / AI_SERVICE_TOKEN（当前对方不校验） / AI_CHAT_TIMEOUT=60 / AI_TIMEOUT=10
+#   AI_ENABLED=true（总开关） / AI_SERVICE_BASE_URL / AI_SERVICE_TOKEN（当前对方不校验） / AI_CHAT_TIMEOUT=180 / AI_TIMEOUT=10
+#   PM_AI_QUERY_CALLBACK_URL（v3.7.0 受控查询回调地址，留空 = 不带 biz_query、工具不注册、行为与旧版一致）
+#   PM_AI_SCOPE_TOKEN_TTL_SECONDS=300（scope 令牌有效期，代码里 MAX_TTL_SECONDS=300 只许配小不许配大）
 cd ai-backend && mvn spring-boot:run       # :8100（需 .env 里的平台网关 LLM_BASE_URL/LLM_API_KEY，见 ai-backend/README.md）
 # 主系统前端 → /api/ai/* → 主系统后端（权限/作用域/留痕）→ AI 服务 8100（仅内网，浏览器永不直连）
 # 自检与端到端：.\ai-backend\scripts\verify-e2e.ps1 -SkipBuild   # 含 citations 断言
@@ -977,14 +1035,14 @@ node scripts/seed-attachments.mjs               # 阶段/合同/付款三类附�
 5. **附件保留策略**：删除项目后附件元数据与物理文件的治理（当前刻意逻辑保留以便审计追溯）。
 6. 工程化：前端按路由代码分包（当前单包较大）、后端 profile（dev/prod）、数据库每日备份、操作日志导出。
 7. 阶段逾期提醒增强：已具备基础版，可补列表页逾期角标与全局提醒。
-8. **AI 能力服务（`ai-backend`）**：已全量 Java 化并验证（与主系统同栈、独立部署、94 例 JUnit 全绿、Docker 镜像起容器实测通过）。
-   **下一步**：① **给 AI 服务加服务间鉴权**（当前**无任何入站鉴权**，主系统已发 `Bearer` 但对方不校验，安全性完全依赖网络隔离——这是当前最该补的安全项）→ ② **OpenSearch 集群部署后实测 kNN 在线路由**（适配层已实现、路由已接但未实测；集群不可达/配错时**显式报错**而非静默降级）→ ③ **建评测集**（30~50 附件 + 100~200 QA，recall@5 / MRR / 引用准确率 / 数字幻觉率基线）→ ④ 检索编排两项调整（**待负责人批准**）：检索改**服务端预取**（工具保留用于追问）、诊断字段（`retrieval`/`reranked`）只落日志不下发模型 —— 依据与验收口径见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md) §4。
-9. **AI 与知识库 P1/P2**（P0 已完成）：P1 = `/ai` 页补**检索调试**（召回→融合→精排分数，判断"答不出来"是解析还是检索问题）与**问答留痕页**（`GET /api/ai/ask-logs`，表与写入已就绪）；P2 = 受控查询工具（预算/付款/统计，模型侧合并成 1 个 `query_business_data(entity, filters)`）+ 指标口径层 + 👍/👎 反馈进评测集。
-10. **V13 的落地验证**：迁移脚本已在库外通过评审（多列 `ALTER TABLE … ADD (…)` 与 V1~V12 已成功应用的写法一致），但**未在真实崖山库执行**——下次 `pm-backend` 启动/部署时由 `YashanMigrationRunner` 应用并登记；应用后请核对 `attachment_ai_task` / `ai_ask_log` 两表与 `attachment` 三列。部署顺序：**先 restart 主系统（跑 V13），再确认 `ai-backend` 为 ai-1.1.0**（否则前端引用为空列表）。
+8. **AI 能力服务（`ai-backend`）**：已全量 Java 化并验证（与主系统同栈、独立部署、**129 例 JUnit 全绿**（v3.7.0）、Docker 镜像起容器实测通过）。
+   **下一步**：① **给 AI 服务加服务间鉴权**（当前**无任何入站鉴权**，主系统已发 `Bearer` 但对方不校验，安全性完全依赖网络隔离——这是当前最该补的安全项）→ ② **OpenSearch 集群部署后实测 kNN 在线路由**（适配层已实现、路由已接但未实测；集群不可达/配错时**显式报错**而非静默降级）→ ③ 扩充评测集规模（当前 `eval/smoke-30.json` 35 题为**结构化问答**冒烟集；100~200 QA 的检索 recall@5 / MRR 基线仍待做）→ ④ 检索编排两项调整（**待负责人批准**）：检索改**服务端预取**（工具保留用于追问）、诊断字段（`retrieval`/`reranked`）只落日志不下发模型 —— 依据与验收口径见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md) §4。
+9. **AI 与知识库 P1/P2**：**P0 与 P2 已完成**（P2 = 受控查询，见 v3.7.0）。**待做**：P1 = `/ai` 页补**检索调试**（召回→融合→精排分数，判断"答不出来"是解析还是检索问题）与**问答留痕页**（`GET /api/ai/ask-logs`，表与写入已就绪）；P2 遗留 = 👍/👎 反馈收进评测集、**9 道文档题页码待人工标注**、受控查询的真机端到端（见 v3.7.0 未验证清单）。
+10. **V13/V14 的落地验证**：迁移脚本已在库外通过评审（多列 `ALTER TABLE … ADD (…)` 与 V1~V12 已成功应用的写法一致），但**未在真实崖山库执行**——下次 `pm-backend` 启动/部署时由 `YashanMigrationRunner` 应用并登记；应用后请核对 `attachment_ai_task` / `ai_ask_log` 两表、`attachment` 三列（V13）与 `ai_ask_log` 的 `biz_query_count`/`biz_entities` 两列（V14）。部署顺序：**先 restart 主系统（跑 V13/V14），再确认 `ai-backend` 为 ai-1.1.0**（否则前端引用为空列表、受控查询工具不注册）。
 11. **演示路径**（设计稿 §14.6 要求）：`node scripts/seed-attachments.mjs`（上传即自动触发解析，受 `AI_AUTO_PARSE` 开关控制）→ `/ai` 页看文档库与任务队列 → 悬浮窗提问 → 点引用跳附件第 N 页。
 12. **收尾清理（已登记，不在本轮做）**：① P0+P1 验收通过后删除 `ai-backend/static/index.html` 整个 `static/` 与 Dockerfile 里的 `COPY static/`（方案 §8.4）；② 前端小口子：范围选择器只拉前 500 个项目（无分页懒加载）、无"全部重新解析"入口、缺浏览器级人工验收。
     ~~③ `make-release.ps1` 的 gzip 产物需验证 `docker load` 闭环~~ —— **已于 v3.6.2 实机验证通过**（主系统包与 AI 包都验了）。
-13. **迷你评测集（**最高优先级**——它是一切 AI 质量决策的前提）**：做 **10~20 条**问题（覆盖跨文档对比 / 金额求和 / "查不到必须说未找到"三类），人工标注标准答案与出处页码。有了它才能比较切片策略、混合检索配比、**以及"要不要引入 LangChain4j/Spring AI"这种框架级问题**；否则只能靠感觉（论证见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md) §7.4）。若确要做框架对比，再开**限时 spike**（独立分支，不碰主线）：同文档同问题对比代码行数 / 延迟 / **引用页码准确率** / 依赖体积 / **审计明细是否还拿得到**。
+13. **评测集（v3.7.0 已落地第一版，继续扩）**：**已交付** `eval/smoke-30.json`（35 题，覆盖结构化真值 / 文档 / 混合 / 负例 / 越权）+ `scripts/eval-ai.mjs`（`--dry` 体检 / `--list-truth` 真值 / `--write-truth` 漂移快照 / `--scope-token` 交叉校验），真值取自**页面接口**并在真机后端上 **20/20 解析成功、与 SQL 逐位一致**。**待做**：① **9 道文档题的引用页码人工标注**（标注前引用命中率恒 `n/a`，这是当前评测集最大的缺口）；② 扩到跨文档对比 / 金额求和 / "查不到必须说未找到"更多样本；③ 👍/👎 反馈回流成题。有了它才能比较切片策略、混合检索配比、**以及"要不要引入 LangChain4j/Spring AI"这种框架级问题**（论证见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md) §7.4）。若确要做框架对比，再开**限时 spike**（独立分支，不碰主线）：同文档同问题对比代码行数 / 延迟 / **引用页码准确率** / 依赖体积 / **审计明细是否还拿得到**。
 14. **P2 会话管理（若做）**：按"主系统是唯一事实源、AI 服务无状态"的边界，会话与消息表建在**主系统**（与 `ai_ask_log` 归并为同一条数据），**不要**把会话状态放进 AI 服务（见 §7.2 三条硬伤）。
 
 ## 变更记录说明

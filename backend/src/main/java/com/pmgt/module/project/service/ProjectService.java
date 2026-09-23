@@ -70,6 +70,7 @@ public class ProjectService {
     private final PhaseTplMapper tplMapper;
     private final SysUserMapper userMapper;
     private final OperationLogService operationLogService;
+    private final ProjectMetricsService metrics;
     private final ObjectMapper objectMapper;
 
     public ProjectService(ProjectMapper projectMapper,
@@ -83,6 +84,7 @@ public class ProjectService {
                           PhaseTplMapper tplMapper,
                           SysUserMapper userMapper,
                           OperationLogService operationLogService,
+                          ProjectMetricsService metrics,
                           ObjectMapper objectMapper) {
         this.projectMapper = projectMapper;
         this.overviewMapper = overviewMapper;
@@ -95,6 +97,7 @@ public class ProjectService {
         this.tplMapper = tplMapper;
         this.userMapper = userMapper;
         this.operationLogService = operationLogService;
+        this.metrics = metrics;
         this.objectMapper = objectMapper;
     }
 
@@ -182,18 +185,18 @@ public class ProjectService {
             vo.setManagerName(optionalName(userNames, pj.getManagerUserId()));
             vo.setVendorName(pj.getVendorName());
             vo.setBudgetAmount(pj.getBudgetAmount());
-            vo.setContractAmount(moneyAgg(pj, false));
+            vo.setContractAmount(metrics.contractAmount(pj, false));
             vo.setApproveDate(pj.getApproveDate());
             vo.setPlanFinishDate(pj.getPlanFinishDate());
             vo.setActualFinishDate(pj.getActualFinishDate());
             vo.setUpdateTime(pj.getUpdateTime());
             List<ProjectPhase> phases = phasesByProject.getOrDefault(pj.getId(), List.of());
-            vo.setCurrentPhaseName(currentPhaseName(phases));
-            vo.setOverallProgress(overallProgress(phases));
+            vo.setCurrentPhaseName(metrics.currentPhaseName(phases));
+            vo.setOverallProgress(metrics.overallProgress(phases));
 
             List<Payment> pays = paymentsByProject.getOrDefault(pj.getId(), List.of());
             if (childCounts.getOrDefault(pj.getId(), 0) > 0) {
-                vo.setPaidAmount(paidAgg(pj));
+                vo.setPaidAmount(metrics.paidAmount(pj));
             } else {
                 vo.setPaidAmount(pays.stream().map(pr -> zero(pr.getPaidAmount())).reduce(BigDecimal.ZERO, BigDecimal::add));
             }
@@ -235,7 +238,7 @@ public class ProjectService {
             vo.setContractAmount(linked.getContractAmount());
             vo.setChangeAmount(linked.getChangeAmount() == null ? BigDecimal.ZERO : linked.getChangeAmount());
         }
-        vo.setContractTotal(moneyAgg(pj, true));
+        vo.setContractTotal(metrics.contractAmount(pj, true));
         vo.setApproveDate(pj.getApproveDate());
         vo.setPlanStartDate(pj.getPlanStartDate());
         vo.setPlanFinishDate(pj.getPlanFinishDate());
@@ -268,8 +271,8 @@ public class ProjectService {
                 .eq(ProjectPhase::getProjectId, id)
                 .orderByAsc(ProjectPhase::getSortNo));
         vo.setPhases(phases.stream().map(this::toPhaseVO).toList());
-        vo.setCurrentPhaseName(currentPhaseName(phases));
-        vo.setOverallProgress(overallProgress(phases));
+        vo.setCurrentPhaseName(metrics.currentPhaseName(phases));
+        vo.setOverallProgress(metrics.overallProgress(phases));
         long childCount = projectMapper.selectCount(new LambdaQueryWrapper<Project>().eq(Project::getParentId, id));
         vo.setChildCount((int) childCount);
         vo.setOverview(loadOverviewVO(id));
@@ -629,56 +632,8 @@ public class ProjectService {
         throw new BizException(500, "项目编号生成失败，请手动指定编号");
     }
 
-    /** 直取子项目 */
-    private List<Project> directChildren(Long parentId) {
-        return projectMapper.selectList(new LambdaQueryWrapper<Project>().eq(Project::getParentId, parentId));
-    }
-
-    /**
-     * 金额口径（查询时实时汇总）：
-     * 叶子项目 = 所挂合同的金额(+变更)；未挂合同时取项目遗留合同列；
-     * 总项目容器 = 子项目之和（与统计口径一致）。
-     */
-    private BigDecimal moneyAgg(Project pj, boolean inclChange) {
-        List<Project> children = directChildren(pj.getId());
-        if (!children.isEmpty()) {
-            BigDecimal sum = BigDecimal.ZERO;
-            for (Project ch : children) {
-                sum = sum.add(moneyAgg(ch, inclChange));
-            }
-            return sum;
-        }
-        if (pj.getContractId() != null) {
-            Contract c = contractMapper.selectById(pj.getContractId());
-            if (c != null) {
-                BigDecimal total = zero(c.getContractAmount());
-                if (inclChange) {
-                    total = total.add(zero(c.getChangeAmount()));
-                }
-                return total;
-            }
-        }
-        BigDecimal total = zero(pj.getContractAmount());
-        if (inclChange) {
-            total = total.add(zero(pj.getChangeAmount()));
-        }
-        return total;
-    }
-
-    /** 已付口径（查询时实时汇总）：叶子=自身付款实付合计；容器=子项目之和 */
-    private BigDecimal paidAgg(Project pj) {
-        List<Project> children = directChildren(pj.getId());
-        BigDecimal sum = BigDecimal.ZERO;
-        if (children.isEmpty()) {
-            sum = paymentMapper.selectList(new LambdaQueryWrapper<Payment>().eq(Payment::getProjectId, pj.getId()))
-                    .stream().map(p -> zero(p.getPaidAmount())).reduce(BigDecimal.ZERO, BigDecimal::add);
-        } else {
-            for (Project ch : children) {
-                sum = sum.add(paidAgg(ch));
-            }
-        }
-        return sum;
-    }
+    // 金额/进度/当前阶段的口径已上移到 ProjectMetricsService：
+    // 受控查询（§11.4）必须与项目详情页"逐位一致"，只留一份实现才不会漂移。
 
     /** 多选筛选值：逗号分隔字符串 → 去空/去重后的列表 */
     private static Optional<List<String>> inValues(String csv) {
@@ -735,15 +690,9 @@ public class ProjectService {
         return ids;
     }
 
+    /** 批量取各项目阶段（口径与受控查询共用一处实现，见 {@link ProjectMetricsService}）。 */
     private Map<Long, List<ProjectPhase>> phasesByProjects(List<Long> projectIds) {
-        if (projectIds.isEmpty()) {
-            return Map.of();
-        }
-        return phaseMapper.selectList(new LambdaQueryWrapper<ProjectPhase>()
-                        .in(ProjectPhase::getProjectId, projectIds)
-                        .orderByAsc(ProjectPhase::getSortNo))
-                .stream()
-                .collect(Collectors.groupingBy(ProjectPhase::getProjectId));
+        return metrics.phasesByProjects(projectIds);
     }
 
     private Map<Long, List<Payment>> paymentsByProjects(List<Long> projectIds) {
@@ -778,39 +727,6 @@ public class ProjectService {
 
     private String optionalName(Map<Long, String> map, Long id) {
         return id == null ? null : map.get(id);
-    }
-
-    /** 整体进度 = Σ(已完成权重×100 + 进行中权重×比例) / Σ(未跳过权重)，取整 */
-    private Integer overallProgress(List<ProjectPhase> phases) {
-        int total = 0;
-        int got = 0;
-        for (ProjectPhase p : phases) {
-            if ("SKIPPED".equals(p.getStatus())) {
-                continue;
-            }
-            int w = p.getWeight() == null ? 0 : p.getWeight();
-            total += w;
-            if ("DONE".equals(p.getStatus())) {
-                got += w * 100;
-            } else if ("IN_PROGRESS".equals(p.getStatus())) {
-                int pct = p.getPercent() == null ? 0 : p.getPercent();
-                got += (int) Math.round(w * pct / 100.0 * 100);
-            }
-        }
-        if (total == 0) {
-            return 0;
-        }
-        return (int) Math.round(got * 100.0 / total / 100);
-    }
-
-    /** 当前阶段：第一个进行中或未开始的阶段；全部完成/跳过则返回空 */
-    private String currentPhaseName(List<ProjectPhase> phases) {
-        for (ProjectPhase p : phases) {
-            if ("NOT_STARTED".equals(p.getStatus()) || "IN_PROGRESS".equals(p.getStatus())) {
-                return p.getPhaseName();
-            }
-        }
-        return phases.isEmpty() ? null : "已完结";
     }
 
     private PhaseVO toPhaseVO(ProjectPhase ph) {

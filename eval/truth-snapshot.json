@@ -1,0 +1,953 @@
+{
+  "generatedAt": "2026-09-23T09:29:09.773Z",
+  "base": "http://127.0.0.1:8080",
+  "set": "eval/smoke-30.json",
+  "note": "由 node scripts/eval-ai.mjs --write-truth 生成：真值来自主系统页面接口（见 eval/README.md「真值来源与局限」）。本文件用于发现数据漂移，不是判定依据；判定依据是同一次运行现场算出的真值。",
+  "cases": [
+    {
+      "id": "S-001-001",
+      "kind": "phase_attachment_count",
+      "truth": {
+        "kind": "phase_attachment_count",
+        "projectId": 55,
+        "phaseName": "立项申报",
+        "via": "page-apis"
+      },
+      "values": [
+        "9"
+      ],
+      "note": "GET /api/attachments?bizType=PROJECT_PHASE&bizId=526（立项申报）条数（口径：仅 PROJECT_PHASE 附件，逻辑删除已由后端排除）",
+      "detail": {
+        "rows": [
+          {
+            "phaseId": 526,
+            "phaseName": "立项申报",
+            "sortNo": 1,
+            "attachmentCount": 9
+          },
+          {
+            "phaseId": 527,
+            "phaseName": "需求调研与规格",
+            "sortNo": 2,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 528,
+            "phaseName": "招标采购",
+            "sortNo": 3,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 529,
+            "phaseName": "合同签订",
+            "sortNo": 4,
+            "attachmentCount": 1
+          },
+          {
+            "phaseId": 530,
+            "phaseName": "设计与评审",
+            "sortNo": 5,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 531,
+            "phaseName": "开发实现",
+            "sortNo": 6,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 532,
+            "phaseName": "测试与测评",
+            "sortNo": 7,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 533,
+            "phaseName": "部署上线与试运行",
+            "sortNo": 8,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 534,
+            "phaseName": "初验",
+            "sortNo": 9,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 535,
+            "phaseName": "终验",
+            "sortNo": 10,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 536,
+            "phaseName": "质保运维",
+            "sortNo": 11,
+            "attachmentCount": 2
+          }
+        ],
+        "matched": {
+          "phaseId": 526,
+          "phaseName": "立项申报",
+          "sortNo": 1,
+          "attachmentCount": 9
+        }
+      }
+    },
+    {
+      "id": "S-001-002",
+      "kind": "phase_attachment_count",
+      "truth": {
+        "kind": "phase_attachment_count",
+        "projectId": 55,
+        "phaseName": "合同签订",
+        "via": "page-apis"
+      },
+      "values": [
+        "1"
+      ],
+      "note": "GET /api/attachments?bizType=PROJECT_PHASE&bizId=529（合同签订）条数（口径：仅 PROJECT_PHASE 附件，逻辑删除已由后端排除）",
+      "detail": {
+        "rows": [
+          {
+            "phaseId": 526,
+            "phaseName": "立项申报",
+            "sortNo": 1,
+            "attachmentCount": 9
+          },
+          {
+            "phaseId": 527,
+            "phaseName": "需求调研与规格",
+            "sortNo": 2,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 528,
+            "phaseName": "招标采购",
+            "sortNo": 3,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 529,
+            "phaseName": "合同签订",
+            "sortNo": 4,
+            "attachmentCount": 1
+          },
+          {
+            "phaseId": 530,
+            "phaseName": "设计与评审",
+            "sortNo": 5,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 531,
+            "phaseName": "开发实现",
+            "sortNo": 6,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 532,
+            "phaseName": "测试与测评",
+            "sortNo": 7,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 533,
+            "phaseName": "部署上线与试运行",
+            "sortNo": 8,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 534,
+            "phaseName": "初验",
+            "sortNo": 9,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 535,
+            "phaseName": "终验",
+            "sortNo": 10,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 536,
+            "phaseName": "质保运维",
+            "sortNo": 11,
+            "attachmentCount": 2
+          }
+        ],
+        "matched": {
+          "phaseId": 529,
+          "phaseName": "合同签订",
+          "sortNo": 4,
+          "attachmentCount": 1
+        }
+      }
+    },
+    {
+      "id": "S-001-003",
+      "kind": "phase_attachment_count",
+      "truth": {
+        "kind": "phase_attachment_count",
+        "projectId": 55,
+        "phaseName": "终验",
+        "via": "page-apis"
+      },
+      "values": [
+        "3"
+      ],
+      "note": "GET /api/attachments?bizType=PROJECT_PHASE&bizId=535（终验）条数（口径：仅 PROJECT_PHASE 附件，逻辑删除已由后端排除）",
+      "detail": {
+        "rows": [
+          {
+            "phaseId": 526,
+            "phaseName": "立项申报",
+            "sortNo": 1,
+            "attachmentCount": 9
+          },
+          {
+            "phaseId": 527,
+            "phaseName": "需求调研与规格",
+            "sortNo": 2,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 528,
+            "phaseName": "招标采购",
+            "sortNo": 3,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 529,
+            "phaseName": "合同签订",
+            "sortNo": 4,
+            "attachmentCount": 1
+          },
+          {
+            "phaseId": 530,
+            "phaseName": "设计与评审",
+            "sortNo": 5,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 531,
+            "phaseName": "开发实现",
+            "sortNo": 6,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 532,
+            "phaseName": "测试与测评",
+            "sortNo": 7,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 533,
+            "phaseName": "部署上线与试运行",
+            "sortNo": 8,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 534,
+            "phaseName": "初验",
+            "sortNo": 9,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 535,
+            "phaseName": "终验",
+            "sortNo": 10,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 536,
+            "phaseName": "质保运维",
+            "sortNo": 11,
+            "attachmentCount": 2
+          }
+        ],
+        "matched": {
+          "phaseId": 535,
+          "phaseName": "终验",
+          "sortNo": 10,
+          "attachmentCount": 3
+        }
+      }
+    },
+    {
+      "id": "S-001-004",
+      "kind": "phase_attachment_count_all",
+      "truth": {
+        "kind": "phase_attachment_count_all",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "9",
+        "2",
+        "3",
+        "1",
+        "3",
+        "2",
+        "3",
+        "3",
+        "3",
+        "3",
+        "2"
+      ],
+      "note": "逐阶段 GET /api/attachments?bizType=PROJECT_PHASE&bizId={phaseId} 的条数，按 sortNo 顺序",
+      "detail": {
+        "rows": [
+          {
+            "phaseId": 526,
+            "phaseName": "立项申报",
+            "sortNo": 1,
+            "attachmentCount": 9
+          },
+          {
+            "phaseId": 527,
+            "phaseName": "需求调研与规格",
+            "sortNo": 2,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 528,
+            "phaseName": "招标采购",
+            "sortNo": 3,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 529,
+            "phaseName": "合同签订",
+            "sortNo": 4,
+            "attachmentCount": 1
+          },
+          {
+            "phaseId": 530,
+            "phaseName": "设计与评审",
+            "sortNo": 5,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 531,
+            "phaseName": "开发实现",
+            "sortNo": 6,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 532,
+            "phaseName": "测试与测评",
+            "sortNo": 7,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 533,
+            "phaseName": "部署上线与试运行",
+            "sortNo": 8,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 534,
+            "phaseName": "初验",
+            "sortNo": 9,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 535,
+            "phaseName": "终验",
+            "sortNo": 10,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 536,
+            "phaseName": "质保运维",
+            "sortNo": 11,
+            "attachmentCount": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "S-001-005",
+      "kind": "phase_attachment_sum",
+      "truth": {
+        "kind": "phase_attachment_sum",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "34"
+      ],
+      "note": "各阶段附件数之和（9+2+3+1+3+2+3+3+3+3+2=34）",
+      "detail": {
+        "rows": [
+          {
+            "phaseId": 526,
+            "phaseName": "立项申报",
+            "sortNo": 1,
+            "attachmentCount": 9
+          },
+          {
+            "phaseId": 527,
+            "phaseName": "需求调研与规格",
+            "sortNo": 2,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 528,
+            "phaseName": "招标采购",
+            "sortNo": 3,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 529,
+            "phaseName": "合同签订",
+            "sortNo": 4,
+            "attachmentCount": 1
+          },
+          {
+            "phaseId": 530,
+            "phaseName": "设计与评审",
+            "sortNo": 5,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 531,
+            "phaseName": "开发实现",
+            "sortNo": 6,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 532,
+            "phaseName": "测试与测评",
+            "sortNo": 7,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 533,
+            "phaseName": "部署上线与试运行",
+            "sortNo": 8,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 534,
+            "phaseName": "初验",
+            "sortNo": 9,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 535,
+            "phaseName": "终验",
+            "sortNo": 10,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 536,
+            "phaseName": "质保运维",
+            "sortNo": 11,
+            "attachmentCount": 2
+          }
+        ],
+        "sum": 34
+      }
+    },
+    {
+      "id": "S-002-001",
+      "kind": "budget_amount",
+      "truth": {
+        "kind": "budget_amount",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "2100000"
+      ],
+      "note": "GET /api/projects/55 → budgetAmount（口径：概算/预算金额，单位元）",
+      "detail": {
+        "budgetAmount": 2100000
+      }
+    },
+    {
+      "id": "S-002-002",
+      "kind": "contract_amount_main",
+      "truth": {
+        "kind": "contract_amount_main",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "1848000"
+      ],
+      "note": "GET /api/projects/55 → contractTotal（口径：主合同金额；后端 contractAmount(pj, inclChange=true) 实时汇总）",
+      "detail": {
+        "contractTotal": 1848000,
+        "contractAmount": 1848000
+      }
+    },
+    {
+      "id": "S-002-003",
+      "kind": "contract_total",
+      "truth": {
+        "kind": "contract_total",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "4",
+        "1990800"
+      ],
+      "note": "GET /api/projects/55/contracts → 4 份，contractAmount 求和=1990800（口径：仅本项目自身关联合同，V12 project_contract；金额不含 changeAmount）",
+      "detail": {
+        "count": 4,
+        "total": 1990800,
+        "rows": [
+          {
+            "id": 100,
+            "name": "中小学教育信息化改造施工合同",
+            "contractAmount": 1848000
+          },
+          {
+            "id": 101,
+            "name": "中小学教育信息化改造监理服务合同",
+            "contractAmount": 52500
+          },
+          {
+            "id": 102,
+            "name": "中小学教育信息化改造第三方测评服务合同",
+            "contractAmount": 73500
+          },
+          {
+            "id": 103,
+            "name": "中小学教育信息化改造方案评估服务合同",
+            "contractAmount": 16800
+          }
+        ]
+      }
+    },
+    {
+      "id": "S-003-001",
+      "kind": "child_count",
+      "truth": {
+        "kind": "child_count",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "0"
+      ],
+      "note": "GET /api/projects/55 → childCount（口径：parent_id=该项目 的子项目数）",
+      "detail": {
+        "childCount": 0
+      }
+    },
+    {
+      "id": "S-003-002",
+      "kind": "payment_records",
+      "truth": {
+        "kind": "payment_records",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "9",
+        "1855560"
+      ],
+      "note": "GET /api/projects/55/payments → 9 条，paidAmount 合计=1855560",
+      "detail": {
+        "count": 9,
+        "paid": 1855560
+      }
+    },
+    {
+      "id": "S-004-001",
+      "kind": "project_type_status",
+      "truth": {
+        "kind": "project_type_status",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "SW",
+        "RUN"
+      ],
+      "note": "GET /api/projects/55 → type/status",
+      "detail": {
+        "type": "SW",
+        "status": "RUN"
+      }
+    },
+    {
+      "id": "S-004-002",
+      "kind": "project_name_code",
+      "truth": {
+        "kind": "project_name_code",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "RJ-2026-005",
+        "中小学教育信息化改造"
+      ],
+      "note": "GET /api/projects/55 → code/name（name 去掉括号后缀再比，规避全半角差异）",
+      "detail": {
+        "code": "RJ-2026-005",
+        "name": "中小学教育信息化改造（单项目）"
+      }
+    },
+    {
+      "id": "S-005-001",
+      "kind": "payment_records",
+      "truth": {
+        "kind": "payment_records",
+        "projectId": 55,
+        "via": "page-apis",
+        "derived": true,
+        "sources": [
+          "S-003-002",
+          "S-002-001"
+        ]
+      },
+      "values": [
+        "9",
+        "1855560"
+      ],
+      "note": "GET /api/projects/55/payments → 9 条，paidAmount 合计=1855560",
+      "detail": {
+        "count": 9,
+        "paid": 1855560
+      }
+    },
+    {
+      "id": "S-005-002",
+      "kind": "contract_amount_total",
+      "truth": {
+        "kind": "contract_amount_total",
+        "projectId": 55,
+        "via": "page-apis",
+        "derived": true,
+        "sources": [
+          "S-002-001",
+          "S-002-003"
+        ]
+      },
+      "values": [
+        "1990800"
+      ],
+      "note": "GET /api/projects/55/contracts → contractAmount 求和=1990800（4 份；口径：仅本项目自身关联合同，金额不含 changeAmount）",
+      "detail": {
+        "count": 4,
+        "total": 1990800
+      }
+    },
+    {
+      "id": "S-005-003",
+      "kind": "phase_attachment_count",
+      "truth": {
+        "kind": "phase_attachment_count",
+        "projectId": 55,
+        "phaseName": "招标采购",
+        "via": "page-apis"
+      },
+      "values": [
+        "3"
+      ],
+      "note": "GET /api/attachments?bizType=PROJECT_PHASE&bizId=528（招标采购）条数（口径：仅 PROJECT_PHASE 附件，逻辑删除已由后端排除）",
+      "detail": {
+        "rows": [
+          {
+            "phaseId": 526,
+            "phaseName": "立项申报",
+            "sortNo": 1,
+            "attachmentCount": 9
+          },
+          {
+            "phaseId": 527,
+            "phaseName": "需求调研与规格",
+            "sortNo": 2,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 528,
+            "phaseName": "招标采购",
+            "sortNo": 3,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 529,
+            "phaseName": "合同签订",
+            "sortNo": 4,
+            "attachmentCount": 1
+          },
+          {
+            "phaseId": 530,
+            "phaseName": "设计与评审",
+            "sortNo": 5,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 531,
+            "phaseName": "开发实现",
+            "sortNo": 6,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 532,
+            "phaseName": "测试与测评",
+            "sortNo": 7,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 533,
+            "phaseName": "部署上线与试运行",
+            "sortNo": 8,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 534,
+            "phaseName": "初验",
+            "sortNo": 9,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 535,
+            "phaseName": "终验",
+            "sortNo": 10,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 536,
+            "phaseName": "质保运维",
+            "sortNo": 11,
+            "attachmentCount": 2
+          }
+        ],
+        "matched": {
+          "phaseId": 528,
+          "phaseName": "招标采购",
+          "sortNo": 3,
+          "attachmentCount": 3
+        }
+      }
+    },
+    {
+      "id": "S-005-004",
+      "kind": "bid_amount",
+      "truth": {
+        "kind": "bid_amount",
+        "projectId": 55,
+        "via": "page-apis",
+        "alsoFrom": [
+          "S-002-001"
+        ]
+      },
+      "values": [
+        "1884960"
+      ],
+      "note": "GET /api/projects/55 → bidAmount",
+      "detail": {
+        "bidAmount": 1884960
+      }
+    },
+    {
+      "id": "D-003-001",
+      "kind": "ai_ready_count",
+      "truth": {
+        "kind": "ai_ready_count",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "6"
+      ],
+      "note": "GET /api/ai/attachments/status?attachmentIds=... 里 indexStatus=READY 的条数（在册 34 个附件）",
+      "detail": {
+        "ids": [
+          1326,
+          1325,
+          1324,
+          1323,
+          1322,
+          1321,
+          917,
+          913,
+          912,
+          916,
+          915,
+          911,
+          910,
+          908,
+          914,
+          920,
+          918,
+          909,
+          921,
+          919,
+          925,
+          924,
+          922,
+          927,
+          926,
+          923,
+          933,
+          931,
+          930,
+          932,
+          929,
+          928,
+          935,
+          934
+        ],
+        "ready": 6
+      }
+    },
+    {
+      "id": "M-001-001",
+      "kind": "phase_attachment_count",
+      "truth": {
+        "kind": "phase_attachment_count",
+        "projectId": 55,
+        "phaseName": "立项申报",
+        "via": "page-apis",
+        "alsoFrom": [
+          "D-003-001"
+        ]
+      },
+      "values": [
+        "9"
+      ],
+      "note": "GET /api/attachments?bizType=PROJECT_PHASE&bizId=526（立项申报）条数（口径：仅 PROJECT_PHASE 附件，逻辑删除已由后端排除）",
+      "detail": {
+        "rows": [
+          {
+            "phaseId": 526,
+            "phaseName": "立项申报",
+            "sortNo": 1,
+            "attachmentCount": 9
+          },
+          {
+            "phaseId": 527,
+            "phaseName": "需求调研与规格",
+            "sortNo": 2,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 528,
+            "phaseName": "招标采购",
+            "sortNo": 3,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 529,
+            "phaseName": "合同签订",
+            "sortNo": 4,
+            "attachmentCount": 1
+          },
+          {
+            "phaseId": 530,
+            "phaseName": "设计与评审",
+            "sortNo": 5,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 531,
+            "phaseName": "开发实现",
+            "sortNo": 6,
+            "attachmentCount": 2
+          },
+          {
+            "phaseId": 532,
+            "phaseName": "测试与测评",
+            "sortNo": 7,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 533,
+            "phaseName": "部署上线与试运行",
+            "sortNo": 8,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 534,
+            "phaseName": "初验",
+            "sortNo": 9,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 535,
+            "phaseName": "终验",
+            "sortNo": 10,
+            "attachmentCount": 3
+          },
+          {
+            "phaseId": 536,
+            "phaseName": "质保运维",
+            "sortNo": 11,
+            "attachmentCount": 2
+          }
+        ],
+        "matched": {
+          "phaseId": 526,
+          "phaseName": "立项申报",
+          "sortNo": 1,
+          "attachmentCount": 9
+        }
+      }
+    },
+    {
+      "id": "M-001-002",
+      "kind": "budget_amount",
+      "truth": {
+        "kind": "budget_amount",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "2100000"
+      ],
+      "note": "GET /api/projects/55 → budgetAmount（口径：概算/预算金额，单位元）",
+      "detail": {
+        "budgetAmount": 2100000
+      }
+    },
+    {
+      "id": "M-001-003",
+      "kind": "contract_total",
+      "truth": {
+        "kind": "contract_total",
+        "projectId": 55,
+        "via": "page-apis"
+      },
+      "values": [
+        "4",
+        "1990800"
+      ],
+      "note": "GET /api/projects/55/contracts → 4 份，contractAmount 求和=1990800（口径：仅本项目自身关联合同，V12 project_contract；金额不含 changeAmount）",
+      "detail": {
+        "count": 4,
+        "total": 1990800,
+        "rows": [
+          {
+            "id": 100,
+            "name": "中小学教育信息化改造施工合同",
+            "contractAmount": 1848000
+          },
+          {
+            "id": 101,
+            "name": "中小学教育信息化改造监理服务合同",
+            "contractAmount": 52500
+          },
+          {
+            "id": 102,
+            "name": "中小学教育信息化改造第三方测评服务合同",
+            "contractAmount": 73500
+          },
+          {
+            "id": 103,
+            "name": "中小学教育信息化改造方案评估服务合同",
+            "contractAmount": 16800
+          }
+        ]
+      }
+    }
+  ]
+}

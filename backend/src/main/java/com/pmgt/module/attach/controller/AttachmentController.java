@@ -6,7 +6,9 @@ import com.pmgt.common.exception.BizException;
 import com.pmgt.common.security.AuthContext;
 import com.pmgt.common.security.RequireRole;
 import com.pmgt.common.security.Role;
+import com.pmgt.common.storage.AttachmentCacheSupport;
 import com.pmgt.common.storage.AttachmentStorage;
+import com.pmgt.common.storage.ObjectStat;
 import com.pmgt.module.attach.dto.AttachmentUploadTaskVO;
 import com.pmgt.module.attach.dto.AttachmentVO;
 import com.pmgt.module.attach.entity.Attachment;
@@ -27,6 +29,7 @@ import com.pmgt.module.project.service.ContractLinkService;
 import com.pmgt.module.system.entity.SysUser;
 import com.pmgt.module.system.mapper.SysUserMapper;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -38,6 +41,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+
+import jakarta.servlet.http.HttpServletRequest;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;
@@ -293,11 +298,27 @@ public class AttachmentController {
     /** 下载/预览：disposition=attachment 下载，inline 内联预览（本地盘 / OBS 统一走存储抽象） */
     @GetMapping("/attachments/{id}/download")
     public ResponseEntity<StreamingResponseBody> download(@PathVariable Long id,
-                                             @RequestParam(defaultValue = "attachment") String disposition) {
+                                             @RequestParam(defaultValue = "attachment") String disposition,
+                                             HttpServletRequest request) {
         Attachment att = attachmentMapper.selectById(id);
         if (att == null) {
             throw new BizException(404, "附件不存在");
         }
+
+        // ── 缓存（体验修复：以前一个缓存头都不发，前端每次打开预览、每次切全屏都整包重下）──
+        // ETag = file_path + (size + OBS对象etag | 本地mtime)；元信息取不到就退回 file_path+size。
+        // 必须 private：下载 URL 上带 token 查询参数（见 AuthFilter），进共享缓存等于把
+        // 某人的下载凭据与私有附件缓存给其他人；private 只进浏览器自己的缓存。
+        ObjectStat stat = AttachmentCacheSupport.statOf(att.getFilePath(), attachmentStorage);
+        String etag = AttachmentCacheSupport.etagOf(att.getFilePath(), att.getFileSize(), stat);
+        if (AttachmentCacheSupport.isNotModified(request.getHeader(HttpHeaders.IF_NONE_MATCH), etag)) {
+            // 304：不打开文件、不读盘，直接让浏览器用本地副本
+            return ResponseEntity.status(HttpStatus.NOT_MODIFIED)
+                    .eTag(etag)
+                    .cacheControl(AttachmentCacheSupport.cacheControl())
+                    .build();
+        }
+
         final InputStream in;
         try {
             in = attachmentStorage.open(att.getFilePath());
@@ -321,11 +342,18 @@ public class AttachmentController {
                 throw new RuntimeException("读取附件失败", e);
             }
         };
-        return ResponseEntity.ok()
+        // 长度优先用存储侧的真实大小（OBS 元信息/本地文件），取不到才用附件登记的 file_size；
+        // 仍取不到就不发 Content-Length（原来会发出字面量 "null"，会直接让浏览器报错）
+        Long contentLength = stat != null && stat.size() != null ? stat.size() : att.getFileSize();
+        ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
                 .contentType(mediaType)
                 .header(HttpHeaders.CONTENT_DISPOSITION, cd)
-                .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(att.getFileSize()))
-                .body(body);
+                .eTag(etag)
+                .cacheControl(AttachmentCacheSupport.cacheControl());
+        if (contentLength != null) {
+            builder.header(HttpHeaders.CONTENT_LENGTH, String.valueOf(contentLength));
+        }
+        return builder.body(body);
     }
 
     @RequireRole({Role.ADMIN, Role.MANAGER})

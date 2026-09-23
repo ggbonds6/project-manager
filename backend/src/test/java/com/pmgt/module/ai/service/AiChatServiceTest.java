@@ -10,6 +10,9 @@ import com.pmgt.module.ai.dto.AiChatRequest;
 import com.pmgt.module.ai.dto.AiChatResponse;
 import com.pmgt.module.ai.entity.AiAskLog;
 import com.pmgt.module.ai.mapper.AiAskLogMapper;
+import com.pmgt.module.ai.query.AiQueryScope;
+import com.pmgt.module.ai.query.AiQueryUsageTracker;
+import com.pmgt.module.ai.query.ScopeTokenService;
 import com.pmgt.module.attach.entity.Attachment;
 import com.pmgt.module.attach.mapper.AttachmentMapper;
 import com.pmgt.module.log.service.OperationLogService;
@@ -24,6 +27,8 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -40,13 +45,20 @@ import static org.mockito.Mockito.when;
  *
  * <p>AI 服务用 Mockito 打桩，覆盖四条不能出错的路径：
  * 正常问答（含留痕落库）、AI 关闭、作用域内无可检索文档、AI 服务不可用（不降级）。
+ *
+ * <p>P2 追加两条：带 {@code biz_query}（含 scope_token 与用量留痕）、
+ * 以及<b>配置为空时完全不发该字段</b>（§11.7 验收第 4 条的回归）。
  */
 class AiChatServiceTest {
+
+    private static final String SECRET = "unit-test-secret-0123456789abcdefghijklmnopqrstuvwxyz";
 
     private AiServiceClient ai;
     private AiScopeResolver scopeResolver;
     private AiAskLogMapper askLogMapper;
     private OperationLogService operationLogService;
+    private ScopeTokenService scopeTokens;
+    private AiQueryUsageTracker queryUsage;
     private AiChatService chatService;
 
     @BeforeEach
@@ -59,8 +71,23 @@ class AiChatServiceTest {
         scopeResolver = mock(AiScopeResolver.class);
         askLogMapper = mock(AiAskLogMapper.class);
         operationLogService = mock(OperationLogService.class);
+        scopeTokens = new ScopeTokenService(SECRET, ScopeTokenService.MAX_TTL_SECONDS);
+        queryUsage = new AiQueryUsageTracker();
         chatService = new AiChatService(props, ai, new AiAnswerAdapter(), scopeResolver,
-                askLogMapper, mock(AttachmentMapper.class), operationLogService);
+                askLogMapper, mock(AttachmentMapper.class), operationLogService, scopeTokens, queryUsage);
+    }
+
+    /** 用给定配置建服务（用于验证"回调地址为空 → 不带 biz_query"）。 */
+    private AiChatService serviceWith(AiProperties props) {
+        return new AiChatService(props, ai, new AiAnswerAdapter(), scopeResolver,
+                askLogMapper, mock(AttachmentMapper.class), operationLogService, scopeTokens, queryUsage);
+    }
+
+    private static AiProperties propsWith(String callbackUrl) {
+        AiProperties props = new AiProperties();
+        props.setEnabled(true);
+        props.setQueryCallbackUrl(callbackUrl);
+        return props;
     }
 
     @AfterEach
@@ -95,7 +122,8 @@ class AiChatServiceTest {
         when(scopeResolver.resolveForChat(null, List.of(11L)))
                 .thenReturn(new AiScopeResolver.ChatScope(null, null, List.of(11L), List.of(11L), List.of("docA")));
         when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
-        when(ai.chat(eq("中标金额是多少？"), eq(List.of("docA")), eq(null), eq(5))).thenReturn(aiAnswer());
+        when(scopeResolver.accessibleProjectIds()).thenReturn(List.of(1L, 2L));
+        when(ai.chat(eq("中标金额是多少？"), eq(List.of("docA")), eq(null), eq(5), any())).thenReturn(aiAnswer());
 
         AiChatRequest request = new AiChatRequest();
         request.setQuestion("中标金额是多少？");
@@ -125,6 +153,9 @@ class AiChatServiceTest {
         assertEquals("docA", log.getDocIds());
         assertEquals(1, log.getCitedCount());
         assertEquals(0, log.getDegraded());
+        // P2：本次没有发生受控查询 → 0 次、entity 为空（null 而不是空串）
+        assertEquals(0, log.getBizQueryCount());
+        assertNull(log.getBizEntities());
         // 沿用既有 operate_log 留痕
         verify(operationLogService).log(eq("PROJECT"), eq(null), eq("AI_ASK"), any());
     }
@@ -134,7 +165,7 @@ class AiChatServiceTest {
         AiProperties off = new AiProperties();
         off.setEnabled(false);
         AiChatService disabled = new AiChatService(off, ai, new AiAnswerAdapter(), scopeResolver,
-                askLogMapper, mock(AttachmentMapper.class), operationLogService);
+                askLogMapper, mock(AttachmentMapper.class), operationLogService, scopeTokens, queryUsage);
 
         AiChatRequest request = new AiChatRequest();
         request.setQuestion("问题");
@@ -142,7 +173,7 @@ class AiChatServiceTest {
         AiUnavailableException e = assertThrows(AiUnavailableException.class, () -> disabled.ask(request));
 
         assertTrue(e.getMessage().contains("关闭"), e.getMessage());
-        verify(ai, never()).chat(any(), anyList(), any(), any());
+        verify(ai, never()).chat(any(), anyList(), any(), any(), any());
     }
 
     @Test
@@ -161,7 +192,7 @@ class AiChatServiceTest {
         assertTrue(response.getAnswer().contains("还没有可用于问答的文档"), response.getAnswer());
         assertTrue(response.getAnswer().contains("项目一"));
         assertTrue(response.getCitations().isEmpty());
-        verify(ai, never()).chat(any(), anyList(), any(), any());
+        verify(ai, never()).chat(any(), anyList(), any(), any(), any());
         verify(askLogMapper).insert(any(AiAskLog.class));
     }
 
@@ -170,7 +201,8 @@ class AiChatServiceTest {
         when(scopeResolver.resolveForChat(null, List.of(11L)))
                 .thenReturn(new AiScopeResolver.ChatScope(null, null, List.of(11L), List.of(11L), List.of("docA")));
         when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
-        when(ai.chat(any(), anyList(), any(), any()))
+        when(scopeResolver.accessibleProjectIds()).thenReturn(List.of(1L, 2L));
+        when(ai.chat(any(), anyList(), any(), any(), any()))
                 .thenThrow(new AiUnavailableException("连接失败（http://127.0.0.1:8100）：Connection refused"));
 
         AiChatRequest request = new AiChatRequest();
@@ -198,7 +230,7 @@ class AiChatServiceTest {
         AiScopeDeniedException e = assertThrows(AiScopeDeniedException.class, () -> chatService.ask(request));
 
         assertEquals(403, e.getCode());
-        verify(ai, never()).chat(any(), anyList(), any(), any());
+        verify(ai, never()).chat(any(), anyList(), any(), any(), any());
         verify(askLogMapper, never()).insert(any(AiAskLog.class));
     }
 
@@ -209,5 +241,200 @@ class AiChatServiceTest {
 
         assertThrows(com.pmgt.common.exception.BizException.class, () -> chatService.ask(request));
         verify(askLogMapper, times(0)).insert(any(AiAskLog.class));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // P2：受控查询通道（§11.2 / §11.6）
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    void 下发biz_query含回调地址短时效令牌与entity清单() {
+        AuthContext.set(new AuthContext.Current(9L, "zhangsan", "张三", Role.MANAGER));
+        when(scopeResolver.resolveForChat(1L, null))
+                .thenReturn(new AiScopeResolver.ChatScope(1L, "项目一", List.of(), List.of(), List.of("docA")));
+        when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
+        when(ai.chat(any(), anyList(), any(), any(), any())).thenReturn(aiAnswer());
+
+        AiChatRequest request = new AiChatRequest();
+        request.setQuestion("这个项目有几个阶段附件？");
+        request.setProjectId(1L);
+        chatService.ask(request);
+
+        ArgumentCaptor<Map<String, Object>> captor = bizQueryCaptor();
+        verify(ai).chat(eq("这个项目有几个阶段附件？"), eq(List.of("docA")), eq(null), eq(null), captor.capture());
+        Map<String, Object> bizQuery = captor.getValue();
+        assertNotNull(bizQuery, "配置了回调地址就必须下发 biz_query");
+        assertEquals("http://host.docker.internal:8080/api/ai/query", bizQuery.get("url"));
+        assertEquals(List.of("projects", "contracts", "payments", "stats"), bizQuery.get("entities"));
+        // scope_token 必须是主系统签发、可被自己解析回来的短时效令牌，且范围收窄到提问的项目
+        String token = (String) bizQuery.get("scope_token");
+        AiQueryScope scope = scopeTokens.parse(token);
+        assertEquals(9L, scope.userId());
+        assertEquals("张三", scope.userName());
+        assertEquals(List.of(1L), scope.projects(), "点名了项目就只授权该项目");
+    }
+
+    @Test
+    void 下发的令牌有效期必须覆盖整轮问答的超时链() {
+        // 回归：token 定得比一轮问答短时，问答后段的回调会 401，模型会把"授权过期"
+        // 说成"无权查看/系统里没有"——答案直接错。要求：有效期 > 前端 180s 的问答超时。
+        AuthContext.set(new AuthContext.Current(9L, "zhangsan", "张三", Role.MANAGER));
+        when(scopeResolver.resolveForChat(1L, null))
+                .thenReturn(new AiScopeResolver.ChatScope(1L, "项目一", List.of(), List.of(), List.of("docA")));
+        when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
+        when(ai.chat(any(), anyList(), any(), any(), any())).thenReturn(aiAnswer());
+
+        AiChatRequest request = new AiChatRequest();
+        request.setQuestion("这个项目有几个阶段附件？");
+        request.setProjectId(1L);
+        chatService.ask(request);
+
+        ArgumentCaptor<Map<String, Object>> captor = bizQueryCaptor();
+        verify(ai).chat(any(), anyList(), any(), any(), captor.capture());
+        String token = (String) captor.getValue().get("scope_token");
+
+        long remainingMs = expiryOf(token) - System.currentTimeMillis();
+        assertTrue(remainingMs > 180_000L,
+                "令牌剩余有效期必须大于前端 180s 的问答超时，实际 " + remainingMs + "ms");
+        assertTrue(remainingMs <= 300_000L + 2_000L,
+                "有效期满打满算不得超过上限 300s，实际 " + remainingMs + "ms");
+    }
+
+    private static long expiryOf(String token) {
+        javax.crypto.SecretKey key = io.jsonwebtoken.security.Keys
+                .hmacShaKeyFor(SECRET.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return io.jsonwebtoken.Jwts.parser().verifyWith(key).build()
+                .parseSignedClaims(token).getPayload().getExpiration().getTime();
+    }
+
+    @Test
+    void 没点名项目时授权该用户可访问的全部项目() {
+        AuthContext.set(new AuthContext.Current(9L, "zhangsan", "张三", Role.MANAGER));
+        when(scopeResolver.resolveForChat(null, List.of(11L)))
+                .thenReturn(new AiScopeResolver.ChatScope(null, null, List.of(11L), List.of(11L), List.of("docA")));
+        when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
+        when(scopeResolver.accessibleProjectIds()).thenReturn(List.of(1L, 2L, 3L));
+        when(ai.chat(any(), anyList(), any(), any(), any())).thenReturn(aiAnswer());
+
+        AiChatRequest request = new AiChatRequest();
+        request.setQuestion("全部项目预算多少？");
+        request.setAttachmentIds(List.of(11L));
+        chatService.ask(request);
+
+        ArgumentCaptor<Map<String, Object>> captor = bizQueryCaptor();
+        verify(ai).chat(any(), anyList(), any(), any(), captor.capture());
+        AiQueryScope scope = scopeTokens.parse((String) captor.getValue().get("scope_token"));
+        assertEquals(List.of(1L, 2L, 3L), scope.projects());
+    }
+
+    @Test
+    void 回调地址为空时不带biz_query字段() {
+        // §11.2：不传 biz_query 时 AI 侧不注册工具，行为与引入 P2 前完全一致
+        AuthContext.set(new AuthContext.Current(9L, "zhangsan", "张三", Role.MANAGER));
+        AiChatService disabled = serviceWith(propsWith("   "));
+        when(scopeResolver.resolveForChat(null, List.of(11L)))
+                .thenReturn(new AiScopeResolver.ChatScope(null, null, List.of(11L), List.of(11L), List.of("docA")));
+        when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
+        when(ai.chat(any(), anyList(), any(), any(), any())).thenReturn(aiAnswer());
+
+        AiChatRequest request = new AiChatRequest();
+        request.setQuestion("中标金额是多少？");
+        request.setAttachmentIds(List.of(11L));
+        disabled.ask(request);
+
+        ArgumentCaptor<Map<String, Object>> captor = bizQueryCaptor();
+        verify(ai).chat(any(), anyList(), any(), any(), captor.capture());
+        assertNull(captor.getValue(), "回调地址为空必须发 null（由 AiServiceClient 保证不下发该字段）");
+        // 也不该为此去查"可访问项目"
+        verify(scopeResolver, never()).accessibleProjectIds();
+        // 留痕：0 次系统查询
+        ArgumentCaptor<AiAskLog> logCaptor = ArgumentCaptor.forClass(AiAskLog.class);
+        verify(askLogMapper).insert(logCaptor.capture());
+        assertEquals(0, logCaptor.getValue().getBizQueryCount());
+        assertNull(logCaptor.getValue().getBizEntities());
+    }
+
+    @Test
+    void 把本次问答的系统查询次数与entity写进留痕() {
+        AuthContext.set(new AuthContext.Current(9L, "zhangsan", "张三", Role.MANAGER));
+        when(scopeResolver.resolveForChat(null, List.of(11L)))
+                .thenReturn(new AiScopeResolver.ChatScope(null, null, List.of(11L), List.of(11L), List.of("docA")));
+        when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
+        when(scopeResolver.accessibleProjectIds()).thenReturn(List.of(1L, 2L));
+        // 模拟 AI 侧在推理过程中回调主系统：用同一枚 scope_token 查了 3 次
+        when(ai.chat(any(), anyList(), any(), any(), any())).thenAnswer(inv -> {
+            Map<String, Object> bizQuery = inv.getArgument(4);
+            AiQueryScope scope = scopeTokens.parse((String) bizQuery.get("scope_token"));
+            queryUsage.record(scope.jti(), "stats");
+            queryUsage.record(scope.jti(), "stats");
+            queryUsage.record(scope.jti(), "projects");
+            return aiAnswer();
+        });
+
+        AiChatRequest request = new AiChatRequest();
+        request.setQuestion("这个项目有几个阶段附件？");
+        request.setAttachmentIds(List.of(11L));
+        chatService.ask(request);
+
+        ArgumentCaptor<AiAskLog> captor = ArgumentCaptor.forClass(AiAskLog.class);
+        verify(askLogMapper).insert(captor.capture());
+        assertEquals(3, captor.getValue().getBizQueryCount(), "用了几次系统查询");
+        assertEquals("stats,projects", captor.getValue().getBizEntities(), "查了哪些 entity（去重）");
+        // 问答结束后清理计数，避免长期驻留
+        assertEquals(0, queryUsage.size());
+    }
+
+    @Test
+    void 本地没计到数时从toolTrace兜底计数() {
+        // 双机 + 负载均衡：签发与回调可能不在同一台 JVM，本地计数会是 0。
+        // 这时至少要把"用过系统数据"的次数记下来（entity 未知）。
+        AuthContext.set(new AuthContext.Current(9L, "zhangsan", "张三", Role.MANAGER));
+        when(scopeResolver.resolveForChat(null, List.of(11L)))
+                .thenReturn(new AiScopeResolver.ChatScope(null, null, List.of(11L), List.of(11L), List.of("docA")));
+        when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
+        when(scopeResolver.accessibleProjectIds()).thenReturn(List.of(1L));
+        Map<String, Object> answer = aiAnswer();
+        answer.put("trace", List.of(
+                Map.of("name", "query_business_data", "brief", "entity=stats 返回 3 行", "elapsed", 0.2),
+                Map.of("name", "search_documents", "brief", "命中 1 段", "elapsed", 0.3),
+                Map.of("name", "query_business_data", "brief", "entity=projects 返回 1 行", "elapsed", 0.1)));
+        when(ai.chat(any(), anyList(), any(), any(), any())).thenReturn(answer);
+
+        AiChatRequest request = new AiChatRequest();
+        request.setQuestion("问题");
+        request.setAttachmentIds(List.of(11L));
+        chatService.ask(request);
+
+        ArgumentCaptor<AiAskLog> captor = ArgumentCaptor.forClass(AiAskLog.class);
+        verify(askLogMapper).insert(captor.capture());
+        assertEquals(2, captor.getValue().getBizQueryCount());
+        assertNull(captor.getValue().getBizEntities(), "兜底只能拿到次数，entity 必须如实为空");
+    }
+
+    @Test
+    void 令牌签发异常不让整次问答失败() {
+        AuthContext.set(new AuthContext.Current(9L, "zhangsan", "张三", Role.MANAGER));
+        when(scopeResolver.resolveForChat(null, List.of(11L)))
+                .thenReturn(new AiScopeResolver.ChatScope(null, null, List.of(11L), List.of(11L), List.of("docA")));
+        when(scopeResolver.selectByIds(any())).thenReturn(List.of(readyAttachment()));
+        when(scopeResolver.accessibleProjectIds()).thenThrow(new IllegalStateException("库挂了"));
+        when(ai.chat(any(), anyList(), any(), any(), any())).thenReturn(aiAnswer());
+
+        AiChatRequest request = new AiChatRequest();
+        request.setQuestion("中标金额是多少？");
+        request.setAttachmentIds(List.of(11L));
+
+        // 没有系统数据的问答仍有价值：AI 侧会如实说"系统数据没查到"，而不是整轮失败
+        AiChatResponse response = chatService.ask(request);
+
+        assertEquals("中标金额为 7,182,700.00 元 [1]", response.getAnswer());
+        ArgumentCaptor<Map<String, Object>> captor = bizQueryCaptor();
+        verify(ai).chat(any(), anyList(), any(), any(), captor.capture());
+        assertNull(captor.getValue());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ArgumentCaptor<Map<String, Object>> bizQueryCaptor() {
+        return ArgumentCaptor.forClass(Map.class);
     }
 }

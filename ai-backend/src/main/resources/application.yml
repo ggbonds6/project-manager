@@ -60,6 +60,11 @@ ai:
     index: ${OPENSEARCH_INDEX:pm-ai-chunks}
     username: ${OPENSEARCH_USER:}
     password: ${OPENSEARCH_PASSWORD:}
+  # P2 受控查询（docs/AI前端与集成方案.md §11）：回调主系统 /api/ai/query/{entity} 的超时（秒）。
+  # ⚠️ 回调地址与 scope_token **不在配置文件里**：它们由主系统在每次 /chat 请求的 biz_query 里现给，
+  #    AI 侧不持有长期凭据（§11.1"反向回调"）。不传 biz_query 时不注册 query_business_data 工具。
+  biz-query:
+    timeout-seconds: ${BIZ_QUERY_TIMEOUT:20}
 
 logging:
   level:

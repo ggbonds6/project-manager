@@ -146,8 +146,10 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
 
   // 解析类预览（docx/xlsx/md/text）在附件切换时执行
   useEffect(() => {
-    setPdfLoaded(false);
+    // 换附件时先退出全屏：新附件若沿用上一份的全屏态，用户会看到"一闪"。
+    // （setState 是异步的，这里先置 false，渲染时就不会先按全屏算高度。）
     setFull(false);
+    setPdfLoaded(false);
     setText(null);
     setForcePreview(false);
     if (!item) return;
@@ -228,9 +230,11 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
   const isOfficeParsed =
     DOCX_EXTS.has(ext) || XLSX_EXTS.has(ext) || DOC_EXTS.has(ext) || OFD_EXTS.has(ext);
 
-  const renderViewer = (large: boolean) => {
+  const renderViewer = () => {
     if (!item) return null;
-    const maxH = large ? 'calc(100vh - 140px)' : '65vh';
+    // 高度随全屏切换（由调用处传入），但**视图结构不随全屏变化** —— 见文件末尾的说明：
+    // 浏览器内置 PDF 阅读器/图片/Office 预览一旦被卸载重挂就会重新发一次请求。
+    const maxH = full ? 'calc(100vh - 140px)' : '65vh';
 
     // 大文件先让用户选：直接下载，还是继续在线预览。
     // 避免用户对着长时间空白等待，却不知道是文件大还是服务出问题了。
@@ -412,75 +416,100 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
     </Space>
   );
 
+  const fullHeader = (
+    <Space size={10}>
+      <Tag color={extTag.color} style={{ marginInlineEnd: 0 }}>
+        {extTag.text}
+      </Tag>
+      <b style={{ fontSize: 15 }}>{item.fileName}</b>
+      <Typography.Text type="secondary">{fmtFileSize(item.fileSize)}</Typography.Text>
+    </Space>
+  );
+
   const footer = (
     <Space>
       <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
         下载
       </Button>
-      <Button icon={<FullscreenOutlined />} onClick={() => setFull(true)}>
-        全屏查看
-      </Button>
+      {/* 全屏/退出全屏只切 `full` 这一个 state，预览元素本身保持挂载（不重新下载） */}
+      {full ? (
+        <Button icon={<FullscreenExitOutlined />} onClick={() => setFull(false)}>
+          退出全屏 (Esc)
+        </Button>
+      ) : (
+        <Button icon={<FullscreenOutlined />} onClick={() => setFull(true)}>
+          全屏查看
+        </Button>
+      )}
     </Space>
   );
 
-  if (full) {
-    return (
-      <div
-        style={{
-          position: 'fixed',
-          inset: 0,
-          zIndex: 3000,
-          background: '#fafafa',
-          display: 'flex',
-          flexDirection: 'column',
-        }}
-      >
-        <div
-          style={{
-            height: 52,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '0 16px',
-            background: '#fff',
-            borderBottom: '1px solid #f0f0f0',
-            gap: 12,
-            flexShrink: 0,
-          }}
-        >
-          <Space size={10}>
-            <Tag color={extTag.color} style={{ marginInlineEnd: 0 }}>
-              {extTag.text}
-            </Tag>
-            <b style={{ fontSize: 15 }}>{item.fileName}</b>
-            <Typography.Text type="secondary">{fmtFileSize(item.fileSize)}</Typography.Text>
-          </Space>
-          <Space>
-            <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
-              下载
-            </Button>
-            <Button icon={<FullscreenExitOutlined />} onClick={() => setFull(false)}>
-              退出全屏 (Esc)
-            </Button>
-          </Space>
-        </div>
-        <div style={{ flex: 1, overflow: 'auto', padding: 12 }}>{renderViewer(true)}</div>
-      </div>
-    );
-  }
+  /**
+   * 预览体的挂载策略（本次改动的核心）：
+   *
+   * `previewHost` 在"弹窗态"与"全屏态"下是**同一棵 React 子树、同一位置、判断分支不变**，
+   * 只有外层容器的 style 在变。因此：
+   *  - `iframe`（PDF）/ `img`（图片）/ `officeRef`（docx、xlsx、ofd）的 DOM 元素都是**同一个节点**，
+   *    React 不会卸载重建，浏览器也就不会重新发起一次附件下载；
+   *  - 需要重新取数据的只有两种情况，且都由**元素自身**决定：
+   *    1) 切换附件（`item` 变了）→ key 变的 `iframe` 重载、`img` 的 src 变；
+   *    2) 同一附件换引用页码（`pageNo` 变了）→ `iframe` 的 key 带上页码，仍然会重载（这个语义必须保留，
+   *       否则浏览器会沿用已有文档、忽略新的 `#page=N`）。
+   * 换句话说：全屏/退出全屏/其它 state 变化都不会触发重新下载。
+   */
+  const previewHost = <div style={{ margin: full ? 12 : 0 }}>{renderViewer()}</div>;
 
   return (
-    <Modal
-      title={headerTitle}
-      open
-      onCancel={onClose}
-      width={900}
-      footer={footer}
-      // 明确抬到 antd Drawer(1000) 之上：AI 悬浮问答窗里点引用会在这个 Drawer 内部再弹预览，
-      // 不给数值就依赖挂载顺序，偶发会出现"预览被抽屉盖住"的情况。
-      zIndex={1300}
-    >
-      <div style={{ maxHeight: '72vh', overflow: 'auto' }}>{renderViewer(false)}</div>
-    </Modal>
+    <>
+      <Modal
+        title={headerTitle}
+        open
+        onCancel={onClose}
+        width={900}
+        footer={footer}
+        // 明确抬到 antd Drawer(1000) 之上：AI 悬浮问答窗里点引用会在这个 Drawer 内部再弹预览，
+        // 不给数值就依赖挂载顺序，偶发会出现"预览被抽屉盖住"的情况。
+        zIndex={1300}
+      >
+        {previewHost}
+      </Modal>
+      {/* 全屏：同一个预览体用一个覆盖层"罩住"，而不是换一条渲染分支 */}
+      {full ? (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 3000,
+            background: '#fafafa',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <div
+            style={{
+              height: 52,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              padding: '0 16px',
+              background: '#fff',
+              borderBottom: '1px solid #f0f0f0',
+              gap: 12,
+              flexShrink: 0,
+            }}
+          >
+            {fullHeader}
+            <Space>
+              <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
+                下载
+              </Button>
+              <Button icon={<FullscreenExitOutlined />} onClick={() => setFull(false)}>
+                退出全屏 (Esc)
+              </Button>
+            </Space>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }

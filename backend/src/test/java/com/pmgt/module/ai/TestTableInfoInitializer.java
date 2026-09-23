@@ -5,6 +5,10 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.pmgt.module.ai.entity.AiAskLog;
 import com.pmgt.module.ai.entity.AttachmentAiTask;
 import com.pmgt.module.attach.entity.Attachment;
+import com.pmgt.module.project.entity.Contract;
+import com.pmgt.module.project.entity.Payment;
+import com.pmgt.module.project.entity.Project;
+import com.pmgt.module.project.entity.ProjectPhase;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 
 /**
@@ -17,6 +21,10 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
  * 而是"单测里没有框架启动过程"。这里把同样的初始化显式做一遍，
  * 好处是：<b>顺带验证了实体上的 @TableName/@TableId/@TableLogic 注解配置是正确的</b>
  * （注解写错时初始化就会失败或列名映射不对）。
+ *
+ * <p>受控查询（P2）还会用 {@code LambdaQueryWrapper} 检查 project / project_phase /
+ * contract / payment 的查询形状（{@code getSqlSegment()} 会把列名解析出来），
+ * 所以这四个实体也一并登记。
  */
 public final class TestTableInfoInitializer {
 
@@ -30,5 +38,9 @@ public final class TestTableInfoInitializer {
         TableInfoHelper.initTableInfo(assistant, Attachment.class);
         TableInfoHelper.initTableInfo(assistant, AttachmentAiTask.class);
         TableInfoHelper.initTableInfo(assistant, AiAskLog.class);
+        TableInfoHelper.initTableInfo(assistant, Project.class);
+        TableInfoHelper.initTableInfo(assistant, ProjectPhase.class);
+        TableInfoHelper.initTableInfo(assistant, Contract.class);
+        TableInfoHelper.initTableInfo(assistant, Payment.class);
     }
 }

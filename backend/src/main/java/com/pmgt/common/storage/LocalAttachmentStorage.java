@@ -88,6 +88,27 @@ public class LocalAttachmentStorage implements AttachmentStorage {
         }
     }
 
+    /**
+     * 本地文件的元信息：大小 + mtime（本地盘没有内容哈希，故 {@code etag} 为 null）。
+     *
+     * <p>取不到就返回 null 并落一条 debug 日志：调用方会回落到
+     * {@code file_path + file_size}，此时"文件被替换但大小相同"仍可能命中旧缓存——
+     * 这是可接受的取舍（预览优先可用），但值得留痕以便排查。
+     */
+    @Override
+    public ObjectStat stat(String relKey) {
+        Path target = resolve(relKey);
+        try {
+            if (!Files.exists(target)) {
+                return null;
+            }
+            return new ObjectStat(null, Files.size(target), Files.getLastModifiedTime(target).toInstant());
+        } catch (IOException e) {
+            log.debug("读取附件元信息失败（ETag 将回落到 file_path+size）：{} - {}", relKey, e.getMessage());
+            return null;
+        }
+    }
+
     private Path resolve(String relKey) {
         Path target = root.resolve(relKey).normalize();
         if (!target.startsWith(root)) {

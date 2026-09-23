@@ -49,6 +49,26 @@ public class AiAskLog implements Serializable {
     private String notice;
     /** 答案摘要（前 200 字），仅供日志快速浏览。 */
     private String answerDigest;
+
+    /**
+     * 本次问答调用主系统受控查询（{@code /api/ai/query/*}）的次数（V14）。
+     *
+     * <p>不是从 AI 服务自报的 toolTrace 里数的，而是主系统自己的计数
+     * （见 {@code AiQueryUsageTracker}）：审计数据不能依赖被审计方自报，
+     * 且 toolTrace 是给前端看的展示数据、字段随时可能变。
+     *
+     * <p>0 表示这次问答没有用系统数据（P0/P1 的存量行为）。
+     */
+    private Integer bizQueryCount;
+
+    /**
+     * 本次问答查过的 entity 去重清单（英文逗号分隔，V14）。
+     *
+     * <p>未发生受控查询时为 {@code null}（而不是空串）：日志查询里
+     * 「没用过系统数据」与「用了但没记下 entity」必须能分开。
+     */
+    private String bizEntities;
+
     /** 提问时间。 */
     private LocalDateTime createTime;
 }

@@ -12,12 +12,12 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert, App, Button, Collapse, Empty, Input, Space, Spin, Tag, Typography } from 'antd';
-import { ClearOutlined, SendOutlined } from '@ant-design/icons';
+import { ClearOutlined, DatabaseOutlined, SendOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import { aiApi } from '@/api/ai';
 import AiScopePicker, { AiScopeState } from '@/components/ai/AiScopePicker';
 import { useAttachmentPreview } from '@/components/ai/useAttachmentPreview';
-import { AiChatAnswer, AiCitation } from '@/types/ai';
+import { AiChatAnswer, AiCitation, AiSystemDatum } from '@/types/ai';
 
 /** 会话内的一条消息（不引状态管理库，符合 §10「对话流用 useState 局部状态」） */
 export interface AiChatMessage {
@@ -228,6 +228,91 @@ export default function AiChatPanel({ scope, scopeKey, height }: Props) {
 
 /* ==================== 单条消息 ==================== */
 
+/**
+ * 工具名 → 中文可读文案（§11.3：AI 侧只有一个受控查询工具 `query_business_data`）。
+ *
+ * 为什么不直接展示 `t.name`：那是给开发看的英文标识（`query_business_data`），
+ * 用户看不懂，且会与 markdown 里的 `[1]` 引用挤在一起造成误解。
+ * 未收录的名字**原样回落到 name**，不吞信息（与 `aiIndexStatusMeta` 同一取舍：
+ * 后端将来新增工具时页面至少还能看到原始标识）。
+ */
+const AI_TOOL_NAME_TEXT: Record<string, string> = {
+  query_business_data: '查询系统数据',
+  search_documents: '检索文档',
+  read_page: '读取原文页',
+  calculate: '计算',
+};
+
+export function aiToolNameText(name?: string | null): string {
+  if (!name) return '未知工具';
+  return AI_TOOL_NAME_TEXT[name] || name;
+}
+
+/**
+ * 系统数据一条值：`value` + `unit`。
+ * 契约里 `unit` 有的场景会跟着行数据一起给（如 `个`/`万元`），为 `null` 时不要渲染空串占位。
+ */
+function systemDatumValue(d: AiSystemDatum): string {
+  const value = d.value === null || d.value === undefined || d.value === '' ? '-' : String(d.value);
+  return d.unit ? `${value} ${d.unit}` : value;
+}
+
+/**
+ * 「系统数据」区块（§11 受控查询结果，与「文档依据」严格分开）。
+ *
+ * 审计硬要求：**口径（caliber）与数据时间（dataTime）必须与数字同时可见**，
+ * 否则一个孤零零的数字无法对账（§11.4：「模型必须能原话转述」）。
+ * 因此二者不做折叠、不做 tooltip 隐藏，直接排在每条数据下方。
+ *
+ * 视觉上与「出处（citations）」的区别：本块是**灰底 + 数据库图标 + 独立小标题**，
+ * 出处是白底蓝色 Tag —— 用户一眼能分清"这个数字来自系统表"还是"这句话来自某份文档第 N 页"。
+ */
+function SystemDataBlock({ data }: { data: AiSystemDatum[] }) {
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        padding: '8px 10px',
+        background: '#f6f8fa',
+        border: '1px solid #e6ebf0',
+        borderLeft: '3px solid #2f5d8a',
+        borderRadius: 6,
+      }}
+    >
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#2f5d8a', marginBottom: 4 }}>
+        <DatabaseOutlined /> 来自系统数据
+      </div>
+      {data.map((d, i) => (
+        // key 用下标而不只是 label：同一块数据里 label 允许重复，用 label 会触发 React 重复 key 警告
+        <div
+          key={`${d.label}-${i}`}
+          style={{
+            padding: '3px 0',
+            borderTop: i === 0 ? 'none' : '1px dashed #e6ebf0',
+          }}
+        >
+          <div style={{ fontSize: 13, color: '#1f2329' }}>
+            <span style={{ color: '#595959' }}>{d.label}：</span>
+            <b>{systemDatumValue(d)}</b>
+          </div>
+          {/* 口径与数据时间：审计要求，必须同时显示，不折叠不省略 */}
+          <div style={{ fontSize: 12, color: '#8c8c8c', lineHeight: 1.6 }}>
+            <span>口径：{d.caliber || '未提供'}</span>
+            <span style={{ margin: '0 6px' }}>·</span>
+            <span>数据时间：{d.dataTime || '未提供'}</span>
+            {d.scope ? (
+              <>
+                <span style={{ margin: '0 6px' }}>·</span>
+                <span>范围：{d.scope}</span>
+              </>
+            ) : null}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function MessageBubble({
   msg,
   onCitationClick,
@@ -295,19 +380,7 @@ function MessageBubble({
             ) : null}
 
             {msg.answer?.systemData?.length ? (
-              <div style={{ marginTop: 8 }}>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  来自系统数据：
-                </Typography.Text>
-                {msg.answer.systemData.map((d) => (
-                  <div key={d.label} style={{ fontSize: 12, color: '#595959' }}>
-                    {d.label}：{d.value ?? '-'}
-                    {d.unit || ''}
-                    {d.caliber ? `（口径：${d.caliber}）` : ''}
-                    {d.dataTime ? `（数据时间：${d.dataTime}）` : ''}
-                  </div>
-                ))}
-              </div>
+              <SystemDataBlock data={msg.answer.systemData} />
             ) : null}
 
             {msg.answer?.citations?.length ? (
@@ -365,9 +438,12 @@ function MessageBubble({
                     children: (
                       <div style={{ fontSize: 12, color: '#595959' }}>
                         {msg.answer.toolTrace.map((t, i) => (
-                          <div key={`${t.name}-${i}`}>
-                            <Tag>{t.name}</Tag>
-                            {t.summary || '-'}
+                          <div key={`${t.name}-${i}`} style={{ marginBottom: 2 }}>
+                            {/* 工具名转中文（如 query_business_data → 查询系统数据），未收录的原样回落 */}
+                            <Tag>{aiToolNameText(t.name)}</Tag>
+                            {/* summary 由后端给中文摘要；取不到时回落到原始工具名（不看不懂的空白） */}
+                            {t.summary || t.name}
+                            {/* 命中数只对检索类工具有意义；受控查询返回的是行/聚合值，后端不给 hitCount */}
                             {typeof t.hitCount === 'number' ? ` · 命中 ${t.hitCount} 条` : ''}
                             {typeof t.elapsedMs === 'number' ? ` · ${t.elapsedMs}ms` : ''}
                           </div>

@@ -27,6 +27,7 @@ public class AiSettings {
     private Vec vec = new Vec();
     private Retrieval retrieval = new Retrieval();
     private OpenSearch openSearch = new OpenSearch();
+    private BizQuery bizQuery = new BizQuery();
 
     /** 平台网关（OCR / 对话 / 向量化 / 重排共用）。 */
     @Getter
@@ -104,5 +105,26 @@ public class AiSettings {
         private String index = "pm-ai-chunks";
         private String username = "";
         private String password = "";
+    }
+
+    /**
+     * P2 受控查询（{@code docs/AI前端与集成方案.md} §11）的配置。
+     *
+     * <p>⚠️ 这里<b>只有超时</b>：回调地址与 {@code scope_token} 由主系统在每次 {@code /chat}
+     * 请求里现给（{@code biz_query}），AI 侧不配置、也不持有任何长期凭据——
+     * 这正是 §11.1"反向回调"的意思（AI 服务不直连库，地址由主系统告诉它）。
+     */
+    @Getter
+    @Setter
+    public static class BizQuery {
+        /**
+         * 回调主系统 {@code /api/ai/query/{entity}} 的超时（秒）。
+         *
+         * <p>为什么是 20s（15~30s 区间内）：主系统侧是"一条受控 SQL + 写 operate_log"，
+         * 正常亚秒级，这个量级足够吸收并发与偶发慢查询；同时它远小于网关的 300s——
+         * 回调要是卡死，宁可这一轮问答明说"系统数据没查到"，也不能把整轮问答拖成几分钟
+         * （工具调用是问答链路里的一环，它慢，用户就一起等）。
+         */
+        private int timeoutSeconds = 20;
     }
 }

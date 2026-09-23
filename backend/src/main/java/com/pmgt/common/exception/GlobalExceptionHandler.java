@@ -1,7 +1,10 @@
 package com.pmgt.common.exception;
 
 import com.pmgt.common.api.R;
+import com.pmgt.module.ai.query.AiQueryException;
+import jakarta.servlet.http.HttpServletRequest;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -22,6 +25,22 @@ public class GlobalExceptionHandler {
         return R.fail(e.getCode(), e.getMessage());
     }
 
+    /**
+     * 受控查询（{@code /api/ai/query/**}）的拒绝——<b>原样返回真实 HTTP 状态码</b>。
+     *
+     * <p>唯一一处偏离"HTTP 200 + 信封 code"的地方，理由是调用方不是浏览器前端而是 AI 服务：
+     * 它按 HTTP 状态分流，并且 403（越权，别重试）与 400（参数错，按提示改）要能被它区分开
+     * （§11.6 的原文就是按 HTTP 状态写的）。响应体仍是仓库统一信封，两边读到的都是同一句话。
+     *
+     * <p>只处理 {@link AiQueryException} 这一个新类型，其它异常路径（含 {@code BizException}）
+     * 的行为一字未改。
+     */
+    @ExceptionHandler(AiQueryException.class)
+    public ResponseEntity<R<Void>> handleAiQuery(AiQueryException e) {
+        log.warn("[ai-query] 拒绝 HTTP {}：{}", e.getStatus(), e.getMessage());
+        return ResponseEntity.status(e.getStatus()).body(R.fail(e.getStatus(), e.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public R<Void> handleValid(MethodArgumentNotValidException e) {
         String msg = e.getBindingResult().getFieldErrors().stream()
@@ -30,9 +49,26 @@ public class GlobalExceptionHandler {
         return R.fail(400, msg.isEmpty() ? "参数校验失败" : msg);
     }
 
+    /**
+     * 请求体读不出来（JSON 损坏 / {@code filters} 不是对象）。
+     *
+     * <p>对受控查询额外做一件事：把 HTTP 状态也设成 400。这不改变任何既有接口的行为
+     * （它们仍是 HTTP 200 + {@code code:400}），只是让 AI 服务在「filters 形状就不对」时
+     * 和「filters 字段不在白名单」时看到同一种、可操作的失败形态。
+     */
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    public R<Void> handleUnreadable(HttpMessageNotReadableException e) {
-        return R.fail(400, "请求体格式错误");
+    public ResponseEntity<R<Void>> handleUnreadable(HttpMessageNotReadableException e,
+                                                    HttpServletRequest request) {
+        if (isAiQueryPath(request)) {
+            return ResponseEntity.status(400).body(R.fail(400,
+                    "请求体格式错误：必须是 {\"filters\": {...}, \"limit\": 20}；filters 只能是对象"));
+        }
+        return ResponseEntity.ok(R.fail(400, "请求体格式错误"));
+    }
+
+    private static boolean isAiQueryPath(HttpServletRequest request) {
+        String uri = request == null ? null : request.getRequestURI();
+        return uri != null && uri.startsWith(com.pmgt.module.ai.query.ScopeTokenFilter.PATH_PREFIX);
     }
 
     @ExceptionHandler(NoResourceFoundException.class)

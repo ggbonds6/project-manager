@@ -82,7 +82,7 @@ cd /home/lhim/pm && bash pm.sh restart main
 ```
 
 启动后：浏览器打开 `http://<服务器IP>:8080`（默认端口，可改 `WEB_PORT`）；`/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露）。
-**首次建库**由后端启动时的迁移 Runner 自动执行 `db/migration-yashan/V1~V13`（幂等，已执行版本记入 `schema_version`），无需手工导库；迁移**逐条执行、隐式提交、没有回滚** → 升级到含新迁移的版本前先备份库（失败处置见手册 §6）。
+**首次建库**由后端启动时的迁移 Runner 自动执行 `db/migration-yashan/V1~V14`（幂等，已执行版本记入 `schema_version`），无需手工导库；迁移**逐条执行、隐式提交、没有回滚** → 升级到含新迁移的版本前先备份库（失败处置见手册 §6）。
 内置账号：admin / jingban01 / lingdao01（密码均 123456）；生产务必先改密并覆盖 `JWT_SECRET`。
 
 > ⚠️ **两个包各 `upgrade` 一次**，且 `start` 不做 load；日常操作（start / stop / restart / status / logs / upgrade）与最常见的 3 个报错处置见手册 **§0.3 / §0.5**，验收见 §5、AI 接入细节见 §8、迁移与排查见 §6。
@@ -162,12 +162,12 @@ deploy\windows\stop-dev.cmd
 
 ## 5. 数据库版本与迁移
 
-- 崖山 YashanDB（Oracle 模式）；迁移脚本位于 `backend/src/main/resources/db/migration-yashan`（V1–V13），
+- 崖山 YashanDB（Oracle 模式）；迁移脚本位于 `backend/src/main/resources/db/migration-yashan`（V1–V14），
   由后端启动时自研 `YashanMigrationRunner` 顺序执行（替代 Flyway，崖山官方不支持 Flyway）。
 - 已执行版本记录在库表 `schema_version`；新增表结构 = 在该目录新增 `V{n}__xxx.sql` 即可。
 - 当前业务表（**16 张**）：sys_user / dict_item / phase_template / phase_tpl / project / project_contract /
   project_phase / contract / payment / attachment / attachment_upload_task / project_division / project_overview /
-  operate_log / attachment_ai_task / ai_ask_log（主键为 identity 自增；后两张为 v3.6.0 的 AI 集成表）。
+  operate_log / attachment_ai_task / ai_ask_log（主键为 identity 自增；后两张为 v3.6.0 的 AI 集成表；v3.7.0 的 V14 给 `ai_ask_log` 加 `biz_query_count`/`biz_entities` 两列——**只加列，张数不变**）。
 
 ## 6. Git 协作（SSH）
 

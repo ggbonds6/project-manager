@@ -52,8 +52,20 @@ services:
       AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
       # 上传后自动送 AI 解析：部署期默认 false（先确认自检可达再开），应用内默认是 true
       AI_AUTO_PARSE: ${AI_AUTO_PARSE:-false}
-      AI_CHAT_TIMEOUT: ${AI_CHAT_TIMEOUT:-60}
+      # ★超时链：前端 180s ｜ nginx proxy_read_timeout 300s ｜ 主系统→AI 180s ｜ scope_token 300s。
+      #   不变式：scope_token ≥ 主系统→AI ≥ 前端，且【四者都不超过 nginx】（超了会先被网关变成
+      #   504，用户看到"网关错误"而不是「AI 服务不可用」）。原来这里是 60：前端与 token 都已放宽，
+      #   唯独这一跳还是 60s，长问答在这里被掐断——正是用户报的"容易超时"。
+      AI_CHAT_TIMEOUT: ${AI_CHAT_TIMEOUT:-180}
       AI_TIMEOUT: ${AI_TIMEOUT:-10}
+      # ★P2 受控查询回调地址（§11.2 biz_query.url）：必须是从【AI 容器】可达的主系统地址。
+      #   同宿主机用 host.docker.internal + WEB_PORT（对外只有 nginx，走它的 /api/ 反代）；
+      #   AI 在另一台机器则填主系统宿主机内网 IP:WEB_PORT。留空 = 不下发 biz_query（停用受控查询）。
+      PM_AI_QUERY_CALLBACK_URL: ${PM_AI_QUERY_CALLBACK_URL:-http://host.docker.internal:8080/api/ai/query}
+      # 作用域令牌有效期（秒）：必须 > 一轮问答最长耗时，否则问答后段的回调 401，模型会把
+      # "授权过期"说成"无权查看/系统里没有"——答案直接错。同一套链（上面前端/nginx/AI 超时）
+      # ⇒ 取 300s（= nginx 上限）。上限写死在代码里（配大了夹回 300，只能配小）。
+      PM_AI_SCOPE_TOKEN_TTL_SECONDS: ${PM_AI_SCOPE_TOKEN_TTL_SECONDS:-300}
     # 让容器能通过 host.docker.internal 访问宿主机（Linux 上需 docker 20.10+）
     extra_hosts:
       - "host.docker.internal:host-gateway"

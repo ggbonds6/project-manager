@@ -72,10 +72,27 @@ pm:
     # 不触发、也不写 attachment.ai_index_status；只有 enabled=true 时才会生效。
     # 解析要走平台 OCR（花钱/耗时），平台维护或批量导入历史附件时需要能一句话关掉。
     auto-parse: ${AI_AUTO_PARSE:true}
-    # 问答类超时（秒）：实测一次带工具调用的问答约 10s
-    chat-timeout-seconds: ${AI_CHAT_TIMEOUT:60}
+    # 问答类超时（秒）＝「主系统 → AI /chat」这一跳的读超时，默认 180（与前端对齐）。
+    # ★ 超时链不变式：scope_token ≥ 主系统→AI ≥ 前端，且四者都不超过 nginx：
+    #     前端 180s ｜ nginx proxy_read_timeout 300s ｜ 主系统→AI 180s ｜ scope_token 300s
+    #   原来是 60s：前端已放宽到 180s、token 300s，唯独这一跳 60s，长问答会在这里被掐断
+    #   （用户报的"容易超时"正是它）。它也不能超过 nginx 的 proxy_read_timeout，否则超时
+    #   会先被网关变成 504，用户看到"网关错误"而不是「AI 服务不可用」，排障方向会跑偏。
+    chat-timeout-seconds: ${AI_CHAT_TIMEOUT:180}
     # 其它请求超时（秒）：健康探测/文档列表/任务轮询/自动解析触发都必须快速失败
     timeout-seconds: ${AI_TIMEOUT:10}
+    # P2 受控查询回调地址（§11.2 的 biz_query.url）：主系统把它交给 AI 服务，
+    # AI 侧需要业务事实时 POST {url}/{entity} 回调回来。因此必须是【从 AI 容器可达】的主系统地址：
+    #   · AI 与主系统同宿主机 → http://host.docker.internal:<WEB_PORT>/api/ai/query（走 nginx 的 /api/ 反代）
+    #   · AI 在另一台机器 → 填那台能访问到的主系统入口
+    # 留空 = 不带 biz_query：AI 侧不注册 query_business_data 工具，行为与 P2 之前完全一致。
+    query-callback-url: ${PM_AI_QUERY_CALLBACK_URL:http://host.docker.internal:8080/api/ai/query}
+    # 作用域令牌有效期（秒）：必须**大于一轮问答的最长耗时**，否则问答后段的回调会 401，
+    # 而模型会把"授权过期"说成"无权查看/系统里没有数据"（答案直接错，§11.6 红线）。
+    # 同一套超时链：前端 180s ｜ nginx 300s ｜ 主系统→AI 180s（pm.ai.chat-timeout-seconds）
+    #             ⇒ token 取 300s（= nginx 上限，最宽松仍不越界）。
+    # 上限写死在代码里（ScopeTokenService.MAX_TTL_SECONDS=300）：配大了会被夹回，只能配小。
+    scope-token-ttl-seconds: ${PM_AI_SCOPE_TOKEN_TTL_SECONDS:300}
 
 logging:
   level:

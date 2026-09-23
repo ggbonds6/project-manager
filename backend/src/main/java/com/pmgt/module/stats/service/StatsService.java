@@ -131,8 +131,16 @@ public class StatsService {
         Map<Long, Project> leafById = leaves.stream()
                 .filter(p -> p.getId() != null)
                 .collect(Collectors.toMap(Project::getId, p -> p, (a, b) -> a));
+        // 范围收窄（P2 受控查询）：只统计"至少覆盖了一个在范围内项目"的合同。
+        // 未传 projectIds 时 scopeFilter 为 null，循环体与改动前逐字一致。
+        Set<Long> scopeFilter = q == null || q.getProjectIds() == null
+                ? null : new java.util.HashSet<>(q.getProjectIds());
         for (Contract c : contracts) {
-            Integer year = contractLinkService.projectIdsOfContract(c.getId()).stream()
+            List<Long> covered = contractLinkService.projectIdsOfContract(c.getId());
+            if (scopeFilter != null && covered.stream().noneMatch(scopeFilter::contains)) {
+                continue;
+            }
+            Integer year = covered.stream()
                     .map(leafById::get)
                     .filter(java.util.Objects::nonNull)
                     .filter(p -> p.getApproveDate() != null)
@@ -274,6 +282,14 @@ public class StatsService {
             if (StringUtils.hasText(q.getStatus())) qw.eq(Project::getStatus, q.getStatus());
             if (StringUtils.hasText(q.getOwnerUnit())) qw.eq(Project::getOwnerUnit, q.getOwnerUnit());
             if (q.getManagerUserId() != null) qw.eq(Project::getManagerUserId, q.getManagerUserId());
+            // P2 受控查询的范围收窄（只减不增）：空列表=什么都查不到，必须显式短路——
+            // MyBatis-Plus 的 in() 传空集合会生成 `IN ()`，在崖山/Oracle 上是语法错误
+            if (q.getProjectIds() != null) {
+                if (q.getProjectIds().isEmpty()) {
+                    return List.of();
+                }
+                qw.in(Project::getId, q.getProjectIds());
+            }
         }
         return projectMapper.selectList(qw.orderByAsc(Project::getId));
     }

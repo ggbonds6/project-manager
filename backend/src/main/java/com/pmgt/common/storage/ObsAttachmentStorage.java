@@ -107,4 +107,31 @@ public class ObsAttachmentStorage implements AttachmentStorage {
             throw new RuntimeException("OBS 读取附件失败[" + fullKey + "]: " + e.getMessage(), e);
         }
     }
+
+    /**
+     * OBS 对象元信息：对象自带的 {@code ETag}（内容哈希）+ 大小（+ 最后修改时间）。
+     *
+     * <p>优先用 ETag 而不是"大小 + 时间"：对象存储的 ETag 就是内容标识，
+     * 同一 key 被覆盖上传后一定会变，而时间戳精度/时区在各 SDK 上并不一致。
+     *
+     * <p>任何失败（对象不存在、网络不通、无 GetObjectMetadata 权限）都返回 null：
+     * ETag 只是缓存优化，绝不能让它把一次正常的预览变成 500。
+     */
+    @Override
+    public ObjectStat stat(String relKey) {
+        String fullKey = key(relKey);
+        try {
+            ObjectMetadata md = client.getObjectMetadata(bucket, fullKey);
+            if (md == null) {
+                return null;
+            }
+            return new ObjectStat(md.getEtag(), md.getContentLength(),
+                    md.getLastModified() == null ? null : md.getLastModified().toInstant());
+        } catch (Exception e) {
+            // ⚠️ 只打 bucket / key（不含 AK/SK），与 open() 的诊断口径一致
+            log.debug("OBS 读取对象元信息失败（ETag 将回落到 file_path+size）：bucket={} key={} - {}",
+                    bucket, fullKey, e.getMessage());
+            return null;
+        }
+    }
 }

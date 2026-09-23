@@ -34,4 +34,15 @@ public interface AttachmentStorage {
      * @throws FileNotFoundException 对象不存在
      */
     InputStream open(String relKey) throws FileNotFoundException;
+
+    /**
+     * 读取对象元信息（生成 {@code ETag} 用，见 {@link ObjectStat}）。
+     *
+     * <p>默认返回 {@code null}（"这个实现拿不到元信息"）：调用方必须能接受它，
+     * 并回落到 {@code attachment.file_path + file_size}。默认实现不抛异常是刻意的——
+     * 附件预览不该因为"算不出 ETag"而失败。
+     */
+    default ObjectStat stat(String relKey) {
+        return null;
+    }
 }

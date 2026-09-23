@@ -10,6 +10,9 @@ import com.pmgt.module.ai.dto.AiChatRequest;
 import com.pmgt.module.ai.dto.AiChatResponse;
 import com.pmgt.module.ai.entity.AiAskLog;
 import com.pmgt.module.ai.mapper.AiAskLogMapper;
+import com.pmgt.module.ai.query.AiQueryEntity;
+import com.pmgt.module.ai.query.AiQueryUsageTracker;
+import com.pmgt.module.ai.query.ScopeTokenService;
 import com.pmgt.module.attach.entity.Attachment;
 import com.pmgt.module.attach.mapper.AttachmentMapper;
 import com.pmgt.module.log.service.OperationLogService;
@@ -39,6 +42,13 @@ import java.util.UUID;
  *
  * <p>留痕写在<b>拿到答案之后</b>（成功与失败都写）：失败时也要留下"谁问过、问到哪一步失败"，
  * 否则审计上会出现「用户说问过、系统里查不到」的空洞。为此失败路径也落一条日志再抛异常。
+ *
+ * <h2>P2：受控查询通道（§11.2）</h2>
+ * <p>调用 AI 前签发一枚短时效 {@code scope_token}（范围 = 该用户可访问的项目），
+ * 连同回调地址一起放进 {@code biz_query}——AI 侧需要业务事实时回调主系统的
+ * {@code /api/ai/query/{entity}}。用了几次、查了哪些 entity 由
+ * {@link AiQueryUsageTracker} 按 token 的 jti 统计，问答结束后写进 {@code ai_ask_log}（§11.6）。
+ * <b>配置为空则完全不发该字段</b>，AI 侧不注册工具，行为与引入 P2 前逐字一致。
  */
 @Service
 public class AiChatService {
@@ -48,6 +58,14 @@ public class AiChatService {
     /** 答案摘要入库长度（列宽 500，留余量）。 */
     private static final int DIGEST_CHARS = 200;
 
+    /** §11.2：主系统给出的 entity 清单（四个受控查询实体）。 */
+    private static final List<String> BIZ_ENTITIES = List.of(
+            AiQueryEntity.PROJECTS.key(), AiQueryEntity.CONTRACTS.key(),
+            AiQueryEntity.PAYMENTS.key(), AiQueryEntity.STATS.key());
+
+    /** AI 侧受控查询工具名：仅用于"本地计数为 0 时从 toolTrace 兜底计数"。 */
+    private static final String BIZ_QUERY_TOOL = "query_business_data";
+
     private final AiProperties props;
     private final AiServiceClient ai;
     private final AiAnswerAdapter adapter;
@@ -55,6 +73,8 @@ public class AiChatService {
     private final AiAskLogMapper askLogMapper;
     private final AttachmentMapper attachmentMapper;
     private final OperationLogService operationLogService;
+    private final ScopeTokenService scopeTokens;
+    private final AiQueryUsageTracker queryUsage;
 
     public AiChatService(AiProperties props,
                          AiServiceClient ai,
@@ -62,7 +82,9 @@ public class AiChatService {
                          AiScopeResolver scopeResolver,
                          AiAskLogMapper askLogMapper,
                          AttachmentMapper attachmentMapper,
-                         OperationLogService operationLogService) {
+                         OperationLogService operationLogService,
+                         ScopeTokenService scopeTokens,
+                         AiQueryUsageTracker queryUsage) {
         this.props = props;
         this.ai = ai;
         this.adapter = adapter;
@@ -70,6 +92,8 @@ public class AiChatService {
         this.askLogMapper = askLogMapper;
         this.attachmentMapper = attachmentMapper;
         this.operationLogService = operationLogService;
+        this.scopeTokens = scopeTokens;
+        this.queryUsage = queryUsage;
     }
 
     public AiChatResponse ask(AiChatRequest request) {
@@ -90,7 +114,8 @@ public class AiChatService {
         // 那等于绕开主系统的权限收口（见 AiServiceClient.chat 的注释）。
         if (scope.docIds().isEmpty()) {
             AiChatResponse empty = emptyAnswer(request, scope);
-            empty.setLogId(recordAskLog(request, scope, empty, System.currentTimeMillis() - started));
+            empty.setLogId(recordAskLog(request, scope, empty, System.currentTimeMillis() - started,
+                    AiQueryUsageTracker.Snapshot.EMPTY));
             return empty;
         }
 
@@ -100,22 +125,112 @@ public class AiChatService {
             attachmentsById.put(a.getId(), a);
         }
 
+        ScopeTokenService.IssuedScope issued = issueScope(scope);
         Map<String, Object> data;
+        AiQueryUsageTracker.Snapshot usage;
         try {
-            data = ai.chat(question, scope.docIds(), null, request.getTopK());
+            data = ai.chat(question, scope.docIds(), null, request.getTopK(), bizQuery(issued));
+            usage = usageOf(issued, data);
         } catch (RuntimeException e) {
             // 失败也留痕：审计上「问过但失败了」同样是必须能查的事实
-            recordAskLog(request, scope, null, System.currentTimeMillis() - started);
+            recordAskLog(request, scope, null, System.currentTimeMillis() - started, usageOf(issued, null));
             throw e;
+        } finally {
+            // 一次问答一枚令牌，用完即清（回调必然发生在 /chat 返回之前）
+            if (issued != null) {
+                queryUsage.clear(issued.jti());
+            }
         }
 
         long elapsedMs = System.currentTimeMillis() - started;
         AiChatResponse response = adapter.adapt(data, attachmentsById, conversationId(request), elapsedMs);
-        response.setLogId(recordAskLog(request, scope, response, elapsedMs));
+        response.setLogId(recordAskLog(request, scope, response, elapsedMs, usage));
         operationLogService.log("PROJECT", scope.projectId(), "AI_ASK",
                 "AI 问答：" + truncate(question, 60)
-                        + "（作用域 docIds=" + scope.docIds().size() + "，引用 " + response.getCitations().size() + " 条）");
+                        + "（作用域 docIds=" + scope.docIds().size() + "，引用 " + response.getCitations().size() + " 条"
+                        + "，系统查询 " + usage.count() + " 次）");
         return response;
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // P2 受控查询通道（§11.2）
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * 为本次问答签发作用域令牌（范围 = 该用户可访问的项目）。
+     *
+     * <p>三种情况不签发：① 配置里没给回调地址（P2 未启用）；② 没有登录用户（无法授权，
+     * {@code /chat} 本就要求登录，这里只是兜底）；③ 签发异常（不因此让整次问答失败——
+     * 没有系统数据的问答仍是有价值的，AI 侧会如实说"系统数据没查到"）。
+     *
+     * <p>范围收窄策略：用户点名了某个项目就只授权那一个；否则授权"可访问的全部项目"
+     * （本系统角色不按项目分权，见 {@link AiScopeResolver#accessibleProjectIds()}）。
+     */
+    private ScopeTokenService.IssuedScope issueScope(AiScopeResolver.ChatScope scope) {
+        if (!StringUtils.hasText(props.getQueryCallbackUrl())) {
+            // 空配置＝不带 biz_query：AI 侧不注册工具（§11.2 的可分批发版开关）
+            return null;
+        }
+        AuthContext.Current current = AuthContext.get();
+        if (current == null || current.userId() == null) {
+            log.warn("[ai-chat] 无登录用户，跳过受控查询通道（scope_token 无法签发）");
+            return null;
+        }
+        try {
+            List<Long> projects = scope.projectId() != null
+                    ? List.of(scope.projectId())
+                    : scopeResolver.accessibleProjectIds();
+            return scopeTokens.issue(current.userId(), current.name(), projects);
+        } catch (RuntimeException e) {
+            log.warn("[ai-chat] 作用域令牌签发失败，本次问答不带受控查询通道：{}", e.toString());
+            return null;
+        }
+    }
+
+    /**
+     * 组装 §11.2 的 {@code biz_query}；令牌为空（通道未启用/签发失败）时返回 null，
+     * 调用方据此<b>不下发该字段</b>。
+     *
+     * <p>地址末尾的斜杠先去掉：AI 侧是 {@code POST {url}/{entity}} 拼接，
+     * 留着会变成 {@code //stats}（多数框架能容忍，但没必要赌）。
+     */
+    private Map<String, Object> bizQuery(ScopeTokenService.IssuedScope issued) {
+        if (issued == null) {
+            return null;
+        }
+        String url = props.getQueryCallbackUrl().trim();
+        while (url.endsWith("/")) {
+            url = url.substring(0, url.length() - 1);
+        }
+        Map<String, Object> bizQuery = new LinkedHashMap<>();
+        bizQuery.put("url", url);
+        bizQuery.put("scope_token", issued.token());
+        bizQuery.put("entities", BIZ_ENTITIES);
+        return bizQuery;
+    }
+
+    /**
+     * 本次问答「用了几次系统查询、查了哪些 entity」。
+     *
+     * <p>以主系统自己的计数为准（{@link AiQueryUsageTracker}）；本地计数为 0 时从
+     * AI 的 {@code toolTrace} 兜底数一次工具调用条数——双机 + 负载均衡下签发与回调可能
+     * 落在不同节点，那时只有次数、没有 entity，也好过把"用过系统数据"记成 0。
+     */
+    private AiQueryUsageTracker.Snapshot usageOf(ScopeTokenService.IssuedScope issued,
+                                                Map<String, Object> aiData) {
+        AiQueryUsageTracker.Snapshot snapshot = issued == null
+                ? AiQueryUsageTracker.Snapshot.EMPTY
+                : queryUsage.snapshot(issued.jti());
+        if (snapshot.count() > 0 || aiData == null) {
+            return snapshot;
+        }
+        int fromTrace = 0;
+        for (Map<String, Object> item : AiJson.asList(aiData.get("trace"))) {
+            if (BIZ_QUERY_TOOL.equals(AiJson.text(item, "name"))) {
+                fromTrace++;
+            }
+        }
+        return fromTrace > 0 ? new AiQueryUsageTracker.Snapshot(fromTrace, List.of()) : snapshot;
     }
 
     /**
@@ -143,9 +258,12 @@ public class AiChatService {
      *
      * <p>{@code response} 为 null 表示「这次问答失败了」——此时仍要落库，
      * 只是引用数记 0、摘要为空。
+     *
+     * @param usage 本次问答的受控查询用量（§11.6）：次数 + entity 清单
      */
     private Long recordAskLog(AiChatRequest request, AiScopeResolver.ChatScope scope,
-                              AiChatResponse response, long elapsedMs) {
+                              AiChatResponse response, long elapsedMs,
+                              AiQueryUsageTracker.Snapshot usage) {
         AiAskLog log = new AiAskLog();
         AuthContext.Current current = AuthContext.get();
         if (current != null) {
@@ -162,6 +280,10 @@ public class AiChatService {
         log.setDegraded(response != null && response.isDegraded() ? 1 : 0);
         log.setNotice(response == null ? "问答失败" : AiJson.truncate(response.getNotice(), 500));
         log.setAnswerDigest(response == null ? null : AiJson.truncate(response.getAnswer(), DIGEST_CHARS));
+        // P2 留痕（V14）：这次问答用了几次系统查询、查了哪些 entity
+        AiQueryUsageTracker.Snapshot used = usage == null ? AiQueryUsageTracker.Snapshot.EMPTY : usage;
+        log.setBizQueryCount(used.count());
+        log.setBizEntities(used.entitiesText());
         log.setCreateTime(LocalDateTime.now());
         askLogMapper.insert(log);
         return log.getId();

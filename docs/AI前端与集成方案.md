@@ -260,3 +260,90 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 
 > 与 §8.3 的关系：§8.3 定"做哪些、不做哪些"，本节定"怎么写"。两者冲突时以"最小可用集"为准。
 
+---
+
+## 11. P2 受控查询（结构化问答）契约 —— **冻结，两侧照此实现**
+
+> 起因：问"某项目某阶段有几个附件"这类**事实问题**时，模型只能数出已入库文档（答成 1 个）——因为 AI 侧只有
+> `search_documents / read_page / calculate`，**看不到任何业务数据**。按 §8.2 的既定边界补齐：
+> **AI 服务不直连库、不生成 SQL**；结构化事实一律走**主系统受控查询接口**，AI 侧只暴露**一个**带枚举的工具。
+
+### 11.1 流向（是"反向回调"，不是 AI 拉数据）
+
+```
+用户提问 → 主系统(解析权限/作用域) → AI 服务 /chat ──需要事实时──▶ 回调主系统 /api/ai/query/{entity}
+                                                        ◀── {data, unit, caliber, data_time, scope} ──
+```
+主系统的 `pm-backend` **只在 compose 内网 expose 8080**（对外只有 nginx 的 `WEB_PORT`），所以 AI 服务必须通过
+**主系统自己给出的、它可达的地址**回调；地址由主系统配置 `PM_AI_QUERY_CALLBACK_URL`
+（例：`http://10.254.212.106:8080/api/ai/query`，即走 nginx 的 `/api/` 反代）。
+
+### 11.2 主系统 → AI 的 `/chat` 请求新增字段（可选）
+
+```json
+"biz_query": {
+  "url": "http://<主系统可达地址>/api/ai/query",
+  "scope_token": "<短时效 JWT，claims: sub=userId, typ=ai_scope, jti, projects=[1,2,3], exp≤300s>",
+  "entities": ["projects", "contracts", "payments", "stats"]
+}
+```
+- **`scope_token` 是唯一授权凭据**：主系统用 `JWT_SECRET` 签发（与用户 JWT 同一把密钥，靠 `typ=ai_scope` 区分类型、
+  `jti` 供排查定位），`projects` 即该用户可访问的项目 id；
+  查询接口只认 token 里的范围，**绝不接受 body 里传来的 projectId 去越权查询**（越界一律 403）。
+- **有效期上限 300s**（`ScopeTokenService.MAX_TTL_SECONDS = 300`，配大了会被夹回、只能配小），与超时链对齐：
+  前端 180s / nginx 300s / 主系统 `AI_CHAT_TIMEOUT` 180s。**必须**大于一轮问答最长耗时，否则问答后段的回调会 401，
+  而模型会把"授权过期"说成"无权查看/系统里没有数据"——答案直接错（§11.6 红线）。
+- 不传 `biz_query` 时 AI 侧**不注册**该工具（行为与本版本前完全一致，便于分批发版）。
+
+### 11.3 工具（AI 侧只这一个）
+
+| 工具 | 参数 | 说明 |
+| --- | --- | --- |
+| `query_business_data` | `entity`（枚举 `projects`／`contracts`／`payments`／`stats`）、`filters`（对象，字段由主系统定义）、`limit`（可选，默认 20、上限 100） | 描述里写死："**项目/合同/付款/附件数量/统计口径这类事实必须用它**，不得靠文档推测、不得自行推算"，并列出每个 entity 支持的 filters 字段与示例 |
+
+调用：`POST {biz_query.url}/{entity}`，Header `Authorization: Bearer <scope_token>`，body `{filters, limit}`。
+
+### 11.4 四个 RPC 的入参与返回（主系统实现）
+
+| entity | filters（结构化字段，不收 SQL/表达式/字段名拼接） | 返回要点 |
+| --- | --- | --- |
+| `projects` | `projectId?`／`name?`／`status?`／`type?`／`year?` | 项目事实：名称/编号/类型/状态/**当前阶段**/进度/预算/已付/合同数，以及**每阶段附件数** `phases:[{phaseName,status,percent,attachmentCount}]` |
+| `contracts` | `projectId?`／`vendorName?` | 合同清单：名称/编号/供应商/金额/状态/签订日期/覆盖的子项目 |
+| `payments` | `projectId?`／`nodeCode?`／`status?` | 付款记录：节点/计划金额/已付金额/日期/状态/归属合同 |
+| `stats` | `projectId?`／`kind`（`phase_attachment_count`／`type_distribution`／`year_amount`） | 聚合值；`phase_attachment_count` 就是"某项目各阶段附件数"这类问题的正解 |
+
+统一返回：
+```json
+{ "code": 0, "data": { "rows": [], "unit": "个", "caliber": "口径说明（含税/是否含子项目/按立项年度…）",
+                       "data_time": "2026-09-23 16:40:00", "scope": "项目 12（含 3 个子项目）" } }
+```
+**`caliber` / `data_time` / `scope` 是硬要求**：模型必须能原话转述，否则数字无法审计。
+
+### 11.5 提示词路由规则（AI 侧，必须写死）
+
+1. 涉及**项目/合同/付款/附件数量/统计**等事实 → **必须**调用 `query_business_data`；查不到就如实说"系统里没有"，**不得**用文档内容或常识顶上；
+2. 涉及**文档内容**（条款、金额条文、验收标准原文）→ 用 `search_documents` / `read_page`，给 `[n]` 出处页码；
+3. 引用系统数字必须带**口径与数据时间**；两类信息混用时**分开陈述**（"系统数据：…；文档依据：…[1]"）；
+4. **不许用 `calculate` 反推系统已有的数字**（例如用"合同总额 × 比例"倒推某笔付款）：能查到的数字只能查、
+   算出来的数字必须标明是估算——两者在审计上完全不同。
+
+### 11.6 留痕与错误
+
+- 主系统：每次查询写 `operate_log`（谁/entity/filters 摘要/返回行数/耗时），并在 `ai_ask_log` 记本次问答用了几次系统查询、查了哪些 entity
+  （**迁移 V14** 给 `ai_ask_log` 加 `biz_query_count` / `biz_entities` 两列，表数量仍是 16 张）；
+- AI 侧：工具调用照常进 `toolTrace`（名称/参数摘要/耗时/命中数），前端可折叠查看；工具超时 **20s**；
+- 错误必须**教会模型**：范围外 → `403 + "该项目不在本次授权范围（scope）内"`；filters 非法 → `400 + 列出该 entity 支持的字段`；空结果 → `200 + rows:[] + "该范围内没有匹配数据"`（**不是 404**，便于模型区分"没数据"与"调用失败"）；
+- **口径**：受控查询接口使用**真实 HTTP 状态码**（`401`/`400`/`403`/`500`），**不走本仓库惯用的"HTTP 200 + 信封 code"**。
+  理由：这套接口的消费方是**服务间调用**（AI 服务按 `statusCode()` 分流——403=授权范围问题、4xx=参数问题、5xx=调用失败），
+  包成 200 会把控制流语义丢掉，AI 侧就只能靠解析 message 猜，错误话术必然漂移。
+  越权判断在 **mapper 之前**完成（拒绝时对库的查询次数为 **0**）。
+
+### 11.7 验收口径
+
+1. 问"某项目某阶段有几个附件" → 数字与 `stats?kind=phase_attachment_count` **逐位一致**，且带口径与数据时间；
+2. 问"预算多少/已付多少" → 与项目详情页、统计页一致；
+3. 越权（token 里没有的项目 id）→ 403 且**不泄漏**任何数据；
+4. 不传 `biz_query` → 行为与本版本前完全一致（回归）；
+5. `ai_ask_log` 能查到该次问答用了几次系统查询、查了哪些 entity；
+6. 冒烟评测集（`eval/smoke-30.json` + `node scripts/eval-ai.mjs`）给出：引用命中率、数字一致率、工具选择正确率、拒答正确率、平均延迟。
+

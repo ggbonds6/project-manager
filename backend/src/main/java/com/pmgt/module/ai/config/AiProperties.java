@@ -33,11 +33,42 @@ public class AiProperties {
      */
     private String token = "";
 
-    /** 问答类请求超时（秒）。实测一次带工具调用的问答约 10s，留足余量。 */
-    private int chatTimeoutSeconds = 60;
+    /**
+     * 问答类请求超时（秒），即「主系统 → AI {@code /chat}」这一跳的读超时。
+     *
+     * <p>默认 180：与前端问答超时对齐。整条链必须满足
+     * <b>{@code scope_token ≥ 主系统 → AI ≥ 前端}，且四者都不超过 nginx</b>：
+     * <pre>
+     *   前端 180s ｜ nginx proxy_read_timeout 300s ｜ 主系统→AI 180s ｜ scope_token 300s
+     * </pre>
+     * 原来这里是 60s：前端已放宽到 180s、token 300s，唯独这一跳还是 60s，
+     * 长问答会在这里被掐断（用户报的"容易超时"正是它）。
+     * 注意它<b>不能超过 nginx 的 {@code proxy_read_timeout}</b>——否则超时错误会先被网关
+     * 变成 504，用户看到的是"网关错误"而不是「AI 服务不可用」，排障方向直接跑偏。
+     */
+    private int chatTimeoutSeconds = 180;
 
     /** 其它请求超时（秒）：健康探测/文档列表/任务轮询/上传登记都不该慢。 */
     private int timeoutSeconds = 10;
+
+    /**
+     * P2 受控查询的回调地址（§11.2 的 {@code biz_query.url}）。
+     *
+     * <p>主系统调 AI 的 {@code /chat} 时把这个地址交给它，AI 侧需要业务事实时
+     * {@code POST {url}/{entity}} 回调回来。所以它必须是<b>从 AI 容器可达的主系统地址</b>：
+     * <ul>
+     *   <li>主系统的 {@code pm-backend} 只在 compose 内网 expose 8080，对外只有 nginx 的
+     *       {@code WEB_PORT}，因此通常走 nginx 的 {@code /api/} 反代：
+     *       同宿主机 {@code http://host.docker.internal:<WEB_PORT>/api/ai/query}；</li>
+     *   <li>AI 在另一台机器时填那台能访问到的主系统入口（如 {@code http://10.254.212.106:8080/api/ai/query}）；</li>
+     *   <li><b>留空 = 不带 {@code biz_query}</b>：AI 侧据此不注册
+     *       {@code query_business_data} 工具，行为与引入 P2 前完全一致（可安全分批发版）。</li>
+     * </ul>
+     *
+     * <p>默认值给 {@code host.docker.internal:8080}（与部署编排里 {@code WEB_PORT} 的默认一致），
+     * 这样本机/单机 compose 场景开箱可用；生产按实际入口覆盖。
+     */
+    private String queryCallbackUrl = "http://host.docker.internal:8080/api/ai/query";
 
     /**
      * 附件上传成功后是否<b>自动触发</b>解析入库（默认开，方案 §3.3）。
@@ -89,6 +120,14 @@ public class AiProperties {
 
     public void setTimeoutSeconds(int timeoutSeconds) {
         this.timeoutSeconds = timeoutSeconds;
+    }
+
+    public String getQueryCallbackUrl() {
+        return queryCallbackUrl;
+    }
+
+    public void setQueryCallbackUrl(String queryCallbackUrl) {
+        this.queryCallbackUrl = queryCallbackUrl;
     }
 
     public boolean isAutoParse() {

@@ -79,8 +79,16 @@ export const api = {
       ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
     }) as Promise<T>;
   },
-  post<T>(url: string, data?: object): Promise<T> {
-    return http.post(url, data) as Promise<T>;
+  /**
+   * `opts.timeoutMs`：与 `get` 同一语义——个别接口需要比全局 30s 更宽的超时
+   * （典型是 `POST /api/ai/chat`：一次问答包含多轮工具调用，实测 10s 起、复杂问题更久，
+   * 全局 30s 会在中途把请求掐断，用户看到的是"AI 服务调用失败"）。
+   * 不传就沿用全局默认，不影响其它调用方。
+   */
+  post<T>(url: string, data?: object, opts?: { timeoutMs?: number }): Promise<T> {
+    return http.post(url, data, {
+      ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+    }) as Promise<T>;
   },
   put<T>(url: string, data?: object): Promise<T> {
     return http.put(url, data) as Promise<T>;

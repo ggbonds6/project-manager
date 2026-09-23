@@ -190,6 +190,20 @@ public class AiServiceClient {
      */
     public Map<String, Object> chat(String question, List<String> docIds,
                                     List<Map<String, Object>> history, Integer topK) {
+        return chat(question, docIds, history, topK, null);
+    }
+
+    /**
+     * 问答 {@code POST /chat}（带 P2 受控查询通道）。
+     *
+     * @param bizQuery §11.2 的 {@code biz_query}：{@code {url, scope_token, entities}}；
+     *                 <b>null 时该字段完全不出现</b>——AI 侧据此不注册 {@code query_business_data} 工具，
+     *                 行为与引入 P2 前逐字一致（§11.7 验收第 4 条）。
+     *                 字段名用 snake_case {@code biz_query}，与 {@code doc_ids} 同一套 RPC 约定。
+     */
+    public Map<String, Object> chat(String question, List<String> docIds,
+                                    List<Map<String, Object>> history, Integer topK,
+                                    Map<String, Object> bizQuery) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("question", question);
         body.put("doc_ids", docIds == null ? List.of() : docIds);
@@ -200,6 +214,9 @@ public class AiServiceClient {
             // ⚠️ AI 服务的 ChatIn 目前没有 topK 字段（Jackson 默认忽略未知字段，不报错）。
             // 这里按 §9 契约透传：等 AI 服务支持后无需改本层，现在传了也没有副作用。
             body.put("top_k", topK);
+        }
+        if (bizQuery != null && !bizQuery.isEmpty()) {
+            body.put("biz_query", bizQuery);
         }
         return dataObject("问答", () -> statusHandler("问答", chatClient.post()
                 .uri("/chat")

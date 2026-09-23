@@ -60,6 +60,18 @@ export function chunkIds(ids: number[], size = AI_STATUS_BATCH_SIZE): number[][]
  */
 export const AI_DEEP_HEALTH_TIMEOUT_MS = 120000;
 
+/**
+ * 一次问答的超时（毫秒）。
+ *
+ * 全局 axios 超时是 30s，对 `/api/ai/chat` **明显不够**：一次问答可能包含多轮工具调用
+ * （`search_documents` → `read_page` → `calculate`，P2 起还可能回调主系统的
+ * `query_business_data`），实测 10s 起、复杂问题更久；用全局 30s 会在中途把请求掐断，
+ * 表现为"AI 服务调用失败"，而其实后端还在正常算。
+ * 这里放宽到 3 分钟，并把 timeout 只加在本接口上（`api.post` 的可选参数），
+ * 不改变其它接口沿用全局 30s 的行为。
+ */
+export const AI_CHAT_TIMEOUT_MS = 180000;
+
 export const aiApi = {
   /**
    * #1 服务自检：available=false 时 data.message 给中文原因。
@@ -130,9 +142,12 @@ export const aiApi = {
    * AI 服务不可用时后端返回业务错误（code≠0，message 含"AI 服务不可用"），
    * http 拦截器已统一 toast 并 reject —— 调用方据此进入"错误态"，
    * **绝不能把它显示成"未找到"**（"未找到"只能是后端正常回答里 notice/答案的语义）。
+   *
+   * 超时：显式放宽到 {@link AI_CHAT_TIMEOUT_MS}（3 分钟）。一次问答可能包含多轮工具调用，
+   * 实测 10s 起、复杂问题更久；全局 30s 会中途掐断。
    */
   chat(body: AiChatRequest): Promise<AiChatAnswer> {
-    return api.post<AiChatAnswer>('/ai/chat', body);
+    return api.post<AiChatAnswer>('/ai/chat', body, { timeoutMs: AI_CHAT_TIMEOUT_MS });
   },
 };
 

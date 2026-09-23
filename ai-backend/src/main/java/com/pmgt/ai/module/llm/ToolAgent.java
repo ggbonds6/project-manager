@@ -194,6 +194,25 @@ public class ToolAgent {
             Integer maxRounds,
             Double timeoutSeconds,
             CitationRegistry citations) {
+        return run(messages, maxRounds, timeoutSeconds, citations, null);
+    }
+
+    /**
+     * 跑一轮完整的"提问 → 工具 → 回答"（带 P2 受控查询通道）。
+     *
+     * <p>{@code bizQuery} 与 {@code citations} 一样是<b>请求级对象</b>（{@link ToolAgent} 是单例，
+     * 绝不能把它存成字段）：它决定本次问答给模型看几个工具——带了通道才把
+     * {@code query_business_data} 列进 {@code tools}，否则模型会去调一个不存在的工具（§11.2）。
+     *
+     * @param citations 本次问答的引用注册表；{@code null} 表示不登记引用
+     * @param bizQuery  本次问答的受控查询通道；{@code null} 表示主系统没开通（工具清单与老版本一致）
+     */
+    public AgentResult run(
+            List<Map<String, Object>> messages,
+            Integer maxRounds,
+            Double timeoutSeconds,
+            CitationRegistry citations,
+            BizQuerySpec bizQuery) {
         long startedNanos = System.nanoTime();
         List<ToolTrace> trace = new ArrayList<>();
         int promptTokens = 0;
@@ -205,7 +224,7 @@ public class ToolAgent {
             for (int roundNo = 1; roundNo <= limit; roundNo++) {
                 rounds = roundNo;
                 LlmClient.ChatResult resp = llmClient.chatMessages(
-                        messages, tools.schemas(), null, timeoutSeconds);
+                        messages, tools.schemas(bizQuery), null, timeoutSeconds);
                 promptTokens += resp.promptTokens();
                 completionTokens += resp.completionTokens();
 
@@ -226,7 +245,8 @@ public class ToolAgent {
 
                 for (LlmClient.ToolCall call : resp.toolCalls()) {
                     long t0 = System.nanoTime();
-                    Map<String, Object> result = tools.execute(call.name(), call.arguments(), citations);
+                    Map<String, Object> result =
+                            tools.execute(call.name(), call.arguments(), citations, bizQuery);
                     double cost = elapsedSeconds(t0);
 
                     // 工具结果必须回传；用 JSON 保证结构清晰、模型好解析
@@ -344,6 +364,16 @@ public class ToolAgent {
         }
         if ("calculate".equals(name)) {
             return result.get("expression") + " = " + result.get("result");
+        }
+        if (Tools.BIZ_QUERY_TOOL_NAME.equals(name)) {
+            // §11.6：业务查询的轨迹要能看出"查了哪个 entity、命中几行、什么口径/数据时间"
+            Object raw = result.get("rows");
+            int rows = raw instanceof List<?> list ? list.size() : 0;
+            if (rows == 0) {
+                return "查询 " + result.get("entity") + "：该范围内没有匹配数据";
+            }
+            return "查询 " + result.get("entity") + "：" + rows + " 行（口径：" + result.get("caliber")
+                    + "；数据时间：" + result.get("data_time") + "）";
         }
         return truncate(toJson(result), BRIEF_CHARS);
     }

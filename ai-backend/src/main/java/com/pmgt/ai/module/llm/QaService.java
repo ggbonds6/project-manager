@@ -38,6 +38,12 @@ import java.util.Set;
  * {@code cite} 编号，答案里的 {@code [1]} 与响应里的 {@code citations[0]} 是同一处出处，
  * 前端据此跳到附件第 {@code page_no} 页。注册表<b>只在这里创建</b>（工具与编排器都是单例，
  * 不能持有请求级状态）。
+ *
+ * <h2>P2 受控查询（{@code docs/AI前端与集成方案.md} §11）</h2>
+ *
+ * <p>主系统可以在 {@code /chat} 请求里带一份 {@link BizQuerySpec}（地址 + 短时效 scope_token）。
+ * 它同样是<b>请求级对象、按参数传递</b>：有它才把 {@code query_business_data} 注册给模型、
+ * 才往 system 提示词里追加业务路由规则；没有它，本类的行为与本版本前完全一致。
  */
 @Service
 public class QaService {
@@ -154,6 +160,35 @@ public class QaService {
      */
     public QaResult ask(
             String question, List<String> docIds, List<Map<String, Object>> history, Integer maxRounds) {
+        return ask(question, docIds, history, maxRounds, null);
+    }
+
+    /**
+     * 回答一个问题（可选：走主系统的受控查询通道回答业务事实）。
+     *
+     * <p>⚠️ <b>不传 {@code bizQuery} 时行为与本版本前逐字节一致</b>（不含新工具、不含新提示词段落、
+     * 没有文档时仍直接回"还没有可问答的文档"）——这是 §11.2 的"分批发版"要求，也是回归验收项。
+     *
+     * <p>传了 {@code bizQuery} 时有两处刻意的差异：
+     * <ol>
+     *   <li>system 提示词追加业务路由规则（{@link Prompts#buildBizQueryPrompt}），
+     *       且工具清单里多出 {@code query_business_data}；</li>
+     *   <li><b>没有已上传文档时也照常跑问答</b>：业务事实（"这个项目有几个附件"）本来就不来自文档，
+     *       若沿用"没有文档就直接拒绝"，主系统开了通道也问不出任何项目/合同/付款的事实。</li>
+     * </ol>
+     *
+     * @param docIds    限定检索范围；为空则用全部文档
+     * @param history   历史问答（只回放 user/assistant 纯文本，截断到最近 6 轮）
+     * @param maxRounds 工具调用轮数上限；null 取 {@link ToolAgent#DEFAULT_MAX_ROUNDS}
+     * @param bizQuery  本次问答的受控查询通道（请求级，主系统在 {@code biz_query} 里给）；null＝未开通
+     * @return 答案 + 调用轨迹 + <b>结构化引用表</b>（见 {@link CitationRegistry}，无引用时为空列表）
+     */
+    public QaResult ask(
+            String question,
+            List<String> docIds,
+            List<Map<String, Object>> history,
+            Integer maxRounds,
+            BizQuerySpec bizQuery) {
 
         long startedNanos = System.nanoTime();
         String q = question == null ? "" : question.strip();
@@ -169,19 +204,20 @@ public class QaService {
         }
 
         List<Map<String, Object>> docs = scopedDocs(docIds);
-        if (docs.isEmpty()) {
+        if (docs.isEmpty() && bizQuery == null) {
             return new QaResult(NO_DOC_ANSWER, List.of(), List.of(), List.of(), Map.of(), "done", "没有可用文档");
         }
 
         // 引用表**每次问答新建一份**：工具是单例，编号是请求级状态，绝不能放进 Bean/static/ThreadLocal
         CitationRegistry citations = new CitationRegistry();
 
-        BuiltMessages built = buildQaMessages(q, docs, history);
+        BuiltMessages built = buildQaMessages(q, docs, history, bizQuery);
         ToolAgent.AgentResult result = agent.run(
                 built.messages(),
                 maxRounds == null ? ToolAgent.DEFAULT_MAX_ROUNDS : maxRounds,
                 (double) Math.max(1, settings.getGateway().getTimeoutSeconds()),
-                citations);
+                citations,
+                bizQuery);
 
         String answer = result.getText();
         if (answer == null || answer.isEmpty()) {
@@ -236,8 +272,27 @@ public class QaService {
      */
     public BuiltMessages buildQaMessages(
             String question, List<Map<String, Object>> docs, List<Map<String, Object>> history) {
+        return buildQaMessages(question, docs, history, null);
+    }
 
-        String systemContent = Prompts.QA_SYSTEM_PROMPT + "\n\n" + Prompts.buildDocScopeNote(docs);
+    /**
+     * 组装问答消息列表（带 P2 受控查询通道）。
+     *
+     * <p>⚠️ 业务路由段落**只在 {@code bizQuery != null} 时**拼进 system：提示词里提到一个没注册的工具，
+     * 等于教模型去调用不存在的东西（§11.2"不传 biz_query 不注册该工具"）。不传时本方法产出的
+     * system 内容与老版本逐字节相同。
+     *
+     * @param bizQuery 本次问答的受控查询通道；null＝未开通（不追加任何业务路由段落）
+     */
+    public BuiltMessages buildQaMessages(
+            String question,
+            List<Map<String, Object>> docs,
+            List<Map<String, Object>> history,
+            BizQuerySpec bizQuery) {
+
+        String systemContent = Prompts.QA_SYSTEM_PROMPT
+                + (bizQuery == null ? "" : "\n\n" + Prompts.buildBizQueryPrompt(bizQuery.entities()))
+                + "\n\n" + Prompts.buildDocScopeNote(docs);
         List<Map<String, Object>> messages = new ArrayList<>();
         messages.add(systemMessage(systemContent));
 

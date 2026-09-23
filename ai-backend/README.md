@@ -38,6 +38,7 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | `VEC_BACKEND` | local | `local`（进程内余弦 + JSON 缓存）\| `opensearch`（正式选型） |
 | `OPENSEARCH_URL` / `OPENSEARCH_INDEX` | — / `pm-ai-chunks` | OpenSearch 集群与索引 |
 | `WORK_DIR` | ./work | 临时文件、文档库、向量缓存 |
+| `BIZ_QUERY_TIMEOUT` | 20 | P2 受控查询回调主系统 `/api/ai/query/{entity}` 的超时（秒）。**回调地址与 `scope_token` 不在这里配**：由主系统在每次 `/chat` 的 `biz_query` 里现给（§11.1 反向回调），不传就不注册 `query_business_data` 工具 |
 
 ## 四条链路（与主系统**同一套形状**）
 
@@ -100,7 +101,7 @@ curl "http://127.0.0.1:8100/health?with_ocr=true&with_vec=true"     # 期望 cod
 | POST | `/ocr/file` | 只识别不调模型（摸底用） |
 | POST/GET/DELETE | `/documents[/{id}]` | 文档库（解析入库、列表、详情、删除） |
 | POST/GET/DELETE | `/upload-tasks[/{id}]` | 上传解析任务（先返回、后台解析、轮询进度） |
-| POST | `/chat` | 文档问答（工具调用：检索 → 读页 → 计算）。请求 `{question, doc_ids, history}`（`docIds` 亦接受）；响应 `data.answer` 正文用 `[1][2]` 标注出处，`data.citations` 给出结构化出处 `[{index,doc_id,filename,page_no,snippet,score}]`——**前端"点引用跳原文第 N 页"就靠它**，无引用时为 `[]` |
+| POST | `/chat` | 文档问答（工具调用：检索 → 读页 → 计算；带 `biz_query` 时**多一个** `query_business_data`）。请求 `{question, doc_ids, history, biz_query?}`（`docIds`/`bizQuery` 亦接受）；`biz_query = {url, scope_token, entities}` 是主系统给的**受控查询通道**（P2，契约见 [`../docs/AI前端与集成方案.md`](../docs/AI前端与集成方案.md) §11）——**不传时行为与本版本前完全一致**。响应 `data.answer` 正文用 `[1][2]` 标注出处，`data.citations` 给出结构化出处 `[{index,doc_id,filename,page_no,snippet,score}]`——**前端"点引用跳原文第 N 页"就靠它**，无引用时为 `[]`；系统数据查询照常进 `data.trace`（名称/参数摘要/耗时/命中数） |
 
 成功响应 `{"code":0,"data":{...}}`；失败为 HTTP 状态码 + `{"detail":"..."}`（与 Python 版一致）。
 

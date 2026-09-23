@@ -151,6 +151,68 @@ class AiServiceClientTest {
     }
 
     @Test
+    void 传入biz_query时请求体里出现该字段且原样带出url与entities() {
+        setUp("secret-token");
+        server.expect(requestTo(BASE + "/chat"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(request -> {
+                    String body = ((org.springframework.mock.http.client.MockClientHttpRequest) request).getBodyAsString();
+                    assertTrue(body.contains("\"biz_query\""), "配置了回调地址就必须带 biz_query：" + body);
+                    assertTrue(body.contains("\"url\":\"http://host.docker.internal:8080/api/ai/query\""),
+                            "url 必须原样下发：" + body);
+                    assertTrue(body.contains("\"scope_token\":\"scope-jwt\""), "短时效令牌必须下发：" + body);
+                    assertTrue(body.contains("\"entities\":[\"projects\",\"contracts\",\"payments\",\"stats\"]"),
+                            "entity 清单必须下发：" + body);
+                })
+                .andRespond(withSuccess("{\"code\":0,\"data\":{\"answer\":\"ok\"}}",
+                        MediaType.APPLICATION_JSON));
+
+        Map<String, Object> data = client.chat("这个项目有几个附件？", List.of("abc123"), null, null,
+                Map.of("url", "http://host.docker.internal:8080/api/ai/query",
+                        "scope_token", "scope-jwt",
+                        "entities", List.of("projects", "contracts", "payments", "stats")));
+
+        assertEquals("ok", AiJson.text(data, "answer"));
+        server.verify();
+    }
+
+    @Test
+    void 不传biz_query时请求体里没有该字段() {
+        // §11.2：不传 biz_query → AI 侧不注册 query_business_data 工具，行为与本版本前完全一致。
+        // 这条是回归保护：多一个字段都可能让旧版 AI 服务的行为发生变化。
+        setUp("");
+        server.expect(requestTo(BASE + "/chat"))
+                .andExpect(request -> {
+                    String body = ((org.springframework.mock.http.client.MockClientHttpRequest) request).getBodyAsString();
+                    assertTrue(!body.contains("biz_query"), "没配置回调地址时不能出现 biz_query：" + body);
+                    assertTrue(body.contains("\"doc_ids\""), body);
+                })
+                .andRespond(withSuccess("{\"code\":0,\"data\":{\"answer\":\"ok\"}}",
+                        MediaType.APPLICATION_JSON));
+
+        client.chat("中标金额是多少？", List.of("abc123"), null, 5);
+
+        server.verify();
+    }
+
+    @Test
+    void 旧的四参重载等价于不带biz_query() {
+        // 4 参重载保留是为了不破坏既有调用方；它必须与"显式传 null"完全一致
+        setUp("");
+        server.expect(requestTo(BASE + "/chat"))
+                .andExpect(request -> {
+                    String body = ((org.springframework.mock.http.client.MockClientHttpRequest) request).getBodyAsString();
+                    assertTrue(!body.contains("biz_query"), body);
+                })
+                .andRespond(withSuccess("{\"code\":0,\"data\":{\"answer\":\"ok\"}}",
+                        MediaType.APPLICATION_JSON));
+
+        client.chat("问题", List.of("abc123"), null, null);
+
+        server.verify();
+    }
+
+    @Test
     void 服务端5xx抛出AI不可用而不是被当成业务结果() {
         setUp("");
         server.expect(requestTo(BASE + "/chat")).andRespond(withServerError());

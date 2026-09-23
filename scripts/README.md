@@ -81,10 +81,11 @@
 | 起本地开发环境（前后端源码模式） | `start-dev.cmd`（或 `deploy\windows\start-dev.cmd`） | cmd | 后端 :8080、前端 :5173（`--host` 支持局域网） |
 | 停本地开发环境 | `stop-dev.cmd` | cmd | 按端口停 8080/5173；**不碰外部崖山库** |
 | 起 AI 能力服务（本地） | `cd ai-backend && mvn -B -DskipTests package`<br>`java -jar target/pm-ai-backend-1.0.0-SNAPSHOT.jar` | cmd | 默认 :8100；本地调试常用 `--server.port=8101` 避开占用；凭据放 `ai-backend/.env` |
-| AI 服务质量门（编译 + 单测） | `cd ai-backend && scripts\check.cmd`（或 `mvn -B test`） | cmd | 当前基线 **81 用例** |
+| AI 服务质量门（编译 + 单测） | `cd ai-backend && scripts\check.cmd`（或 `mvn -B test`） | cmd | 当前基线 **129 用例**（v1.1.0 起） |
 | AI 服务端到端验收（真实平台网关） | `pwsh -File ai-backend\scripts\verify-e2e.ps1` | pwsh 7 | 自动起服务→自检→平台 OCR→抽取→上传任务→问答，并打印 Python 基线对比 |
 | 灌演示数据 | `node scripts/seed-demo.mjs` → `node scripts/seed-attachments.mjs` | Node | 默认打 `http://127.0.0.1:8088`（Docker 前端端口） |
 | **改完文档后做体检**（建议每次提交前） | `node scripts/check-docs.mjs` | Node | 查四类问题：表格内空行断表、单元格裸竖线、本地链接失效、ITERATION 总表与明细不一致 |
+| **AI 问答冒烟评测**（结构化问答验收量尺） | `node scripts/eval-ai.mjs --set eval/smoke-30.json --dry`（真值核对加 `--list-truth`；真实问答再去掉 `--dry` 并给 `--token`/`PM_TOKEN`） | Node | 默认 `--dry` 只做数据集体检、**不发请求**（质量门）；`--list-truth` 只连主系统**页面接口**算并打印每题真值（**不需要 AI 服务**，用于自证"真值==页面所见"），`--write-truth` 另写 `eval/truth-snapshot.json` 供漂移检测；非 dry 逐题打 `/api/ai/chat`，按页面接口现场算出的真值判定，输出数字一致率/引用命中率/工具选择正确率/拒答正确率/平均耗时（给 `--scope-token` 时另报"两条路径口径一致率"）+ `eval/report-<时间戳>.json`；详见 [`eval/README.md`](../eval/README.md) |
 | 从干净基线灌演示数据 | `.\scripts\db-sql.ps1 scripts/demo-reset.sql` → 上面两步 | PowerShell | 物理清空后重灌（见 §2.2） |
 | 手工查/改数据库 | `.\scripts\db-sql.ps1 <sql文件>` | PowerShell | 无需 yasql 客户端，口令不落盘 |
 | 本地测试部署（镜像模式，前后端） | `deploy\docker\` 下按 `deploy/README.md` §2 | cmd | 本机 Docker Desktop；前端对外端口见 `.env` 的 `WEB_PORT`（本机约定 8088） |

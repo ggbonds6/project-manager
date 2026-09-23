@@ -256,6 +256,23 @@ public class AiScopeResolver {
         return p;
     }
 
+    /**
+     * 当前用户可访问的项目 id 清单（P2 受控查询的作用域令牌用它，§11.2）。
+     *
+     * <p><b>口径与可访问性定义</b>：本系统的角色模型（ADMIN / MANAGER / VIEWER）不按项目分权，
+     * 登录用户即可见全部<b>未删除</b>项目——与本类 {@link #resolveForChat} 的判定同一条口径
+     * （那里的注释也写明了"这不是数据权限兜底"）。逻辑删除由 {@code @TableLogic} 在 SQL 层排除。
+     *
+     * <p>将来若引入项目级数据权限，只要改这一个方法（以及 {@code resolveForChat} 那一处判断），
+     * AI 侧与受控查询接口都不用动——scope_token 里的 projects 自然跟着变窄。
+     */
+    public List<Long> accessibleProjectIds() {
+        return projectMapper.selectList(new LambdaQueryWrapper<Project>()
+                        .select(Project::getId)
+                        .orderByAsc(Project::getId))
+                .stream().map(Project::getId).toList();
+    }
+
     /** 项目维度的最新解析任务（批量），供附件状态与文档列表补 error/进度。 */
     public Map<Long, AttachmentAiTask> latestTaskByAttachment(Collection<Long> attachmentIds) {
         List<Long> ids = attachmentIds == null ? List.of()
