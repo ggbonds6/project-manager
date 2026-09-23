@@ -33,6 +33,16 @@ services:
       APP_STORAGE_OBS_AK: ${APP_STORAGE_OBS_AK:-}
       APP_STORAGE_OBS_SK: ${APP_STORAGE_OBS_SK:-}
       APP_STORAGE_OBS_PREFIX: ${APP_STORAGE_OBS_PREFIX:-uploads}
+      # ── AI 能力服务（独立部署，默认在本机 8100；见 docs/AI前端与集成方案.md §4.3）──
+      # 本机用 Docker Desktop 时 host.docker.internal 天然可用；Linux 上靠下面 extra_hosts 映射。
+      AI_ENABLED: ${AI_ENABLED:-true}
+      AI_SERVICE_BASE_URL: ${AI_SERVICE_BASE_URL:-http://host.docker.internal:8100}
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
+      AI_AUTO_PARSE: ${AI_AUTO_PARSE:-false}
+      AI_CHAT_TIMEOUT: ${AI_CHAT_TIMEOUT:-60}
+      AI_TIMEOUT: ${AI_TIMEOUT:-10}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # 附件存储：默认本地命名卷 pm_uploads（单机）。
       # 双机 + 负载均衡时务必改为共享目录（NFS 等），两端 bind 同一路径：

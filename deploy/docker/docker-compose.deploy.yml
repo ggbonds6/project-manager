@@ -41,6 +41,22 @@ services:
       APP_STORAGE_OBS_AK: ${APP_STORAGE_OBS_AK:-}
       APP_STORAGE_OBS_SK: ${APP_STORAGE_OBS_SK:-}
       APP_STORAGE_OBS_PREFIX: ${APP_STORAGE_OBS_PREFIX:-uploads}
+      # ── AI 能力服务（ai-backend，独立部署；见 docs/AI前端与集成方案.md §4.3 与部署手册 §8）──
+      # 主系统只代理它：浏览器永不直连 8100（权限与作用域在主系统收口）。
+      # ★AI_SERVICE_BASE_URL 必须填【从本容器内】能访问到的地址：
+      #   · AI 与主系统同一台宿主机 → host.docker.internal（下面 extra_hosts 已映射到宿主机）
+      #   · AI 在另一台机器（推荐：双机负载均衡时 AI 应集中一台，避免两个索引各自演化）→ 填那台的内网 IP
+      #   · ⚠️ 绝不能填 127.0.0.1 —— 在容器里那是后端自己
+      AI_ENABLED: ${AI_ENABLED:-true}
+      AI_SERVICE_BASE_URL: ${AI_SERVICE_BASE_URL:-http://host.docker.internal:8100}
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
+      # 上传后自动送 AI 解析：部署期默认 false（先确认自检可达再开），应用内默认是 true
+      AI_AUTO_PARSE: ${AI_AUTO_PARSE:-false}
+      AI_CHAT_TIMEOUT: ${AI_CHAT_TIMEOUT:-60}
+      AI_TIMEOUT: ${AI_TIMEOUT:-10}
+    # 让容器能通过 host.docker.internal 访问宿主机（Linux 上需 docker 20.10+）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       # 附件存储：默认本地命名卷 pm_uploads（单机）。
       # 用 OBS 时该卷仅作过场，不会写入实际附件；双机 + local 时才需共享目录：

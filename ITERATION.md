@@ -67,6 +67,7 @@
 | ai-1.1.0 | 2026-09-20 | **`/chat` 结构化引用 + 请求字段名对齐（AI 服务）** | 前端"引用可点击跳原文"的前置条件：`/chat` 原先只返回 `{answer,trace,scope,llm,stopped_reason,error}`，**页码/片段/分数全被丢掉**。新增请求级 `CitationRegistry`——命中在**模型看到时就带 `cite` 编号**（`doc_id+page_no` 去重、按首次命中顺序分配、只增不改、同页重命中只刷新分数），提示词要求句末按 `[cite]` 标注，响应**追加** `citations:[{index,doc_id,filename,page_no,snippet,score}]`（既有键顺序与语义一字未动，键顺序不作契约）。**顺带修掉"静默丢参"真 bug**：契约写 `doc_ids` 而 Java 字段实为 `docIds` → 按文档发 `doc_ids` 会被静默忽略、检索范围退化成"答全库"（不报错的最危险一类），已用 `@JsonProperty("doc_ids")+@JsonAlias("docIds")` 两种都收并写进契约文档；同时清掉提示词里推荐**已删除工具** `list_documents` 的旧文案。验证：`mvn -o test` **94 例全绿**（既有 81 例未改 + 新增 13 例）；**真实内网网关 e2e** 两种字段名都真的被解析（用不存在的 docId 反证），`citations` 页码与 snippet 与原文逐字一致；`verify-e2e.ps1` 修字段搬家缺陷 + **新增 citations 断言**，整脚本真跑 EXIT=0。**遗留**：AI 服务**无任何入站鉴权**（依赖网络隔离，独立待办，不在主系统侧假装修好）。 | `7299404` |
 | docs-1.2 | 2026-09-20 | **开发机脚本 PowerShell 化 + 文档与脚本收口**| ① `docs-1.0` 遗留项落地：`scripts/{make-release,dev-reload,db-sql}.sh` → **Windows 原生 `.ps1`** 并删除 `.sh`（`pm-upgrade.sh` 与 `ai-backend/scripts/check.sh` 因只在 Linux/CI 跑而保留）；必须偏离 bash 的地方（无 `gzip.exe` → `.NET GZipStream`；`java -D…` 裸参数被按 `.` 拆参；PS 5.1 对原生命令 `2>$null` 抛终止性错误；`curl` 是别名）已写进脚本注释。② **编码定案**：`scripts/*.ps1` 一律 **UTF-8 带 BOM + CRLF**（实测 PS 5.1 对无 BOM 的 UTF-8 按 GBK 解析，中文字面量**在解析期就坏**；"无 BOM+中文+5.1 可跑"三者不可兼得），写入 `scripts/README.md` §0.2 并明确"别顺手改成无 BOM"。③ **验证**：三脚本 × (PS 5.1 + PS 7) 解析校验 6/6；`db-sql.ps1` **真实执行**（只读查询返回 11 行，走 `.env` 档，口令只打印长度、不打印不落盘）；`make-release.ps1`/`dev-reload.ps1` 因本机 Docker 引擎未启动**未实际执行**（只做逐段比对 + 隔离探针），其 gzip 产物的 `docker load` 闭环**登记为待验证项**。④ **文档收口**：`scripts/README.md`／根 `README.md`／`deploy/README.md`／`docs/部署与发布全流程手册.md`（§2.3 手工打包整段改为"等价说明、不可照抄"的 PowerShell 步骤，`\| gzip` 与 `ls -lh` 清零）／`jdbc/RunSql.java` 与 `demo-reset.sql` 注释／本文件 4 处失效的"当前用法"；新增《AI工具集与检索编排评估》并登记进 `docs/README.md`；`docs/AI前端与集成方案.md` 增 §9 冻结契约与 §10 前端工程规范，并**修正"nginx 加 `/ai-api/` 直连 AI 服务"的自相矛盾结论**（会让浏览器绕过主系统权限解析）。收尾：`check-docs` 19 份 / 0 问题（体检本轮真抓到 2 处自己引入的问题并已修）。 | `7299404` |
 | docs-1.3 | 2026-09-20 | **专项论证：要不要引入 LangChain4j（文档处理 / 会话记录）** | 结论**不引入**，并把依据落到《AI工具集与检索编排评估》§7（原 §5 的"不做"改为指向它）：① **逐环节对照**——解析（通用 Tika 路径拿不到"文本层 vs 平台 OCR"路由与页级失败语义，等于用未验证行为替换已验证行为）、切片（换默认切分必须重测召回，而我们还没有评测集）、检索（`OpenSearchEmbeddingStore` 官方只写 exact kNN + metadata filter，**混合检索仍是社区 PR**，而我们已实测"混合召回 → Reranker 精排"分数序）、重排/OCR（框架无关）→ 净收益为负或接近零；② **会话记录三条硬伤**（官方文档自证）：**只有 memory 没有 history**（要完整历史得自己存）、**被淘汰的消息会从 `ChatMemoryStore` 一并删除**（与"审计留痕不得被窗口淘汰"直接冲突）、**会把状态放进 AI 服务**（破坏"主系统是唯一事实源、AI 服务无状态"这条已定边界）——为省几十行样板代码破坏边界不划算，P2 会话管理应在主系统建会话/消息表，与 `ai_ask_log` 同一条数据；③ **量化重估触发条件**（第二家模型/网关、工具数 >8 或需并行工具调用、需接 MCP、文档格式超出 PDF+扫描件、团队愿以可复现性换开发速度）；④ 给出**不返工的三条接缝**（`SearchPort`/`DocumentReader`/`Tools`）与**三条底线**（平台 OCR 路由与页级校验、引用编号与出处、主系统权限/口径/留痕）；⑤ 明确真正的短板是**评测集**而非框架：先做 10~20 条迷你评测集，再做限时 spike（同文档同问题对比代码行数/延迟/引用页码准确率/依赖体积/审计明细可得性）再用数字决定。 | `26072ad` |
+| v3.6.1 | 2026-09-20 | **部署配置补全：把 AI 接入参数真正贯通（否则服务器上 AI 必然不可用）** | v3.6.0 交付了 AI 功能，但**部署资产没接**：两个 compose 都没给 backend 传 `AI_*`，容器里的 `AI_SERVICE_BASE_URL` 会是默认 `127.0.0.1:8100`（=后端自己），**AI 功能一定不可用**；而 `AI_AUTO_PARSE` 应用内默认 `true`，会让每次上传都记一条"解析失败"。本轮修：① `deploy/docker/docker-compose.yml` 与 `docker-compose.deploy.yml` 的 backend 增 6 个 `AI_*` 变量 + `extra_hosts: host.docker.internal:host-gateway`（Linux 上容器访问宿主机必须映射）；② `.env.example` 新增 AI 段（逐项说明、"**绝不能填 127.0.0.1**"、首部署建议 `AI_AUTO_PARSE=false`、AI 集中部署的建议）；③ 新增 [`ai-backend/docker-compose.deploy.yml`](ai-backend/docker-compose.deploy.yml)（服务器专用：无 `build:`、`pull_policy: never`、`AI_BIND_IP` 绑内网、`work` 卷持久化、healthcheck、日志限额）；④ 文档：`deploy/README.md` 新增 §1.1（三个变量 + 部署顺序 + 两条边界）并修过期数字（`V1~V9`→`V13`、**11 张→16 张**、补"迁移无回滚、升级前先备份"）、部署手册（§3 `.env` 清单加 AI 段、§8.1 **构建平台必须与目标机一致**（ARM 服务器上 amd64 镜像会 `exec format error`）、§8.3 新增"服务器无源码部署 AI 服务"三步 + 主系统接入 + 双机应集中部署、§5 验收加 A7/A8、质量门 81→**94 用例**）、`崖山数据库与迁移约定.md` 与根 `README.md` 的 `V1~V12`→`V1~V13`。**验证**：四个编排文件 `docker compose config --quiet` 全部 **exit 0**，且 `docker compose config` 确认 `AI_*` 与 `extra_hosts` 确实解进了 backend 服务。 | 本轮待提交 |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -689,6 +690,36 @@
   再做**限时 spike**（独立分支，LangChain4j 重写 `/chat` 最小版），同文档同问题对比五项
   （代码行数 / 延迟 / **引用页码准确率** / 依赖体积与传递依赖数 / **审计明细是否还拿得到**），**用数字决定**。
 - **记录位置**：`docs/AI工具集与检索编排评估.md` §7（新增）+ §5（原"不做"改为指向 §7）；本文档 Backlog 同步。
+
+---
+
+### v3.6.1 — 部署配置补全：把 AI 接入参数真正贯通（2026-09-20）
+
+- **为什么必须补（这是"部署完 AI 却用不了"的根因）**：v3.6.0 把 AI 功能做完了，但**部署资产没把参数接进去**——
+  `deploy/docker/docker-compose.yml` 与 `docker-compose.deploy.yml` 的 backend 环境里一个 `AI_*` 都没有，
+  于是容器内 `AI_SERVICE_BASE_URL` 取应用默认值 `http://127.0.0.1:8100`，**在容器里 127.0.0.1 就是后端自己** → 必然连不上。
+  更糟的是 `pm.ai.auto-parse` 应用内默认 `true`：每次上传都会去连一次、失败并记"解析失败"，日志与界面持续报错。
+- **改了什么**：
+  1. **两个 compose 的 backend 增 6 个变量**（`AI_ENABLED` / `AI_SERVICE_BASE_URL` / `AI_SERVICE_TOKEN` / `AI_AUTO_PARSE` /
+     `AI_CHAT_TIMEOUT` / `AI_TIMEOUT`）+ `extra_hosts: ["host.docker.internal:host-gateway"]`
+     —— Linux 上容器要访问**宿主机**必须做这个映射（Docker Desktop 自带，Linux 没有）。
+  2. **`.env.example` 新增 AI 段**：逐项中文说明；点明 **"绝不能填 127.0.0.1"**、"另一台机器填其内网 IP"、
+     **首次部署建议 `AI_AUTO_PARSE=false`**（先在自检页确认可达再开）；并写明"双机负载均衡时 AI 应集中一台"。
+  3. **新增 `ai-backend/docker-compose.deploy.yml`**：AI 服务的**服务器专用**编排（无 `build:`、`pull_policy: never`、
+     `AI_BIND_IP` 可绑内网 IP、`work` 卷持久化、healthcheck、日志限额）——与主系统同一套"离线只 load"路数，
+     但**仍是独立发版**（主系统发布包与 compose 依旧不含 AI 镜像）。
+  4. **文档同步**：`deploy/README.md` 新增 §1.1（三个变量表 + 推荐部署顺序 + 两条边界：
+     无入站鉴权、双机索引会各自演化）并修过期数字（`V1~V9` → `V13`、**11 张表 → 16 张**、补"迁移无回滚、升级前先备份"）；
+     部署手册 §3 的 `.env` 清单加 AI 段、§8.1 补**构建平台必须与目标机一致**（ARM 服务器上跑 amd64 镜像会 `exec format error`）、
+     §8.3 新增"服务器无源码部署 AI 服务"三步 + 主系统接入 + 双机提醒、§5 验收加 **A7（自检页）/A8（提问并点引用跳页）**、
+     质量门 81 → **94 用例**；`崖山数据库与迁移约定.md` 与根 `README.md` 的 `V1~V12` → `V1~V13`。
+- **验证（可复现）**：四个编排文件 `docker compose config --quiet` **全部 exit 0**；
+  `docker compose config` 解出的 backend 环境里确实出现
+  `AI_ENABLED: "true"`、`AI_SERVICE_BASE_URL: http://host.docker.internal:8100`、`AI_AUTO_PARSE: "false"`、
+  `extra_hosts: [host.docker.internal=host-gateway]` —— 即"配置真的落到了容器上"，而不只是写在文件里。
+- **仍未验证（如实登记）**：① 没有真实服务器，`scp` / `docker load` / **容器到 AI 服务的连通性**都还没实测；
+  ② AI 服务**没有任何入站鉴权**，故新增编排里用 `AI_BIND_IP` 绑定内网 IP，并要求防火墙只放行主系统服务器；
+  ③ V13 仍未在真实崖山库执行（下次启动/部署时应用）。
 
 ---
 

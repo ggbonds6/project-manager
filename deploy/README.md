@@ -49,9 +49,29 @@ docker compose ps && curl http://127.0.0.1:8080/api/health     # 期望 db:"up"
 - **附件存储**：生产统一 **华为 OBS**（`APP_STORAGE_TYPE=obs` + `APP_STORAGE_OBS_*`，对象置于桶内 `uploads/` 前缀下），
   详见[《部署与发布全流程手册》附录 A](../docs/部署与发布全流程手册.md)；`APP_STORAGE_TYPE=local` 时用命名卷 `pm_uploads`
 
-**首次建库**：后端启动时自研迁移 Runner 自动执行 `db/migration-yashan/V1~V9` 完成建表与种子（幂等，已执行版本记入 `schema_version`），无需手工导库。
+**首次建库**：后端启动时自研迁移 Runner 自动执行 `db/migration-yashan/V1~V13` 完成建表与种子（幂等，已执行版本记入 `schema_version`），无需手工导库。
+> ⚠️ 迁移是**逐条 DDL 顺序执行、崖山 Oracle 模式隐式提交、没有回滚**：升级到含新迁移的版本前**先备份库**；
+> 若中途失败，按《部署与发布全流程手册》§6 处置（先 `docker compose stop` 止血，再人工核 `schema_version` 与已执行语句）。
 
 > 内置账号：admin / jingban01 / lingdao01（密码均 123456）；生产务必先改密并覆盖 `JWT_SECRET`。
+
+### 1.1 AI 能力服务（独立部署，v3.6.0 起）
+
+AI 功能（知识库、悬浮问答、附件自动解析）**依赖一个独立部署的 `pm-ai-backend`**。主系统侧只需要 `.env` 里三个变量：
+
+| 变量 | 说明 | 默认 |
+| --- | --- | --- |
+| `AI_ENABLED` | 入口总开关；`false` 时 `/api/ai/*` 直接返回"AI 服务不可用"，界面如实提示 | `true` |
+| `AI_SERVICE_BASE_URL` | **从 pm-backend 容器里**能访问到的地址：同宿主机用 `http://host.docker.internal:8100`；另一台机器填其内网 IP。**绝不能填 `127.0.0.1`**（容器里那是后端自己） | `http://host.docker.internal:8100` |
+| `AI_AUTO_PARSE` | 上传后是否自动解析。**首次部署建议 `false`**：先在「AI 与知识库 → 服务自检」页确认可达，再改 `true` | `false`（应用内默认 true） |
+
+**部署顺序（推荐）**：
+1. 先发主系统（本文件 §1）→ 打开「AI 与知识库 → 服务自检」，此时应显示 **AI 服务不可用**（这是正常的，说明开关生效、不是"未找到"）；
+2. 再发 AI 服务（镜像 + `ai-backend/docker-compose.deploy.yml`，步骤见《部署与发布全流程手册》§8）→ 自检页转为全部可用；
+3. 最后按需把 `AI_AUTO_PARSE` 改成 `true`（改完 `docker compose up -d` 生效，无需重建镜像）。
+
+> ⚠️ 两个已知边界：① AI 服务**当前没有任何入站鉴权**，端口不要对全网开放（`ai-backend/docker-compose.deploy.yml` 里用 `AI_BIND_IP` 绑定内网 IP + 防火墙只放行主系统服务器）；
+> ② 双机负载均衡时**建议 AI 服务集中部署一台**——它的文档库/向量缓存是本地文件，两台各跑一个会让索引各自演化，同一个问题问到不同机器答案不一致。
 
 > 📌 **双机（两台 ARM 服务器，独立运行、指向同一崖山库、上层网关负载均衡）部署**：
 > 每台一份 Docker Compose 即可，含附件共享存储 / JWT 一致性 / 冒烟清单等完整步骤，
@@ -132,11 +152,12 @@ deploy\windows\stop-dev.cmd
 
 ## 5. 数据库版本与迁移
 
-- 崖山 YashanDB（Oracle 模式）；迁移脚本位于 `backend/src/main/resources/db/migration-yashan`（V1–V9），
+- 崖山 YashanDB（Oracle 模式）；迁移脚本位于 `backend/src/main/resources/db/migration-yashan`（V1–V13），
   由后端启动时自研 `YashanMigrationRunner` 顺序执行（替代 Flyway，崖山官方不支持 Flyway）。
 - 已执行版本记录在库表 `schema_version`；新增表结构 = 在该目录新增 `V{n}__xxx.sql` 即可。
-- 当前业务表：sys_user / dict_item / phase_template / project / project_phase / payment / contract /
-  attachment / operate_log / project_overview / phase_tpl（11 张，主键为 identity 自增）。
+- 当前业务表（**16 张**）：sys_user / dict_item / phase_template / phase_tpl / project / project_contract /
+  project_phase / contract / payment / attachment / attachment_upload_task / project_division / project_overview /
+  operate_log / attachment_ai_task / ai_ask_log（主键为 identity 自增；后两张为 v3.6.0 的 AI 集成表）。
 
 ## 6. Git 协作（SSH）
 

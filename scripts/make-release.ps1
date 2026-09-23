@@ -177,6 +177,11 @@ PM $Version 服务器部署步骤（$arch，离线：只 load 不 build）
    已出现 YAS-02193 the account is locked：先 stop 止血 → 改对口令 → 仍需 DBA 解锁
      （YAS-02143=口令错；YAS-02193=账号被锁，后者多是前者反复重试所致）
    之后升级【不要】用 .env.example 覆盖 .env
+   ★AI 能力服务（可选，独立部署）：本次不部署 AI 时，.env 里的 AI_* 保持模板默认即可——
+     打开「AI 与知识库 → 服务自检」会明确显示"AI 服务不可用"（这是对的，不是"未找到"）；
+     部署 AI 服务后把 AI_SERVICE_BASE_URL 指向它（同宿主机用 host.docker.internal，另一台机器填其内网 IP，
+     ★绝不能填 127.0.0.1，容器里那是后端自己），自检通过后再把 AI_AUTO_PARSE 改成 true。
+     详见 docker-compose.yml 同目录的 .env.example 注释与《部署与发布全流程手册》§8。
 
 3) 加载镜像并启动（不加 --build）
    docker load -i /home/lhim/pm/releases/pm-images-${arch}-${Version}.tar.gz

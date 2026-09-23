@@ -1,0 +1,53 @@
+# ============================================================
+# AI 能力服务（ai-backend）【服务器专用】编排：离线部署，只 load，不 build
+#
+# 与 ai-backend/docker-compose.yml 的区别：本文件【没有 build 段】，
+# 因此服务器上不需要源码——只要有：
+#   ① 本文件（改名为 docker-compose.yml，放进 AI 服务自己的运行目录，例如 /home/lhim/pm-ai/app）
+#   ② 同目录的 .env（模板见 ai-backend/.env.example，必填 LLM_API_KEY 等）
+#   ③ 已 docker load 进来的镜像（pm-ai-backend:<AI_IMAGE_TAG>）
+#
+# 为什么独立编排：平台 OCR / 大模型 / 向量化都在 GPU 机上，AI 服务必须能**脱离主系统单独发版**
+# （主系统的发布包与 compose 都不含它，见 deploy/README.md、部署手册 §8）。
+#
+# 启动： cd <运行目录> && docker compose up -d
+# 自检： curl http://127.0.0.1:8100/health?with_ocr=false     # 期望 {"code":0,...}
+# ============================================================
+name: pm-ai
+
+services:
+  ai-backend:
+    image: pm-ai-backend:${AI_IMAGE_TAG:-latest}
+    # 只用本机已 load 的镜像：未 load 会立刻报错，不会联网拉取、也不会误触发构建
+    pull_policy: never
+    container_name: pm-ai-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # 容器内固定 8100（与 Dockerfile EXPOSE 一致），对外端口由 .env 的 AI_PORT 决定
+      AI_PORT: "8100"
+      WORK_DIR: /app/work
+    ports:
+      # ★AI 服务当前【没有入站鉴权】（见 §8.4 运维风险），所以端口别对全网裸开：
+      #   建议把 AI_BIND_IP 填成本机内网 IP，并用防火墙只放行两台主系统服务器。
+      #   默认 0.0.0.0 只适合内网隔离环境；若 AI 与主系统同宿主机，可填 127.0.0.1，
+      #   但那样 pm-backend 就得用 host.docker.internal（容器走宿主网关，能访问到宿主机回环）。
+      - "${AI_BIND_IP:-0.0.0.0}:${AI_PORT:-8100}:8100"
+    volumes:
+      # 文档库 / 切片 / 向量缓存：都是**可重建物**（换机后重新解析即可），但要持久化，
+      # 否则容器一重建就得把全部附件重新 OCR 一遍。
+      - ${AI_WORK_DIR:-./work}:/app/work
+    healthcheck:
+      # 镜像基于 eclipse-temurin:17-jre（Ubuntu），有 wget；不探平台网关，避免外部抖动误判
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8100/health?with_ocr=false"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    logging:
+      # 与主系统同样的日志体积限制：无外网服务器上磁盘是稀缺资源
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
