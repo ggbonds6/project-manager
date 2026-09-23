@@ -25,6 +25,8 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `AI_PORT` | 8100 | 服务端口 |
+| `AI_IMAGE_TAG` | `latest` | 服务器运行目录 `ai/.env` 用的镜像 tag（须是 `docker load` 进来的 `pm-ai-backend:<tag>`）；**出发布包时自动预填本次版本**，日常升级由 `bash pm.sh upgrade ai` 自动切换 |
+| `AI_BIND_IP` | `0.0.0.0` | 容器端口绑定到哪张宿主网卡；**本服务当前无入站鉴权**，服务器上建议填本机内网 IP + 防火墙只放行主系统服务器 |
 | `LLM_BASE_URL` | `http://10.254.208.35:8090/v1` | 平台网关（对话 / OCR / 向量化 / 重排**共用**） |
 | `LLM_API_KEY` | — | 用户 sk（同一把） |
 | `LLM_MODEL` | `Qwen3.8-27B-W8A8` | 对话模型 |
@@ -46,8 +48,8 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | --- | --- | --- |
 | ① 本地开发（源码直跑） | `deploy\windows\start-dev.cmd`（`mvn spring-boot:run`）+ Vite | `cd ai-backend && mvn spring-boot:run`（默认 8100；配置见上表） |
 | ② 本地开发（容器，一键重建） | `.\scripts\dev-reload.ps1 [all\|backend\|frontend]` | `.\scripts\dev-reload.ps1 -Project ai` |
-| ③ 构建 + 打包（出发布包） | `.\scripts\make-release.ps1 <版本>` | `.\scripts\make-release.ps1 <版本> -Project ai` |
-| ④ 服务器部署（离线只 load） | 发布包 `docker-compose.yml` + `.env` → `docker compose up -d` | 同上（编排就是 `ai-backend/docker-compose.deploy.yml`），自检 `/health?with_ocr=true&with_vec=true` |
+| ③ 构建 + 打包（出发布包） | `.\scripts\make-release.ps1 <版本>` → `dist/pm-release-<版本>/`（`pm.sh` + `main/`） | `.\scripts\make-release.ps1 <版本> -Project ai` → `dist/pm-ai-release-<版本>/`（同一份 `pm.sh` + `ai/`） |
+| ④ 服务器部署（离线只 load） | `scp -r dist/pm-release-<版本>/* lhim@<服务器>:/home/lhim/pm/` → 配 `main/.env` → `bash pm.sh upgrade main main/releases/<镜像包>` | `scp -r dist/pm-ai-release-<版本>/* lhim@<AI服务器>:/home/lhim/pm/` → 配 `ai/.env` → `bash pm.sh upgrade ai ai/releases/<镜像包>`；自检 `/health?with_ocr=true&with_vec=true` |
 
 ### ③ 出 AI 发布包（开发机，仓库根；需 Docker Desktop 已启动）
 
@@ -56,21 +58,32 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 .\scripts\make-release.ps1 v1.0.0 -Project ai linux/amd64    # x86 机器（例如与平台网关同机）
 ```
 
-产出 `dist/pm-ai-release-v1.0.0/`：`pm-ai-images-<arch>-v1.0.0.tar.gz`（镜像包）、`docker-compose.yml`、
-`.env.example`（`AI_IMAGE_TAG` 已预填本次版本）、`服务器部署步骤-ai.txt`（逐步照做即可）。
+产出 `dist/pm-ai-release-v1.0.0/`：包根 `pm.sh`（服务器唯一入口，两套发布包里是同一个文件）+ `ai/` 目录：
+`ai/docker-compose.yml`（= `ai-backend/docker-compose.deploy.yml`）、`ai/.env.example`（`AI_IMAGE_TAG` 已预填本次版本）、
+`ai/服务器部署步骤-ai.txt`（逐步照做即可）、`ai/releases/pm-ai-images-<arch>-v1.0.0.tar.gz`（镜像包）。
 
-### ④ 服务器部署（运行目录只需你上传的两个文件 + 已 load 的镜像）
+### ④ 服务器部署（AI 运行目录 `ai/` + 已 load 的镜像；与主系统 `main/` 互不影响）
 
 ```bash
-cd /home/lhim/pm-ai/app && cp .env.example .env && vi .env
-#   必填：LLM_API_KEY（平台网关那把 sk）、AI_IMAGE_TAG=v1.0.0、AI_BIND_IP=<本机内网IP>
-docker load -i /home/lhim/pm-ai/releases/pm-ai-images-aarch64-v1.0.0.tar.gz
-docker compose up -d
-curl "http://127.0.0.1:8100/health?with_ocr=true&with_vec=true"   # 期望 code:0 且各模型 ok
+# ① 开发机（仓库根、dist 的上一层）：把整棵发布包铺到部署根
+#    scp -r dist/pm-ai-release-v1.0.0/*  lhim@<AI服务器>:/home/lhim/pm/
+
+# ② 服务器：配 .env → 一条命令 load + 切版本 + 启动 + 健康检查
+cd /home/lhim/pm/ai && cp .env.example .env && vi .env
+#   必填：LLM_API_KEY（平台网关那把 sk）、AI_BIND_IP=<本机内网IP>
+#   AI_IMAGE_TAG 出包时已预填 v1.0.0，升级时由 pm.sh 自动切换，不用手改
+cd /home/lhim/pm
+bash pm.sh upgrade ai ai/releases/pm-ai-images-aarch64-v1.0.0.tar.gz
+bash pm.sh status                                                  # 期望：AI 能力服务(ai)：可用
+curl "http://127.0.0.1:8100/health?with_ocr=true&with_vec=true"     # 期望 code:0 且各模型 ok
 ```
 
-> **接回主系统**：在主系统那台机器的 `.env` 里把 `AI_SERVICE_BASE_URL` 指到本机内网 IP
-> （**与本服务同宿主机**才用 `http://host.docker.internal:8100`），`docker compose up -d` 即生效——**不需要重建镜像**；
+> 日常启停同样只走统一入口：`bash pm.sh start ai` / `bash pm.sh stop ai` / `bash pm.sh logs ai`。
+> 手工等价的 `docker compose` 命令要在 `/home/lhim/pm/ai` 下执行（compose v2 只读 compose 同目录的 `.env`）；
+> 手工 load 写法：`docker load -i /home/lhim/pm/ai/releases/pm-ai-images-aarch64-v1.0.0.tar.gz`。
+
+> **接回主系统**：在主系统那台机器的 `main/.env` 里把 `AI_SERVICE_BASE_URL` 指到本机内网 IP
+> （**与本服务同宿主机**才用 `http://host.docker.internal:8100`），`cd /home/lhim/pm && bash pm.sh restart main` 即生效——**不需要重建镜像**；
 > 打开「AI 与知识库 → 服务自检」确认全绿后，再按需把 `AI_AUTO_PARSE=true` 打开。完整说明见部署手册 §8.3。
 
 > **运维边界（发版前必须知道）**：本服务**当前没有任何入站鉴权**，端口不要对全网开放——

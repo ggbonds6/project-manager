@@ -16,7 +16,8 @@
 # 与正式发版的区别：
 #   - 本脚本面向**开发机本机**：主系统用 deploy/docker/docker-compose.yml、AI 用 ai-backend/docker-compose.yml
 #     （两者都含 build 段），走 amd64 本机构建，快；不产 arm64、不生成发布包、不动 releases/。
-#   - 服务器发版仍用：scripts/make-release.ps1（开发机）+ scripts/pm-upgrade.sh（服务器）；
+#   - 服务器发版仍用：scripts/make-release.ps1（开发机）；服务器侧的启停/升级用发布包自带的 pm.sh
+#     （`bash pm.sh start|status|logs|stop|upgrade <main|ai> <镜像包>`，见 scripts/README.md）；
 #     AI 服务出发布包用 `.\scripts\make-release.ps1 <版本> -Project ai`（见 scripts/README.md §2.1）。
 #
 # 说明：
@@ -32,7 +33,7 @@
 # 踩过的坑：
 #   - 为什么从 .sh 改为 .ps1：本机没有 Git Bash（PATH 上的 bash 只是 WSL 桩），.sh 跑不了；
 #     开发机脚本统一用 Windows 原生 PowerShell，避免 .sh/.ps1 两套并存产生漂移。
-#     （`pm-upgrade.sh` 随发布包下发、只在 Linux 服务器上运行，保持 .sh 不动。）
+#     （`scripts/pm.sh` 随发布包下发、只在 Linux 服务器上运行，保持 .sh 不动。）
 #   - 本脚本文件是 UTF-8 **带 BOM**：Windows PowerShell 5.1 对无 BOM 的 UTF-8 脚本按
 #     ANSI(GBK) 解析，中文字面量会直接变乱码；带 BOM 才能 5.1 与 7 都正常显示中文。
 #   - 在 5.1 下若执行策略为 Restricted，用 `powershell -ExecutionPolicy Bypass -File ...` 调用。

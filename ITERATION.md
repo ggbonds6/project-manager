@@ -69,6 +69,7 @@
 | docs-1.3 | 2026-09-20 | **专项论证：要不要引入 LangChain4j（文档处理 / 会话记录）** | 结论**不引入**，并把依据落到《AI工具集与检索编排评估》§7（原 §5 的"不做"改为指向它）：① **逐环节对照**——解析（通用 Tika 路径拿不到"文本层 vs 平台 OCR"路由与页级失败语义，等于用未验证行为替换已验证行为）、切片（换默认切分必须重测召回，而我们还没有评测集）、检索（`OpenSearchEmbeddingStore` 官方只写 exact kNN + metadata filter，**混合检索仍是社区 PR**，而我们已实测"混合召回 → Reranker 精排"分数序）、重排/OCR（框架无关）→ 净收益为负或接近零；② **会话记录三条硬伤**（官方文档自证）：**只有 memory 没有 history**（要完整历史得自己存）、**被淘汰的消息会从 `ChatMemoryStore` 一并删除**（与"审计留痕不得被窗口淘汰"直接冲突）、**会把状态放进 AI 服务**（破坏"主系统是唯一事实源、AI 服务无状态"这条已定边界）——为省几十行样板代码破坏边界不划算，P2 会话管理应在主系统建会话/消息表，与 `ai_ask_log` 同一条数据；③ **量化重估触发条件**（第二家模型/网关、工具数 >8 或需并行工具调用、需接 MCP、文档格式超出 PDF+扫描件、团队愿以可复现性换开发速度）；④ 给出**不返工的三条接缝**（`SearchPort`/`DocumentReader`/`Tools`）与**三条底线**（平台 OCR 路由与页级校验、引用编号与出处、主系统权限/口径/留痕）；⑤ 明确真正的短板是**评测集**而非框架：先做 10~20 条迷你评测集，再做限时 spike（同文档同问题对比代码行数/延迟/引用页码准确率/依赖体积/审计明细可得性）再用数字决定。 | `26072ad` |
 | v3.6.1 | 2026-09-20 | **部署配置补全：把 AI 接入参数真正贯通（否则服务器上 AI 必然不可用）** | v3.6.0 交付了 AI 功能，但**部署资产没接**：两个 compose 都没给 backend 传 `AI_*`，容器里的 `AI_SERVICE_BASE_URL` 会是默认 `127.0.0.1:8100`（=后端自己），**AI 功能一定不可用**；而 `AI_AUTO_PARSE` 应用内默认 `true`，会让每次上传都记一条"解析失败"。本轮修：① `deploy/docker/docker-compose.yml` 与 `docker-compose.deploy.yml` 的 backend 增 6 个 `AI_*` 变量 + `extra_hosts: host.docker.internal:host-gateway`（Linux 上容器访问宿主机必须映射）；② `.env.example` 新增 AI 段（逐项说明、"**绝不能填 127.0.0.1**"、首部署建议 `AI_AUTO_PARSE=false`、AI 集中部署的建议）；③ 新增 [`ai-backend/docker-compose.deploy.yml`](ai-backend/docker-compose.deploy.yml)（服务器专用：无 `build:`、`pull_policy: never`、`AI_BIND_IP` 绑内网、`work` 卷持久化、healthcheck、日志限额）；④ 文档：`deploy/README.md` 新增 §1.1（三个变量 + 部署顺序 + 两条边界）并修过期数字（`V1~V9`→`V13`、**11 张→16 张**、补"迁移无回滚、升级前先备份"）、部署手册（§3 `.env` 清单加 AI 段、§8.1 **构建平台必须与目标机一致**（ARM 服务器上 amd64 镜像会 `exec format error`）、§8.3 新增"服务器无源码部署 AI 服务"三步 + 主系统接入 + 双机应集中部署、§5 验收加 A7/A8、质量门 81→**94 用例**）、`崖山数据库与迁移约定.md` 与根 `README.md` 的 `V1~V12`→`V1~V13`。**验证**：四个编排文件 `docker compose config --quiet` 全部 **exit 0**，且 `docker compose config` 确认 `AI_*` 与 `extra_hosts` 确实解进了 backend 服务。 | `5cff88f` |
 | v3.6.2 | 2026-09-23 | **构建提速（222s→24s）+ AI 服务获得与主系统对等的发版链路** | ① **构建提速**（实测："改了代码 → 出发布包"从 ~7 分钟降到**几十秒**）：三个 Dockerfile 的编译阶段改 `FROM --platform=$BUILDPLATFORM`（`mvn`/`npm` 跑**构建机原生架构**，只让最终镜像层是目标架构）＋ BuildKit **cache mount** 复用依赖（`/root/.m2/repository`、`/root/.npm`；挂 `repository` 子目录而非 `/root/.m2`，否则会把镜像加速的 `settings.xml` 遮掉）。**实测**：后端 `mvn package` **222s → 47.3s（首次）/ 24.3s（改代码后稳态）**、前端 `npm run build` **218s → 103s**、AI 镜像首次构建 **44s**；三个镜像仍为 `arm64/linux`（换构建阶段**没有**漏进最终镜像）。② **AI 服务发版链路与主系统对齐**：`make-release.ps1` 新增 `-Project main\|ai`，AI 目标产出 `dist/pm-ai-release-<版本>/`（镜像包 + 服务器专用编排 + `.env.example`（预填 `AI_IMAGE_TAG`）+ `服务器部署步骤-ai.txt`）；`dev-reload.ps1` 新增 `-Project ai`；`ai-backend/README.md` 补"四条链路"对照表。③ **主系统"只重建改动那一端"**：`-Only backend\|frontend [-ReuseTag <旧版本>]`（未改的一端 `docker tag` 复用并**打印来源 tag**；复用镜像做架构校验，避免混架构包；来源校验在构建之前，写错立刻失败）。④ **闭环历史遗留**：主系统包与 AI 包的 `docker save`→`docker load` **双双实机验证通过**（此前挂在 Backlog 两次）。验证：三套流程真机跑通（整包 72.9s、`-Only` 打印"复用 pm-frontend:v3.6.2 → v3.6.3"、AI 包 122.3MB）；AI 镜像起容器 `/health` 返回 `code:0`；脚本干跑 16 例 × 两壳 + docker 桩 11 场景 × 两壳（BAD=0）。 | `c13a054` |
+| v3.6.3 | 2026-09-23 | **服务器"一个根 + 两个隔离项目 + 一个统一入口"：`main/` + `ai/` + `pm.sh`** | 起因是 6 条现状问题：目录假设过时（主系统 `pm/app`+`pm/releases`，AI 又写在 `pm-ai/…`，两个项目散在两棵树）、`pm-upgrade.sh` 只认主系统（只切 `IMAGE_TAG`、只认 `pm-backend`）、没有统一启停、本地一键启动不含 AI、两套发布包内容不一致、路径散落多处。改动：① **服务器布局**：`/home/lhim/pm/{pm.sh, main/, ai/}`，每个项目目录含 compose + `.env` + `.env.example` + 部署步骤 + `releases/` 镜像包，**发布包按同一树形产出**（`scp -r dist/<包>/* …:/home/lhim/pm/` 一次到位）；② **新 `scripts/pm.sh`（716 行，取代并删除 `pm-upgrade.sh`）**：唯一入口 `start\|stop\|restart\|status\|logs\|upgrade <main\|ai> <镜像包>\|help`，**start 先起 ai 再起 main、stop 反序**，`upgrade` 自动 load + 切对应 `.env` 的 `IMAGE_TAG`/`AI_IMAGE_TAG`（备份 `.env.bak`）+ 重启 + 健康检查；main 的健康检查**要求 body 含 `"db":"up"`**（`/api/health` 恒 200，只看状态码会把"库不通"误报成可用）；两包装错会被拒绝（exit 2）；**工程名=目录名**（不传 `-p`，与手工 `docker compose` 同一工程）；③ **本地一键启动含 AI**：`start-dev.cmd` 第 4 步拉起 AI（失败只警告不拖垮主系统、缺 `.env` 给提示），`stop-dev.cmd` 加 8100；④ **模板/编排**：`.env.example` 补 `AI_IMAGE_TAG`/`AI_BIND_IP`/`AI_WORK_DIR`，`ai-backend/docker-compose.deploy.yml` 去掉写死的 `name: pm-ai`（否则"工程名=目录名"对 AI 不成立）；⑤ **文档**：手册新增 **§0.4 从旧布局迁移**（工程名变化会撞固定容器名、必须搬旧 `.env`、**别用 `cp -r` 覆盖新编排**）并全篇改口径，`deploy/README`、`ai-backend/README`、根 `README` 同步。**验证**：`pm.sh` 在容器 Ubuntu bash 里 `bash -n` exit 0（本机无可用 bash：WSL 默认发行版没有 `/bin/bash`）+ 参数分支逐条实测；**不重新构建**（`SKIP_BUILD=1`）重打两个包，两棵树逐项核对（`pm.sh` 与源逐字节一致、compose 与源逐字节一致、`AI_IMAGE_TAG` 已预填且无 BOM）、gzip 解压 CRC 通过；顺手修掉步骤文本里 `${WEB_PORT:-8080}` 被 PowerShell 当变量展开成空串的真 bug。 | 本轮待提交 |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -785,6 +786,59 @@
 
 ---
 
+### v3.6.3 — 服务器"一个根 + 两个隔离项目 + 一个统一入口"（2026-09-23）
+
+- **起因：现状评估的 6 条问题**：① 服务器目录假设过时（主系统 `pm/app` + `pm/releases`，AI 又写在 `pm-ai/…`，
+  两个项目散在两棵树里）；② `pm-upgrade.sh` **只认主系统**（只切 `IMAGE_TAG`、只认 `pm-backend`，对 AI 包完全不认），
+  且 app 目录探测写死了几个旧路径；③ 没有统一启停（三个服务分属两个 compose 工程）；④ 本地一键启动不含 AI；
+  ⑤ 两套发布包内容不一致（主系统带脚本、AI 包啥都没有）；⑥ 路径散落在手册/deploy README/AI README/ITERATION 多处。
+- **新布局（唯一事实）**：
+  ```
+  /home/lhim/pm/
+  ├─ pm.sh        ← 唯一入口
+  ├─ main/        docker-compose.yml + .env + .env.example + 服务器部署步骤.txt + releases/pm-images-aarch64-<版本>.tar.gz
+  └─ ai/          docker-compose.yml + .env + .env.example + 服务器部署步骤-ai.txt + releases/pm-ai-images-aarch64-<版本>.tar.gz
+  ```
+  **发布包按同一树形产出** → `scp -r dist/<包>/* lhim@<服务器>:/home/lhim/pm/` 一次到位、落地即符合布局
+  （两套包都带同一份 `pm.sh`，重复上传无害；主系统包不含 `ai/`、AI 包不含 `main/`，互不覆盖）。
+- **新 `scripts/pm.sh`（716 行，取代并删除 `pm-upgrade.sh`）**：
+  - 命令：`start|stop|restart [main|ai|all]`、`status`、`logs <main|ai> [服务]`、`upgrade <main|ai> <镜像包>`、`help`；
+    另兼容旧习惯 `pm.sh <镜像包>` = `upgrade main <包>`（但**包名是 AI 包时明确拒绝**，避免把 AI 包 load 进主系统白重启）。
+  - `start` **先起 ai 再起 main**（主系统的 AI 功能依赖它，少一次"AI 服务不可用"），`stop` **反序**；`stop` 幂等（没容器不报错）。
+  - `upgrade` 自动：`docker load` → 按包名解析版本（`VER=` 可覆盖）→ 校验镜像真在 → 备份并切换对应 `.env` 的
+    `IMAGE_TAG`（main）/ `AI_IMAGE_TAG`（ai）→ `up -d` → 健康检查。**这才叫"更新脚本会更新 env 文件"**。
+  - **main 的健康检查比 HTTP 200 更严**：`/api/health` 在数据库不通时**仍返回 200**（body 是 `db:"down…"`），
+    只看状态码会把"库不通"报成"可用"，故要求 body 含 `"db":"up"`。副作用：DB 故障时 `start main` 退出码 1（正确信号）。
+  - **工程名 = 目录名**（不传 `-p`）：pm.sh、手工 `cd main && docker compose …` 操作的是**同一个工程**，不会各建一套容器。
+- **`make-release.ps1` 同步改造**：两套包按新树形产出 + 复制 `pm.sh`（缺文件时 `[WARN]` 而非静默出一个没有入口的包）
+  + 两份服务器步骤文本重写 + 收尾改为递归打印整棵树。
+  **顺手修掉一个真 bug**：步骤文本里 `${WEB_PORT:-8080}` / `${AI_PORT:-8100}` 在双引号 here-string 里会被 PowerShell
+  当变量展开成**空串**（文本变成 `http://127.0.0.1:/health`）→ 已用反引号转义并做字节级确认。
+- **本地一键启动含 AI**：`start-dev.cmd` 增加第 4 步——AI 已在跑则提示；`ai-backend/.env` 存在则拉起到 8100 并等待，
+  **失败只 `[WARN]` 不拖垮主系统**（AI 是独立服务，不该让它挡住主系统启动），缺 `.env` 给"怎么建"的提示；
+  `stop-dev.cmd` 的端口清单加 8100。
+- **模板与编排**：`ai-backend/.env.example` 补 `AI_IMAGE_TAG`（出包自动预填）/`AI_BIND_IP`（当前无入站鉴权，必须绑内网）/
+  `AI_WORK_DIR`；`ai-backend/docker-compose.deploy.yml` **去掉写死的 `name: pm-ai`**——否则"工程名=目录名"对 AI 不成立，
+  手册 §0.4 的迁移说明就不准。
+- **文档**：手册新增 **§0.4「⚠️ 从旧布局迁移」**（工程名一变就撞固定容器名 → `container name is already in use`；
+  **必须把旧 `.env` 搬过来**（现场口令/密钥不在发布包里）；**别用 `cp -r` 把旧目录整体覆盖到新目录**（旧编排会盖掉新编排）），
+  并全篇把路径与命令改成 `main/ai + pm.sh`；`deploy/README`、`ai-backend/README`、根 `README` 同步；
+  `docs/AI前端与集成方案.md` 里"`pm-upgrade.sh` 保持 `.sh`"的旧结论加注"已被 `pm.sh` 取代"。
+- **验证**：
+  - `pm.sh`：本机**没有可用的 bash**（`bash` 只是 WSL 空壳，默认发行版 docker-desktop 里没有 `/bin/bash`），
+    故用容器里的 Ubuntu bash 校验：`bash -n` **exit 0**；参数分支逐条实测（无参数=1、`help`=0、未知子命令=2、
+    `upgrade` 缺参=2、`logs` 缺工程=2、`status`=0 且缺目录时 WARN 而非报错）。
+  - **不重新构建**（`SKIP_BUILD=1`，按要求）重打两个包并逐项核对：两包 `pm.sh` 与 `scripts/pm.sh` **逐字节一致**、
+    `main/docker-compose.yml` 与 `deploy/…/docker-compose.deploy.yml` 一致、`ai/docker-compose.yml` 与 `ai-backend/…` 一致、
+    `AI_IMAGE_TAG` 已就地预填为 `v1.0.0` 且模板无 BOM；两个 `.tar.gz` 用 `GZipStream` 解压到底（CRC 通过，tar 头 `ustar` 正常）。
+  - `check-docs`：19 份 / 0 问题；ITERATION 总表与明细行数一致。
+- **未验证（如实登记）**：真实服务器上的 `scp -r` → `bash pm.sh start|status|upgrade` 闭环、`docker load` 这两个包、
+  `/api/health`（含 `db:"up"` 判定）与 `/health?with_ocr=false` 的真实时序、旧布局迁移实操（含**附件本地卷名会随工程名变**：
+  `app_pm_uploads` → `main_pm_uploads`，走 OBS 时该卷只是过场不受影响，用 local 存储则需按步骤文本处理）、
+  `--env-file` 在服务器 compose 版本上的兼容性。主系统包本轮走 `SKIP_BUILD=1`，未再验证其 buildx 构建链路。
+
+---
+
 ## 功能完成度
 
 | 功能 | 状态 | 说明 |
@@ -840,6 +894,14 @@ cd ai-backend && mvn spring-boot:run       # :8100（需 .env 里的平台网关
 # 容器化重建 AI 服务 / 出 AI 发布包（v3.6.2 起，与主系统同一套脚本形状）：
 #   .\scripts\dev-reload.ps1 -Project ai              # 本机重建并重启（:8100）
 #   .\scripts\make-release.ps1 v1.0.0 -Project ai     # 出 dist/pm-ai-release-v1.0.0/
+
+# —— 服务器侧统一入口（v3.6.3 起；发布包里 pm.sh 落在部署根 /home/lhim/pm/）——
+#   cd /home/lhim/pm
+#   bash pm.sh start [main|ai|all]     # 先起 ai 再起 main（默认 all）
+#   bash pm.sh status | logs <main|ai> | stop [main|ai|all]
+#   bash pm.sh upgrade main main/releases/pm-images-aarch64-<版本>.tar.gz   # load + 切 IMAGE_TAG + 重启 + 健康检查
+#   bash pm.sh upgrade ai   ai/releases/pm-ai-images-aarch64-<版本>.tar.gz  # 切 AI_IMAGE_TAG
+# 布局：/home/lhim/pm/{pm.sh, main/, ai/}；每个项目目录含 compose + .env + releases/ 镜像包。
 
 # —— 演示数据（走真实 API；详见 scripts/README.md）——
 .\scripts\db-sql.ps1 scripts\demo-reset.sql   # 可选：物理清空演示数据（从干净基线开始）

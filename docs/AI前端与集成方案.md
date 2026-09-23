@@ -200,7 +200,7 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 
 | 决策 | 执行 |
 | --- | --- |
-| 开发机脚本转 Windows 原生 | `scripts/make-release.sh`、`dev-reload.sh`、`db-sql.sh` → `.ps1`（删除 `.sh`，避免两套漂移）；**`pm-upgrade.sh` 保持 `.sh`**（它只在 Linux 服务器上跑） |
+| 开发机脚本转 Windows 原生 | `scripts/make-release.sh`、`dev-reload.sh`、`db-sql.sh` → `.ps1`（删除 `.sh`，避免两套漂移）；当时服务器升级脚本 `pm-upgrade.sh` 保持 `.sh`（它只在 Linux 服务器上跑）——**该脚本已于 v3.6.3 被统一的 `scripts/pm.sh` 取代**（见部署手册 §0.4/§4） |
 | 本机配置移出仓库树 | `local/export`（数据库导出、`口令与配置清单.md`、SSH 公钥）→ **`E:\env\pm-local\export`**；仓库内 `local/` 只留两个本机启动助手（已 gitignore） |
 | 接入不必等 OpenSearch | 见 §8.1：`VEC_BACKEND=local` 即可打通全链路，P0 现在可开工 |
 | 数据访问渠道 | 见 §8.2：主系统受控查询 RPC + 工具化，不用 MCP、不直连库、不生成 SQL |

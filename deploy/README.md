@@ -20,27 +20,30 @@
 ## 1. 生产部署：Docker（服务器）
 
 > **服务器不需要源码**：镜像内已含后端 jar（含建库迁移 SQL）、前端产物与 nginx 配置。
-> 服务器运行目录只有 2 个文件：`docker-compose.yml` + `.env`（均取自发布包）。
+> 服务器布局：部署根 `/home/lhim/pm/` 下是**唯一入口 `pm.sh`** + 两个互相隔离的项目目录
+> `main/`（主系统）与 `ai/`（AI 能力服务）；每个项目目录里只有 `docker-compose.yml` + `.env`（均取自发布包）。
 > 完整步骤（含环境准备、验收、升级、回滚）见 [`docs/部署与发布全流程手册.md`](../docs/部署与发布全流程手册.md)。
 
-服务器用的编排是 **`deploy/docker/docker-compose.deploy.yml`**（发布包里改名为 `docker-compose.yml`）：
+服务器用的编排是 **`deploy/docker/docker-compose.deploy.yml`**（发布包里改名为 `main/docker-compose.yml`）：
 **没有 `build:` 段** + `pull_policy: never`，镜像缺失时立刻报错，不会误触发联网构建。
 
 ```text
-# ── 开发机（Windows PowerShell，无需 Git Bash）：出发布包（镜像 + 编排 + .env 模板）──
+# ── 开发机（Windows PowerShell，无需 Git Bash）：出发布包（pm.sh + 项目目录 + 镜像 + 编排 + .env 模板）──
 .\scripts\make-release.ps1 v3.3.0                # 产 dist/pm-release-v3.3.0/
-scp dist/pm-release-v3.3.0/pm-images-aarch64-v3.3.0.tar.gz  lhim@<服务器>:/home/lhim/pm/releases/
-scp dist/pm-release-v3.3.0/docker-compose.yml dist/pm-release-v3.3.0/.env.example lhim@<服务器>:/home/lhim/pm/app/
+scp -r dist/pm-release-v3.3.0/*  lhim@<服务器>:/home/lhim/pm/    # 整棵树铺到部署根（dist 的上一层执行）
 
-# ── 服务器：配 .env → load → up（不加 --build）──
-cd /home/lhim/pm/app && cp .env.example .env && vi .env    # 填 YASHAN_PASSWORD / JWT_SECRET / OBS 五项
-docker load -i /home/lhim/pm/releases/pm-images-aarch64-v3.3.0.tar.gz
-docker compose up -d
-docker compose ps && curl http://127.0.0.1:8080/api/health     # 期望 db:"up"
+# ── 服务器：配 .env → 一条命令 load + 切版本 + 启动（不加 --build）──
+cd /home/lhim/pm/main && cp .env.example .env && vi .env    # 填 YASHAN_PASSWORD / JWT_SECRET / OBS 五项
+cd /home/lhim/pm && bash pm.sh upgrade main main/releases/pm-images-aarch64-v3.3.0.tar.gz
+bash pm.sh status && curl http://127.0.0.1:8080/api/health     # 期望 db:"up"
 ```
 
-> 💡 服务器上还可用 **`bash pm-upgrade.sh <镜像包>`** 一步完成「load → 自动切换 `.env` 的 `IMAGE_TAG` → 重启」，
-> 不需要手工改版本号（脚本随发布包下发，见 §1 与《部署与发布全流程手册.md》§4）。
+> 💡 `pm.sh` 是服务器上的**唯一入口**（随发布包根目录下发），日常运维只需记这一条：
+> `bash pm.sh start|stop|restart|status [main\|ai\|all]`、`bash pm.sh logs <main\|ai>`、
+> `bash pm.sh upgrade <main\|ai> <镜像包>`——`upgrade` 一步完成「load → 解析包名版本 → 自动切换 `.env` 的
+> `IMAGE_TAG`（AI 是 `AI_IMAGE_TAG`，原 `.env` 备份为 `.env.bak`）→ 重启 → 健康检查」，
+> **不需要手工改版本号**（见《部署与发布全流程手册.md》§3/§4）。
+> 手工等价的 `docker load` + `docker compose up -d` 仍可用，但要在对应运行目录（`main/` 或 `ai/`）下执行。
 
 启动后：
 
@@ -51,7 +54,7 @@ docker compose ps && curl http://127.0.0.1:8080/api/health     # 期望 db:"up"
 
 **首次建库**：后端启动时自研迁移 Runner 自动执行 `db/migration-yashan/V1~V13` 完成建表与种子（幂等，已执行版本记入 `schema_version`），无需手工导库。
 > ⚠️ 迁移是**逐条 DDL 顺序执行、崖山 Oracle 模式隐式提交、没有回滚**：升级到含新迁移的版本前**先备份库**；
-> 若中途失败，按《部署与发布全流程手册》§6 处置（先 `docker compose stop` 止血，再人工核 `schema_version` 与已执行语句）。
+> 若中途失败，按《部署与发布全流程手册》§6 处置（先止血：`bash pm.sh stop main`，再人工核 `schema_version` 与已执行语句）。
 
 > 内置账号：admin / jingban01 / lingdao01（密码均 123456）；生产务必先改密并覆盖 `JWT_SECRET`。
 
@@ -67,13 +70,15 @@ AI 功能（知识库、悬浮问答、附件自动解析）**依赖一个独立
 
 **部署顺序（推荐）**：
 1. 先发主系统（本文件 §1）→ 打开「AI 与知识库 → 服务自检」，此时应显示 **AI 服务不可用**（这是正常的，说明开关生效、不是"未找到"）；
-2. 再发 AI 服务——**和主系统同一套脚本**（在仓库根执行）：
+2. 再发 AI 服务——**和主系统同一套脚本、同一套布局**（在仓库根、`dist` 的上一层执行）：
    ```powershell
-   .\scripts\make-release.ps1 v1.0.0 -Project ai     # 出 dist/pm-ai-release-v1.0.0/（镜像包 + 编排 + .env 模板 + 部署步骤）
+   .\scripts\make-release.ps1 v1.0.0 -Project ai     # 出 dist/pm-ai-release-v1.0.0/（pm.sh + ai/：镜像包 + 编排 + .env 模板 + 部署步骤）
+   scp -r dist/pm-ai-release-v1.0.0/*  lhim@<AI服务器>:/home/lhim/pm/    # 整棵树铺到部署根（ai/ 与 pm.sh 各就各位）
    ```
-   服务器上：`cp .env.example .env`（填 `LLM_API_KEY`/`AI_IMAGE_TAG`/`AI_BIND_IP`）→ `docker load` → `docker compose up -d` → 自检 `/health?with_ocr=true&with_vec=true`；
-   完整步骤见《部署与发布全流程手册》§8；
-3. 最后按需把 `AI_AUTO_PARSE` 改成 `true`（改完 `docker compose up -d` 生效，无需重建镜像）。
+   服务器上：`cd /home/lhim/pm/ai && cp .env.example .env`（必填 `LLM_API_KEY`；`AI_IMAGE_TAG` 出包已预填、`AI_BIND_IP` 填本机内网 IP）
+   → `cd /home/lhim/pm && bash pm.sh upgrade ai ai/releases/pm-ai-images-aarch64-v1.0.0.tar.gz`（自动 load + 切 `AI_IMAGE_TAG` + 启动 + 健康检查）
+   → 自检 `/health?with_ocr=true&with_vec=true`；完整步骤见《部署与发布全流程手册》§8；
+3. 最后按需把 `AI_AUTO_PARSE` 改成 `true`（主系统侧改 `main/.env`，改完 `bash pm.sh restart main` 生效，无需重建镜像）。
 
 > ⚠️ 两个已知边界：① AI 服务**当前没有任何入站鉴权**，端口不要对全网开放（`ai-backend/docker-compose.deploy.yml` 里用 `AI_BIND_IP` 绑定内网 IP + 防火墙只放行主系统服务器）；
 > ② 双机负载均衡时**建议 AI 服务集中部署一台**——它的文档库/向量缓存是本地文件，两台各跑一个会让索引各自演化，同一个问题问到不同机器答案不一致。

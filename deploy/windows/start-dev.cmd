@@ -76,14 +76,37 @@ if not errorlevel 1 (
   echo [OK] Frontend ready
 )
 
+rem ---------- 4. AI 能力服务（可选；独立服务，缺失时只提示不阻塞主系统） ----------
+rem 为什么放在最后且失败不退出：AI 是独立部署的服务，缺 .env / 依赖没装好都不该让主系统起不来。
+set "A_PORT=8100"
+call :portBusy %A_PORT%
+if not errorlevel 1 (
+  echo [OK] AI service already running ^(port %A_PORT%^)
+) else (
+  if not exist "%ROOT%\ai-backend\.env" (
+    echo [SKIP] ai-backend\.env not found - AI pages will show "AI service unavailable".
+    echo        Enable it: copy ai-backend\.env.example ai-backend\.env  then fill LLM_API_KEY ^(platform gateway sk^).
+  ) else (
+    echo starting AI service ^(Spring Boot, :%A_PORT%^) ...
+    start "pm-ai-backend" cmd /k "cd /d %ROOT%\ai-backend && mvn spring-boot:run"
+    call :waitPort %A_PORT% 180
+    if errorlevel 1 (
+      echo [WARN] AI service not ready within 180s - check window "pm-ai-backend".
+      echo        Main system is fine; the AI pages will keep saying "AI service unavailable".
+    ) else (
+      echo [OK] AI service ready ^(http://127.0.0.1:%A_PORT%/health?with_ocr=false^)
+    )
+  )
+)
+
 echo.
 echo ============================================================
 echo   Done. URL: http://localhost:%F_PORT%
 echo   API  : http://127.0.0.1:%B_PORT%/api/health
+echo   AI   : http://127.0.0.1:8100/health?with_ocr=false   ^(optional^)
 echo   Stop : deploy\windows\stop-dev.cmd
 echo ============================================================
 exit /b 0
-
 rem ---------- subroutines ----------
 
 :portBusy

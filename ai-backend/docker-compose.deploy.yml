@@ -3,7 +3,7 @@
 #
 # 与 ai-backend/docker-compose.yml 的区别：本文件【没有 build 段】，
 # 因此服务器上不需要源码——只要有：
-#   ① 本文件（改名为 docker-compose.yml，放进 AI 服务自己的运行目录，例如 /home/lhim/pm-ai/app）
+#   ① 本文件（改名为 docker-compose.yml，放进 AI 服务的运行目录 /home/lhim/pm/ai/）
 #   ② 同目录的 .env（模板见 ai-backend/.env.example，必填 LLM_API_KEY 等）
 #   ③ 已 docker load 进来的镜像（pm-ai-backend:<AI_IMAGE_TAG>）
 #
@@ -13,8 +13,9 @@
 # 启动： cd <运行目录> && docker compose up -d
 # 自检： curl http://127.0.0.1:8100/health?with_ocr=false     # 期望 {"code":0,...}
 # ============================================================
-name: pm-ai
-
+# 说明：本文件刻意**不写 `name:`** —— compose 的工程名默认取 compose 文件所在目录名，
+# 部署到 /home/lhim/pm/ai/ 后工程名就是 `ai`，与统一入口 pm.sh（不传 -p）以及运维手工
+# `cd ai && docker compose ...` 三者操作的是**同一个工程**；写死 name 会让"工程名=目录名"的规则失效。
 services:
   ai-backend:
     image: pm-ai-backend:${AI_IMAGE_TAG:-latest}

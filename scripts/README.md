@@ -11,14 +11,15 @@
 
 | 目录 | 职责 | 谁执行 |
 | --- | --- | --- |
-| `scripts/` | 开发机工具：发版打包、演示数据、数据库手工查改 | 开发机（仓库根） |
+| `scripts/` | 开发机工具：发版打包、演示数据、数据库手工查改；另含随发布包下发的**服务器唯一入口** `pm.sh`（本机不跑） | 开发机（仓库根） |
 | `deploy/windows/` | **源码模式**启动/停止前后端（本地开发） | 开发机 |
 | `deploy/docker/` | **镜像模式**部署资产（Dockerfile + compose） | 开发机构建、服务器运行 |
 | `ai-backend/scripts/` | AI 能力服务的质量门与端到端验收 | 开发机（AI 模块根） |
 | `local/`（**已 gitignore**） | 两个**本机启动助手**（`start-project-local.cmd` / `stop-project-local.cmd`，双击可用）。⚠️ **密钥类一律放仓库外**：数据库导出与口令清单在 `E:\env\pm-local\export\` | 本机 |
 | 根目录 `start-dev.cmd` / `stop-dev.cmd` | 一键启动/停止的**通用入口**（转发到 `deploy/windows/`） | 开发机（双击即用） |
 
-> 生产服务器上**只有发布包里的 `docker-compose.yml` + `.env` + `pm-upgrade.sh`**（服务器不存源码，也不需要本目录任何脚本）。
+> 生产服务器上**只有发布包里的 `pm.sh` + 两个运行目录**（部署根 `pm/`：`main/` = 主系统、`ai/` = AI 能力服务，
+> 各自只要 `docker-compose.yml` + `.env`）——服务器不存源码，也不需要本目录其他任何脚本。详见 §4.1。
 
 ### 0.2 Shell 要求（**先看这条，否则会白折腾**）
 
@@ -26,7 +27,7 @@
 | --- | --- | --- |
 | `.cmd` / `.bat` | Windows 原生，双击或 cmd 直接跑 | ✅ 可用 |
 | `.ps1` | Windows 原生（PowerShell）。**5.1 与 7 都能跑**：本机默认壳是 Windows PowerShell 5.1，`pwsh` 7 也已装 | ✅ 可用，但**本机默认策略会拦**——见下方"执行策略" |
-| `.sh` | **Git Bash 或 WSL**（本项目的 `.sh` 是 bash 脚本） | ⚠️ **本机没有 Git Bash**（PATH 上的 `bash` 只是 WSL 桩）。开发机脚本**已全部改为 `.ps1`**；**仓库里只剩 `scripts/pm-upgrade.sh` 一个 `.sh`，它随发布包下发、只在 Linux 服务器上运行**，本机不需要跑它 |
+| `.sh` | **Git Bash 或 WSL**（本项目的 `.sh` 是 bash 脚本） | ⚠️ **本机没有 Git Bash**（PATH 上的 `bash` 只是 WSL 桩）。开发机脚本**已全部改为 `.ps1`**；**仓库里只剩 `scripts/pm.sh` 一个 `.sh`——主系统与 AI 能力服务共用的服务器唯一入口**，它随发布包放到服务器部署根目录 `pm/` 下、只在 Linux 服务器运行，本机不需要跑它（想在 Windows 上查它的语法，用**容器里的 bash**：`docker run --rm -v "$PWD:/w" -w /w eclipse-temurin:17-jre bash -n scripts/pm.sh`） |
 | `.mjs` | Node.js 18+ | ✅ 可用（用 `node xxx.mjs`；PowerShell 里若 `npm` 被策略拦，用 `npm.cmd`） |
 
 **结论（本机 Windows 开发）**：
@@ -73,7 +74,7 @@
 
 > 下表的 `.\scripts\*.ps1` 都是**本机 Windows 原生用法**（Windows PowerShell 5.1 或 `pwsh` 7 都能跑），**不需要 Git Bash**；
 > 若执行策略为 Restricted，改用 `powershell -ExecutionPolicy Bypass -File scripts\xxx.ps1`。
-> 只有服务器上的 `pm-upgrade.sh` 仍用 bash（它只在 Linux 服务器运行）。
+> 只有服务器上的 `pm.sh`（主系统 + AI 能力服务共用入口）仍用 bash（它只在 Linux 服务器运行）。
 
 | 我要做什么 | 命令 | Shell | 说明 |
 | --- | --- | --- | --- |
@@ -89,13 +90,14 @@
 | 本地测试部署（镜像模式，前后端） | `deploy\docker\` 下按 `deploy/README.md` §2 | cmd | 本机 Docker Desktop；前端对外端口见 `.env` 的 `WEB_PORT`（本机约定 8088） |
 | 本地测试部署（AI 服务） | `docker compose -f ai-backend/docker-compose.yml up -d --build`（等价脚本：`.\scripts\dev-reload.ps1 -Project ai`） | cmd / PowerShell | 镜像 `pm-ai-backend:local`，卷 `./work:/app/work` |
 | 迭代自测（改完代码重建镜像） | 主系统：`.\scripts\dev-reload.ps1 [all\|backend\|frontend]`<br>AI 服务：`.\scripts\dev-reload.ps1 -Project ai` | PowerShell | **按需执行，不主动跑**（约定 ①） |
-| 发版打包（主系统，两个镜像都重建） | `.\scripts\make-release.ps1 v3.x.y` | PowerShell | 产出 `dist/pm-release-v3.x.y/`（镜像 + compose + `.env.example` + `pm-upgrade.sh`） |
+| 发版打包（主系统，两个镜像都重建） | `.\scripts\make-release.ps1 v3.x.y` | PowerShell | 产出 `dist/pm-release-v3.x.y/`（镜像 + compose + `.env.example` + `pm.sh`） |
 | 发版打包（主系统，**只重建改动的那一端**） | `.\scripts\make-release.ps1 v3.x.y -Only backend`<br>`.\scripts\make-release.ps1 v3.x.y -Only frontend -ReuseTag v3.x.x` | PowerShell | 没改动的那一端用 `docker tag` 复用本机已有镜像；**发布包内容与完整构建完全一致**；与 `SKIP_BUILD=1` 互斥（详见 §2.1） |
 | 发版打包（AI 能力服务，**独立发版**） | `.\scripts\make-release.ps1 v1.x.y -Project ai` | PowerShell | 产出 `dist/pm-ai-release-v1.x.y/`（AI 镜像 + compose + `.env.example` + AI 部署步骤；不含主系统的任何文件） |
-| 服务器首次部署 | 见 `docs/部署与发布全流程手册.md` §3~§5 | 服务器 bash | 发布目录只需 `docker-compose.yml` + `.env` |
-| 服务器升级 | 在服务器运行目录 `bash pm-upgrade.sh pm-images-arm64-v3.x.y.tar.gz` | 服务器 bash | 自动 `docker load` + 切 `.env` 的 `IMAGE_TAG` + `up -d` |
-| 服务器重启/查看 | `docker compose up -d` / `docker compose ps` / `docker compose logs -f --tail 100` | 服务器 | 详见手册 §6 |
-| 回滚 | 改 `.env` 的 `IMAGE_TAG` 回旧版本 → `docker compose up -d` | 服务器 | 镜像仍在本地则秒回滚 |
+| 服务器首次部署 | `bash pm.sh start`（或按 `docs/部署与发布全流程手册.md` §3~§5 手工） | 服务器 bash | 部署根 `pm/` 下放 `pm.sh`，`main/`、`ai/` 各放 `docker-compose.yml` + `.env`；详见 §4.1 |
+| 服务器升级（主系统） | `bash pm.sh upgrade main main/releases/pm-images-aarch64-v3.x.y.tar.gz` | 服务器 bash | 自动 `docker load` + 切 `.env` 的 `IMAGE_TAG` + `up -d` + 健康检查 |
+| 服务器升级（AI 能力服务） | `bash pm.sh upgrade ai ai/releases/pm-ai-images-aarch64-v1.x.y.tar.gz` | 服务器 bash | 同上，键名换成 `AI_IMAGE_TAG`；AI 独立发版 |
+| 服务器重启/查看 | `bash pm.sh status` / `bash pm.sh restart` / `bash pm.sh logs ai` | 服务器 bash | 也可手工 `docker compose -f main/docker-compose.yml ps`；详见 §4.1 |
+| 回滚 | `bash pm.sh upgrade main <上一版本的镜像包>`（或手改 `.env` 的 `IMAGE_TAG` → `bash pm.sh restart main`） | 服务器 bash | 镜像仍在本地则秒回滚；升级前的 `.env` 已自动备份为 `.env.bak` |
 
 ---
 
@@ -123,13 +125,15 @@
 
 | 命令 | 产出目录 | 内容 |
 | --- | --- | --- |
-| `make-release.ps1 <版本>` | `dist/pm-release-<版本>/` | `pm-images-<arch>-<版本>.tar.gz`（**backend + frontend 两个镜像**）、`docker-compose.yml`、`.env.example`（预填 `IMAGE_TAG`）、`pm-upgrade.sh`、`服务器部署步骤.txt` |
-| `make-release.ps1 <版本> -Project ai` | `dist/pm-ai-release-<版本>/` | `pm-ai-images-<arch>-<版本>.tar.gz`（只有 AI 镜像）、`docker-compose.yml`（← `ai-backend/docker-compose.deploy.yml`，**包内已改名，服务器不用再 mv**）、`.env.example`（预填 `AI_IMAGE_TAG`）、`服务器部署步骤-ai.txt` |
+| `make-release.ps1 <版本>` | `dist/pm-release-<版本>/` | `pm-images-<arch>-<版本>.tar.gz`（**backend + frontend 两个镜像**）、`docker-compose.yml`、`.env.example`（预填 `IMAGE_TAG`）、`pm.sh`（两个项目共用的服务器入口）、`服务器部署步骤.txt` |
+| `make-release.ps1 <版本> -Project ai` | `dist/pm-ai-release-<版本>/` | `pm-ai-images-<arch>-<版本>.tar.gz`（只有 AI 镜像）、`docker-compose.yml`（← `ai-backend/docker-compose.deploy.yml`，**包内已改名，服务器不用再 mv**）、`.env.example`（预填 `AI_IMAGE_TAG`）、`pm.sh`（同一份入口脚本）、`服务器部署步骤-ai.txt` |
 
 > **退出码约定**：参数非法或语义冲突 = **2**（例：`-Only` 配 `-Project ai`、`-Only` 配 `SKIP_BUILD=1`、`-ReuseTag` 没配 `-Only`、平台写法不支持）；缺文件 / 本机缺镜像 = **1**；构建失败 = 透传 docker 的退出码。
 > **`-Only` 的语义**：只省掉「没改动那一端」的构建时间，**发布包内容与默认行为完全一致**（包里仍是两个镜像、同一个 `<版本>` tag，服务器端零额外操作）。
 > 复用来的镜像会先做**架构校验**（与 `[平台]` 不一致立即报错），并打印实际来源（例：`复用镜像：pm-frontend:v3.6.1  →（docker tag）→  pm-frontend:v3.6.2`）；一个可复用的 tag 都没有时报错并提示「先完整构建一次，或用 `-ReuseTag` 指定」；且**来源校验在构建之前**完成——`-ReuseTag` 写错会立刻退出，不会白等一轮构建。
-> **AI 发布包不含** `pm-upgrade.sh`（主系统服务器专用）、也不含主系统的 `.env.example`；同理主系统发布包里没有 AI 镜像（见部署手册 §8）。
+> **AI 发布包不含**主系统的 `docker-compose.yml`/`.env.example`，也不含主系统镜像；同理主系统发布包不含 AI 镜像（见部署手册 §8）。
+> 但 **`pm.sh` 是两套发布物共用的同一个入口脚本**（内容完全一致）：它放在部署根目录 `pm/` 下，`main/`、`ai/` 是它的两个子目录，
+> 所以两套发布包会携带同一份 `pm.sh`，谁先解包先放上去都一样。**服务器上的最终布局**（`pm/main/`、`pm/ai/`，各含 `releases/`）见 §4.1。
 
 ### 2.2 演示数据
 
@@ -210,8 +214,61 @@ AI 分支的前置条件与主系统不同：`dev-reload.ps1 -Project ai` 要求
 | `deploy/windows/start-dev.cmd`、`stop-dev.cmd` | 源码模式启动/停止（本地开发）；根目录同名 `.cmd` 是通用入口 |
 | `deploy/docker/Dockerfile.backend`、`Dockerfile.frontend` | 生产镜像（构建上下文＝仓库根） |
 | `deploy/docker/docker-compose.deploy.yml` | **服务器用编排**：无 `build:` + `pull_policy: never`（发布包里改名为 `docker-compose.yml`） |
-| 发布包内 `pm-upgrade.sh` | 服务器安装/升级（`docker load` + 切 `IMAGE_TAG` + `up -d`） |
+| `scripts/pm.sh`（发布包 → 服务器部署根 `pm/` 下） | **主系统与 AI 能力服务共用的服务器唯一入口**：`start` / `stop` / `restart` / `status` / `logs` / `upgrade` / `help`（详见 §4.1） |
 | `ai-backend/Dockerfile`、`ai-backend/docker-compose.yml`、`ai-backend/docker-compose.deploy.yml` | AI 服务镜像；本地编排（**含 `build:`**，上下文＝仓库根）；**服务器专用编排**（无 `build:` + `pull_policy: never`，发布包里改名为 `docker-compose.yml`）。AI 服务**独立发版**，不在主系统发布包内（出包见 §2.1 的 `-Project ai`） |
+
+### 4.1 服务器唯一入口 `scripts/pm.sh`
+
+**一个脚本管两个项目**：以前主系统与 AI 各有各的运行目录、各有各的升级脚本；现在两边的启停、状态、日志、升级
+统一走 `pm.sh`，它按**脚本自身位置**推导部署根 `BASE`（绝不硬编码 `/home/lhim`），`main/`、`ai/` 是它的两个子目录。
+
+```
+<BASE>/                        # 部署根，例：/home/lhim/pm
+├─ pm.sh                       # 发布包会把它放在这里
+├─ main/                       # 主系统运行目录（dist 产出，服务器上无源码）
+│  ├─ docker-compose.yml       # 服务器专用编排（无 build 段）
+│  ├─ .env                     # IMAGE_TAG / WEB_PORT / YASHAN_* / AI_*
+│  ├─ .env.example
+│  ├─ 服务器部署步骤.txt
+│  └─ releases/pm-images-aarch64-<版本>.tar.gz
+└─ ai/                         # AI 能力服务运行目录（dist 产出，服务器上无源码）
+   ├─ docker-compose.yml       # = ai-backend/docker-compose.deploy.yml 改名
+   ├─ .env                     # AI_IMAGE_TAG / AI_PORT / AI_BIND_IP / LLM_API_KEY
+   ├─ .env.example
+   ├─ 服务器部署步骤-ai.txt
+   └─ releases/pm-ai-images-aarch64-<版本>.tar.gz
+```
+
+| 命令 | 行为 |
+| --- | --- |
+| `bash pm.sh start [main\|ai\|all]` | 默认 `all`。**先起 ai 再起 main**（主系统的 AI 功能依赖它，先起可少一次"AI 服务不可用"）；每步 `up -d` 后做健康检查，最后打印访问地址与状态 |
+| `bash pm.sh stop [main\|ai\|all]` | 默认 `all`，**反序**（先 main 再 ai，避免主系统还在跑时报假故障）；容器不存在时不算失败（幂等） |
+| `bash pm.sh restart [main\|ai\|all]` | 等价 `stop` + `start` |
+| `bash pm.sh status` | 两个工程的 `docker compose ps` + 各自健康探测结论（一句话"可用/不可用"）|
+| `bash pm.sh logs <main\|ai> [服务名]` | 转发 `docker compose logs -f [服务名]`（额外参数原样转发）|
+| `bash pm.sh upgrade <main\|ai> <镜像包>` | `docker load -i <包>` → 从包名解析版本 → 改对应 `.env` 的 tag（main=`IMAGE_TAG`，ai=`AI_IMAGE_TAG`）→ 备份 `.env.bak` → `up -d` → 健康检查 |
+| `bash pm.sh <镜像包>` | 兼容旧习惯，等价 `upgrade main <镜像包>`；包名是 `pm-ai-images-*` 时**拒绝**并提示改用 `upgrade ai` |
+| `bash pm.sh help` | 用法说明（无参数时也打印用法，但退出码 1）|
+
+**几条实现约定（运维会踩到的点）**：
+
+- **退出码**：`0` 成功 ｜ `1` 环境缺文件 / 镜像包不存在 / 健康检查失败 ｜ `2` 子命令或参数用法错误（与 `make-release.ps1` 的约定一致）。
+  `status` 是纯查看命令，退出码恒为 `0`，结论在输出里。
+- **版本解析**：main 认 `pm-images-<arch>-<版本>.tar.gz`，ai 认 `pm-ai-images-<arch>-<版本>.tar.gz`；
+  解析不出就**不改 tag** 并明确提示（沿用旧脚本行为）；包名不规范时可显式覆盖：`VER=v3.6.3 bash pm.sh upgrade main <包>`。
+  `docker load` 之后还会用 `docker image inspect` 确认 `pm-backend:<版本>` / `pm-ai-backend:<版本>` **真的在**，不在同样不改 tag。
+- **改 `.env` 的手法**与旧脚本一致：读旧值（`grep '^KEY=' | head -1 | cut -d= -f2-`）→ `cp .env .env.bak` → `sed -i.bak` 替换（没有该行则追加）→ 打印 `旧 → 新`。
+- **健康检查**用 `curl` 轮询（约 `3s × 20` ≈ 60s），失败会打印排查建议，不静默通过：
+  main 探 `main/.env` 的 `WEB_PORT`（默认 8080）→ `http://127.0.0.1:<port>/api/health`
+  （**只看 HTTP 码不够**：数据库不通时它也返回 200，body 里是 `db:"down: ..."`，脚本会连 body 一起看）；
+  ai 探 `ai/.env` 的 `AI_PORT`（默认 8100）→ `http://127.0.0.1:<port>/health?with_ocr=false`。
+- **.env 缺失**不会猜：直接给出 `cp .env.example .env && vi .env` 与必填项清单
+  （main = `YASHAN_PASSWORD` / `JWT_SECRET` / OBS 五项；ai = `LLM_API_KEY` / `AI_IMAGE_TAG` / `AI_BIND_IP`）。
+- **不做 `cd`**：所有 compose 调用都是 `docker compose --env-file <...> -f <绝对路径>`，所以从哪个目录调用、脚本放在哪都不影响结果（也不传 `-p`，让工程名与目录名一致，手工 `docker compose` 与 `pm.sh` 操作的是同一个工程）。
+- ⚠️ **从旧布局迁移**（原来是 `pm/app`、`pm-ai/app`）时：容器名是固定的（`pm-backend`/`pm-frontend`/`pm-ai-backend`），
+  换目录即换工程名，`up -d` 会报 `container name ... is already in use`。先清理旧容器再起：
+  `docker rm -f pm-backend pm-frontend pm-ai-backend`（`pm.sh` 在启动失败时会提示这一条）。
+- 只依赖 `bash 4+`（Linux 自带）、`docker` + `docker compose` v2、`curl`；**不依赖 `jq`**，不用 bash 5 独有语法。
 
 ---
 
@@ -222,4 +279,4 @@ AI 分支的前置条件与主系统不同：`dev-reload.ps1 -Project ai` 要求
 3. 涉及数据库的：**不要把口令写进脚本**，走环境变量或 `.env`；
 4. 涉及演示数据的：新功能要能被数据体现出来（见 [`README.md`](../README.md) 文档维护约定）；
 5. **只提供 Windows 原生入口**：开发机脚本一律 `.cmd` / `.ps1`，**不要再新增 `.sh`**（本机没有 Git Bash，见 §0.2）；
-   只有「随发布包下发、在 Linux 服务器上跑」的脚本才用 `.sh`（目前只有 `pm-upgrade.sh`）。
+   只有「随发布包下发、在 Linux 服务器上跑」的脚本才用 `.sh`（目前只有 `pm.sh`：主系统与 AI 能力服务共用的服务器入口）。

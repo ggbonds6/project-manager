@@ -99,6 +99,8 @@
 
 > 本地开发用 Windows 一键脚本；生产用 Docker 一体化镜像（前后端打包，数据库为外部崖山）：
 > 见 [`deploy/README.md`](deploy/README.md)（含环境变量、建库说明）。
+> **服务器上两个项目各自隔离**：`/home/lhim/pm/main`（主系统）+ `/home/lhim/pm/ai`（AI 服务），
+> 根目录一个统一入口 `pm.sh` —— `bash pm.sh start|stop|status|logs|upgrade <main|ai> <镜像包>`（先起 ai 再起 main）。
 > Git 协作的 SSH 配置见 [`docs/GITHUB-SSH-setup.md`](docs/GITHUB-SSH-setup.md)。
 
 ## 接口约定
@@ -132,5 +134,5 @@
 9. 收尾顺手清理无效代码（未使用导入 / 死方法 / 只写不读的变量）；
 10. 提交说明引用对应验证结果。
 
-当前版本：主系统 **v3.6.2**（含「AI 与知识库」P0：菜单页 + 全局悬浮问答 + 引用可跳原文第 N 页；构建提速 4~9×、AI 服务发版链路与主系统对齐）｜ AI 能力服务 **ai-1.1.0**（Java 版，独立构建与部署；`/chat` 返回结构化引用）｜ 文档与脚本 **docs-1.3**
+当前版本：主系统 **v3.6.3**（含「AI 与知识库」P0：菜单页 + 全局悬浮问答 + 引用可跳原文第 N 页；构建提速 4~9×；服务器改为 `main/` + `ai/` 隔离布局 + 统一入口 `pm.sh`）｜ AI 能力服务 **ai-1.1.0**（Java 版，独立构建与部署；`/chat` 返回结构化引用）｜ 文档与脚本 **docs-1.3**
 （数据库已切换崖山 YashanDB Oracle 模式）（详见 [`ITERATION.md`](ITERATION.md) 迭代总表与功能完成度）。
