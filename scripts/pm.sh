@@ -609,7 +609,19 @@ cmd_upgrade() { # <main|ai> <镜像包>
     return 1
   fi
   if ! compose "$proj" up -d; then
+    # ⚠️ 高频踩坑（真机上出现过）：从旧布局（pm/app、pm-ai/app）迁到 main/、ai/ 后，
+    # 工程名随目录名改变，而编排里的 container_name 是写死的 —— 老容器还在（哪怕只是 docker stop 过）
+    # 就会占着名字，新工程创建容器时报 Conflict / already in use。
+    # 故失败时把补救办法直接打出来（**只删容器，不动镜像与数据卷**）。
     fail "启动失败：$(proj_label "$proj")（排查： bash pm.sh logs $proj）"
+    log "      · 报 container name is already in use（从 pm/app、pm-ai/app 迁过来最常见）："
+    log "        老容器还占着写死的容器名，先释放再起 —— docker rm -f pm-backend pm-frontend pm-ai-backend"
+    log "        （只删容器：镜像、数据卷、.env 都不受影响；docker stop 不解开占用，必须 rm）"
+    log "        ⚠️ 若 $ef 里 APP_STORAGE_TYPE=local，注意附件卷名也带旧工程名前缀："
+    log "           旧卷 app_pm_uploads → 新工程会挂 main_pm_uploads（空卷，界面看似附件丢失）"
+    log "           要么在本行显式沿用旧卷： UPLOAD_VOLUME=app_pm_uploads ，要么先备份数据；用 obs 时该卷只是过场、无需处理"
+    log "      · 镜像没 load 进来？确认本机有 $(proj_image "$proj"):$(env_val "$ef" "$(proj_tagkey "$proj")" latest)"
+    log "      · 端口被占用？改 $ef 的 $(proj_portkey "$proj")"
     return 1
   fi
   compose "$proj" ps || true
