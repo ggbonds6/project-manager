@@ -87,9 +87,11 @@
 | 从干净基线灌演示数据 | `.\scripts\db-sql.ps1 scripts/demo-reset.sql` → 上面两步 | PowerShell | 物理清空后重灌（见 §2.2） |
 | 手工查/改数据库 | `.\scripts\db-sql.ps1 <sql文件>` | PowerShell | 无需 yasql 客户端，口令不落盘 |
 | 本地测试部署（镜像模式，前后端） | `deploy\docker\` 下按 `deploy/README.md` §2 | cmd | 本机 Docker Desktop；前端对外端口见 `.env` 的 `WEB_PORT`（本机约定 8088） |
-| 本地测试部署（AI 服务） | `docker compose -f ai-backend/docker-compose.yml up -d --build` | cmd | 镜像 `pm-ai-backend:local`，卷 `./work:/app/work` |
-| 迭代自测（改完代码重建镜像） | `.\scripts\dev-reload.ps1 [all\|backend\|frontend]` | PowerShell | **按需执行，不主动跑**（约定 ①） |
-| 发版打包 | `.\scripts\make-release.ps1 v3.x.y` | PowerShell | 产出 `dist/pm-release-v3.x.y/`（镜像 + compose + `.env.example` + `pm-upgrade.sh`） |
+| 本地测试部署（AI 服务） | `docker compose -f ai-backend/docker-compose.yml up -d --build`（等价脚本：`.\scripts\dev-reload.ps1 -Project ai`） | cmd / PowerShell | 镜像 `pm-ai-backend:local`，卷 `./work:/app/work` |
+| 迭代自测（改完代码重建镜像） | 主系统：`.\scripts\dev-reload.ps1 [all\|backend\|frontend]`<br>AI 服务：`.\scripts\dev-reload.ps1 -Project ai` | PowerShell | **按需执行，不主动跑**（约定 ①） |
+| 发版打包（主系统，两个镜像都重建） | `.\scripts\make-release.ps1 v3.x.y` | PowerShell | 产出 `dist/pm-release-v3.x.y/`（镜像 + compose + `.env.example` + `pm-upgrade.sh`） |
+| 发版打包（主系统，**只重建改动的那一端**） | `.\scripts\make-release.ps1 v3.x.y -Only backend`<br>`.\scripts\make-release.ps1 v3.x.y -Only frontend -ReuseTag v3.x.x` | PowerShell | 没改动的那一端用 `docker tag` 复用本机已有镜像；**发布包内容与完整构建完全一致**；与 `SKIP_BUILD=1` 互斥（详见 §2.1） |
+| 发版打包（AI 能力服务，**独立发版**） | `.\scripts\make-release.ps1 v1.x.y -Project ai` | PowerShell | 产出 `dist/pm-ai-release-v1.x.y/`（AI 镜像 + compose + `.env.example` + AI 部署步骤；不含主系统的任何文件） |
 | 服务器首次部署 | 见 `docs/部署与发布全流程手册.md` §3~§5 | 服务器 bash | 发布目录只需 `docker-compose.yml` + `.env` |
 | 服务器升级 | 在服务器运行目录 `bash pm-upgrade.sh pm-images-arm64-v3.x.y.tar.gz` | 服务器 bash | 自动 `docker load` + 切 `.env` 的 `IMAGE_TAG` + `up -d` |
 | 服务器重启/查看 | `docker compose up -d` / `docker compose ps` / `docker compose logs -f --tail 100` | 服务器 | 详见手册 §6 |
@@ -103,8 +105,31 @@
 
 | 脚本 | 用途 | 用法 |
 | --- | --- | --- |
-| `make-release.ps1` | **一键发版**：构建 arm64 镜像 → `docker save` → 产出 `dist/pm-release-<版本>/`（镜像包 + `docker-compose.yml` + `.env.example` + `pm-upgrade.sh` + 部署步骤） | `.\scripts\make-release.ps1 v3.5.0`；镜像已存在只重打包：`$env:SKIP_BUILD='1'; .\scripts\make-release.ps1 v3.5.0` |
-| `dev-reload.ps1` | **开发机一键重建**：重建镜像 + 重启 + 轮询健康检查（不产发布包） | `.\scripts\dev-reload.ps1 all\|backend\|frontend` |
+| `make-release.ps1` | **一键发版**（主系统 / AI 能力服务两套发布物）：构建镜像 → `docker save` → 产出发布目录（镜像包 + compose + `.env.example` + 部署步骤） | 主系统：`.\scripts\make-release.ps1 v3.5.0`；只重建改动的一端：`.\scripts\make-release.ps1 v3.6.2 -Only backend`；镜像已存在只重打包：`$env:SKIP_BUILD='1'; .\scripts\make-release.ps1 v3.5.0`；AI 服务：`.\scripts\make-release.ps1 v1.0.0 -Project ai` |
+| `dev-reload.ps1` | **开发机一键重建**：重建镜像 + 重启 + 轮询健康检查（不产发布包） | 主系统：`.\scripts\dev-reload.ps1 all\|backend\|frontend`；AI 服务：`.\scripts\dev-reload.ps1 -Project ai` |
+
+**`make-release.ps1` 参数表**（两套发布物统一的开关，`-Project` 决定产出哪一套）：
+
+| 参数 | 取值 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `<版本>`（位置 0） | 如 `v3.6.2` / `v1.0.0` | 必填 | 决定镜像 tag 与发布目录名；缺省时打印用法并退出 1 |
+| `[平台]`（位置 1） | `linux/arm64` \| `linux/amd64` | `linux/arm64` | 决定镜像包名里的 `aarch64` / `x86_64`；**必须与目标服务器架构一致**（混架构会 `exec format error`） |
+| `-Project` | `main` \| `ai` | `main` | `main`=主系统发布包，`ai`=AI 能力服务发布包；**两者发布物互不包含** |
+| `-Only` | `backend` \| `frontend` \| `both` | `both` | **仅主系统**：只重建一端，另一端 `docker tag` 复用本机镜像（省一半构建时间） |
+| `-ReuseTag` | 如 `v3.6.1` | 空 | **仅配合 `-Only`**：显式指定复用来源；不给则自动挑本机最新 tag 并**打印实际来源** |
+| 环境变量 `SKIP_BUILD=1` | `0` / `1` | 空 | 完全跳过构建，只重打包本机已存在的同版本镜像 |
+
+**产出与内容**：
+
+| 命令 | 产出目录 | 内容 |
+| --- | --- | --- |
+| `make-release.ps1 <版本>` | `dist/pm-release-<版本>/` | `pm-images-<arch>-<版本>.tar.gz`（**backend + frontend 两个镜像**）、`docker-compose.yml`、`.env.example`（预填 `IMAGE_TAG`）、`pm-upgrade.sh`、`服务器部署步骤.txt` |
+| `make-release.ps1 <版本> -Project ai` | `dist/pm-ai-release-<版本>/` | `pm-ai-images-<arch>-<版本>.tar.gz`（只有 AI 镜像）、`docker-compose.yml`（← `ai-backend/docker-compose.deploy.yml`，**包内已改名，服务器不用再 mv**）、`.env.example`（预填 `AI_IMAGE_TAG`）、`服务器部署步骤-ai.txt` |
+
+> **退出码约定**：参数非法或语义冲突 = **2**（例：`-Only` 配 `-Project ai`、`-Only` 配 `SKIP_BUILD=1`、`-ReuseTag` 没配 `-Only`、平台写法不支持）；缺文件 / 本机缺镜像 = **1**；构建失败 = 透传 docker 的退出码。
+> **`-Only` 的语义**：只省掉「没改动那一端」的构建时间，**发布包内容与默认行为完全一致**（包里仍是两个镜像、同一个 `<版本>` tag，服务器端零额外操作）。
+> 复用来的镜像会先做**架构校验**（与 `[平台]` 不一致立即报错），并打印实际来源（例：`复用镜像：pm-frontend:v3.6.1  →（docker tag）→  pm-frontend:v3.6.2`）；一个可复用的 tag 都没有时报错并提示「先完整构建一次，或用 `-ReuseTag` 指定」；且**来源校验在构建之前**完成——`-ReuseTag` 写错会立刻退出，不会白等一轮构建。
+> **AI 发布包不含** `pm-upgrade.sh`（主系统服务器专用）、也不含主系统的 `.env.example`；同理主系统发布包里没有 AI 镜像（见部署手册 §8）。
 
 ### 2.2 演示数据
 
@@ -171,6 +196,10 @@ node scripts/check-docs.mjs          # 有问题时退出码 1，可直接放进
 | `verify-e2e.ps1` | **端到端验收**：起服务 → `/health` 三探测 → 平台 OCR → `/analyze` → `/upload-tasks` → `/chat`，并打印基线数字 | pwsh 7 | `pwsh -File ai-backend\scripts\verify-e2e.ps1 [-Port 8101] [-SkipBuild]` |
 
 AI 服务的构建与发布（独立镜像、独立端口）见 [`docs/部署与发布全流程手册.md`](../docs/部署与发布全流程手册.md) §8。
+**开发机侧的统一入口已补齐**（与主系统对等）：本地「重建 + 重启 + 健康检查」用 `.\scripts\dev-reload.ps1 -Project ai`，
+出发布包用 `.\scripts\make-release.ps1 <版本> -Project ai`（产出 `dist/pm-ai-release-<版本>/`，见 §2.1）。
+AI 分支的前置条件与主系统不同：`dev-reload.ps1 -Project ai` 要求 `ai-backend/.env` 已存在（缺了会指向 `.env.example` 与手册 §8.2），
+端口从该 `.env` 的 `AI_PORT` 读（缺省 8100），健康检查探 `/health?with_ocr=false`。
 
 ---
 
@@ -182,7 +211,7 @@ AI 服务的构建与发布（独立镜像、独立端口）见 [`docs/部署与
 | `deploy/docker/Dockerfile.backend`、`Dockerfile.frontend` | 生产镜像（构建上下文＝仓库根） |
 | `deploy/docker/docker-compose.deploy.yml` | **服务器用编排**：无 `build:` + `pull_policy: never`（发布包里改名为 `docker-compose.yml`） |
 | 发布包内 `pm-upgrade.sh` | 服务器安装/升级（`docker load` + 切 `IMAGE_TAG` + `up -d`） |
-| `ai-backend/Dockerfile`、`ai-backend/docker-compose.yml` | AI 服务镜像与本地编排（**独立发版**，不在主系统发布包内） |
+| `ai-backend/Dockerfile`、`ai-backend/docker-compose.yml`、`ai-backend/docker-compose.deploy.yml` | AI 服务镜像；本地编排（**含 `build:`**，上下文＝仓库根）；**服务器专用编排**（无 `build:` + `pull_policy: never`，发布包里改名为 `docker-compose.yml`）。AI 服务**独立发版**，不在主系统发布包内（出包见 §2.1 的 `-Project ai`） |
 
 ---
 

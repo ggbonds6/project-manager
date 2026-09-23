@@ -14,8 +14,8 @@
 | 附件存储 | 抽象 `AttachmentStorage`：默认本地盘，可切**华为 OBS**（`app.storage.type`）；归属分四类 `PROJECT` / `PROJECT_PHASE` / `CONTRACT` / `PAYMENT` |
 | 需求基线 | `docs/政府信息化项目管理系统-设计方案.md`（设计与实现同步稿，Q1–Q15 处置状态见 §11） |
 | 脚本清单 | `scripts/README.md`（发版打包 / 演示数据 / 开发机数据库工具） |
-| 当前版本 | **v3.5.1**（2026-09-17） |
-| ai-backend | **`ai-1.0.1`**（2026-09-20）：Java 版 AI 能力服务（Spring Boot 3.3.5 / Java 17，**与主系统同栈**），**独立构建与部署**（默认 8100、独立镜像与发版，不动主系统）；附件解析 + 平台 OCR + 文档库/问答 + **检索链路（Embedding 召回 + Reranker 精排）**；接口 `/analyze`、`/documents`、`/upload-tasks`、`/chat`；见 `ai-backend/README.md`。原 Python 版 `ai-service/` **已删除**（知识资产迁入 `ai-backend/docs/`） |
+| 当前版本 | **v3.6.2**（2026-09-23） |
+| ai-backend | **`ai-1.1.0`**（2026-09-20）：Java 版 AI 能力服务（Spring Boot 3.3.5 / Java 17，**与主系统同栈**），**独立构建与部署**（默认 8100、独立镜像与发版，不动主系统）；附件解析 + 平台 OCR + 文档库/问答 + **检索链路（Embedding 召回 + Reranker 精排）** + **结构化引用 `citations`**（答案按 `[n]` 标注、可跳附件第 N 页）；接口 `/analyze`、`/documents`、`/upload-tasks`、`/chat`；**发版链路与主系统对齐**（`make-release.ps1 -Project ai`，见 v3.6.2）；见 `ai-backend/README.md`。原 Python 版 `ai-service/` **已删除**（知识资产迁入 `ai-backend/docs/`） |
 | 仓库 | GitHub `ggbonds6/project-manager`（main 分支，全程 git 管理） |
 
 ---
@@ -68,6 +68,7 @@
 | docs-1.2 | 2026-09-20 | **开发机脚本 PowerShell 化 + 文档与脚本收口**| ① `docs-1.0` 遗留项落地：`scripts/{make-release,dev-reload,db-sql}.sh` → **Windows 原生 `.ps1`** 并删除 `.sh`（`pm-upgrade.sh` 与 `ai-backend/scripts/check.sh` 因只在 Linux/CI 跑而保留）；必须偏离 bash 的地方（无 `gzip.exe` → `.NET GZipStream`；`java -D…` 裸参数被按 `.` 拆参；PS 5.1 对原生命令 `2>$null` 抛终止性错误；`curl` 是别名）已写进脚本注释。② **编码定案**：`scripts/*.ps1` 一律 **UTF-8 带 BOM + CRLF**（实测 PS 5.1 对无 BOM 的 UTF-8 按 GBK 解析，中文字面量**在解析期就坏**；"无 BOM+中文+5.1 可跑"三者不可兼得），写入 `scripts/README.md` §0.2 并明确"别顺手改成无 BOM"。③ **验证**：三脚本 × (PS 5.1 + PS 7) 解析校验 6/6；`db-sql.ps1` **真实执行**（只读查询返回 11 行，走 `.env` 档，口令只打印长度、不打印不落盘）；`make-release.ps1`/`dev-reload.ps1` 因本机 Docker 引擎未启动**未实际执行**（只做逐段比对 + 隔离探针），其 gzip 产物的 `docker load` 闭环**登记为待验证项**。④ **文档收口**：`scripts/README.md`／根 `README.md`／`deploy/README.md`／`docs/部署与发布全流程手册.md`（§2.3 手工打包整段改为"等价说明、不可照抄"的 PowerShell 步骤，`\| gzip` 与 `ls -lh` 清零）／`jdbc/RunSql.java` 与 `demo-reset.sql` 注释／本文件 4 处失效的"当前用法"；新增《AI工具集与检索编排评估》并登记进 `docs/README.md`；`docs/AI前端与集成方案.md` 增 §9 冻结契约与 §10 前端工程规范，并**修正"nginx 加 `/ai-api/` 直连 AI 服务"的自相矛盾结论**（会让浏览器绕过主系统权限解析）。收尾：`check-docs` 19 份 / 0 问题（体检本轮真抓到 2 处自己引入的问题并已修）。 | `7299404` |
 | docs-1.3 | 2026-09-20 | **专项论证：要不要引入 LangChain4j（文档处理 / 会话记录）** | 结论**不引入**，并把依据落到《AI工具集与检索编排评估》§7（原 §5 的"不做"改为指向它）：① **逐环节对照**——解析（通用 Tika 路径拿不到"文本层 vs 平台 OCR"路由与页级失败语义，等于用未验证行为替换已验证行为）、切片（换默认切分必须重测召回，而我们还没有评测集）、检索（`OpenSearchEmbeddingStore` 官方只写 exact kNN + metadata filter，**混合检索仍是社区 PR**，而我们已实测"混合召回 → Reranker 精排"分数序）、重排/OCR（框架无关）→ 净收益为负或接近零；② **会话记录三条硬伤**（官方文档自证）：**只有 memory 没有 history**（要完整历史得自己存）、**被淘汰的消息会从 `ChatMemoryStore` 一并删除**（与"审计留痕不得被窗口淘汰"直接冲突）、**会把状态放进 AI 服务**（破坏"主系统是唯一事实源、AI 服务无状态"这条已定边界）——为省几十行样板代码破坏边界不划算，P2 会话管理应在主系统建会话/消息表，与 `ai_ask_log` 同一条数据；③ **量化重估触发条件**（第二家模型/网关、工具数 >8 或需并行工具调用、需接 MCP、文档格式超出 PDF+扫描件、团队愿以可复现性换开发速度）；④ 给出**不返工的三条接缝**（`SearchPort`/`DocumentReader`/`Tools`）与**三条底线**（平台 OCR 路由与页级校验、引用编号与出处、主系统权限/口径/留痕）；⑤ 明确真正的短板是**评测集**而非框架：先做 10~20 条迷你评测集，再做限时 spike（同文档同问题对比代码行数/延迟/引用页码准确率/依赖体积/审计明细可得性）再用数字决定。 | `26072ad` |
 | v3.6.1 | 2026-09-20 | **部署配置补全：把 AI 接入参数真正贯通（否则服务器上 AI 必然不可用）** | v3.6.0 交付了 AI 功能，但**部署资产没接**：两个 compose 都没给 backend 传 `AI_*`，容器里的 `AI_SERVICE_BASE_URL` 会是默认 `127.0.0.1:8100`（=后端自己），**AI 功能一定不可用**；而 `AI_AUTO_PARSE` 应用内默认 `true`，会让每次上传都记一条"解析失败"。本轮修：① `deploy/docker/docker-compose.yml` 与 `docker-compose.deploy.yml` 的 backend 增 6 个 `AI_*` 变量 + `extra_hosts: host.docker.internal:host-gateway`（Linux 上容器访问宿主机必须映射）；② `.env.example` 新增 AI 段（逐项说明、"**绝不能填 127.0.0.1**"、首部署建议 `AI_AUTO_PARSE=false`、AI 集中部署的建议）；③ 新增 [`ai-backend/docker-compose.deploy.yml`](ai-backend/docker-compose.deploy.yml)（服务器专用：无 `build:`、`pull_policy: never`、`AI_BIND_IP` 绑内网、`work` 卷持久化、healthcheck、日志限额）；④ 文档：`deploy/README.md` 新增 §1.1（三个变量 + 部署顺序 + 两条边界）并修过期数字（`V1~V9`→`V13`、**11 张→16 张**、补"迁移无回滚、升级前先备份"）、部署手册（§3 `.env` 清单加 AI 段、§8.1 **构建平台必须与目标机一致**（ARM 服务器上 amd64 镜像会 `exec format error`）、§8.3 新增"服务器无源码部署 AI 服务"三步 + 主系统接入 + 双机应集中部署、§5 验收加 A7/A8、质量门 81→**94 用例**）、`崖山数据库与迁移约定.md` 与根 `README.md` 的 `V1~V12`→`V1~V13`。**验证**：四个编排文件 `docker compose config --quiet` 全部 **exit 0**，且 `docker compose config` 确认 `AI_*` 与 `extra_hosts` 确实解进了 backend 服务。 | `5cff88f` |
+| v3.6.2 | 2026-09-23 | **构建提速（222s→24s）+ AI 服务获得与主系统对等的发版链路** | ① **构建提速**（实测："改了代码 → 出发布包"从 ~7 分钟降到**几十秒**）：三个 Dockerfile 的编译阶段改 `FROM --platform=$BUILDPLATFORM`（`mvn`/`npm` 跑**构建机原生架构**，只让最终镜像层是目标架构）＋ BuildKit **cache mount** 复用依赖（`/root/.m2/repository`、`/root/.npm`；挂 `repository` 子目录而非 `/root/.m2`，否则会把镜像加速的 `settings.xml` 遮掉）。**实测**：后端 `mvn package` **222s → 47.3s（首次）/ 24.3s（改代码后稳态）**、前端 `npm run build` **218s → 103s**、AI 镜像首次构建 **44s**；三个镜像仍为 `arm64/linux`（换构建阶段**没有**漏进最终镜像）。② **AI 服务发版链路与主系统对齐**：`make-release.ps1` 新增 `-Project main\|ai`，AI 目标产出 `dist/pm-ai-release-<版本>/`（镜像包 + 服务器专用编排 + `.env.example`（预填 `AI_IMAGE_TAG`）+ `服务器部署步骤-ai.txt`）；`dev-reload.ps1` 新增 `-Project ai`；`ai-backend/README.md` 补"四条链路"对照表。③ **主系统"只重建改动那一端"**：`-Only backend\|frontend [-ReuseTag <旧版本>]`（未改的一端 `docker tag` 复用并**打印来源 tag**；复用镜像做架构校验，避免混架构包；来源校验在构建之前，写错立刻失败）。④ **闭环历史遗留**：主系统包与 AI 包的 `docker save`→`docker load` **双双实机验证通过**（此前挂在 Backlog 两次）。验证：三套流程真机跑通（整包 72.9s、`-Only` 打印"复用 pm-frontend:v3.6.2 → v3.6.3"、AI 包 122.3MB）；AI 镜像起容器 `/health` 返回 `code:0`；脚本干跑 16 例 × 两壳 + docker 桩 11 场景 × 两壳（BAD=0）。 | 本轮待提交 |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -744,6 +745,46 @@
 
 ---
 
+### v3.6.2 — 构建提速 + AI 服务发版链路对齐（2026-09-23）
+
+- **需求**：① 打包太慢（实测 `mvn package` 222s、`npm run build` 218s，"改一行代码要等 7 分钟"）；
+  ② AI 服务没有与主系统对等的"本地开发 → 构建 → 打包 → 服务器部署"链路（此前只有手册里的手工 docker 命令）。
+- **提速做了什么**（三个 Dockerfile：主系统后端 / 前端 / AI）：
+  1. **编译阶段钉 `--platform=$BUILDPLATFORM`**：`mvn` / `npm` 跑在**构建机原生架构**，
+     只让最终镜像层是目标架构。后端产物是纯 Java jar、前端是静态文件，与 CPU 架构无关，所以安全。
+     不改的话，`--platform linux/arm64` 时编译全程在 **QEMU 模拟**里跑。
+  2. **BuildKit cache mount 复用依赖**：`--mount=type=cache,target=/root/.m2/repository` 与 `/root/.npm`。
+     依赖下载原本发生在 `RUN mvn package` 这一层内部，源码一改这层就重建 → 每轮重新下载。
+     ⚠️ 挂的是 **`repository` 子目录**：挂 `/root/.m2` 会把镜像加速用的 `settings.xml` 一起遮掉（加速失效）。
+  3. 要求 **BuildKit**（Docker 23+ / Desktop 默认开）；已验证 `docker compose build` 路径同样支持 cache mount
+     （`dev-reload.ps1` 走的是那条，不是 buildx CLI）。
+- **实测数字**（同一台机器、真构建）：
+  | 步骤 | 优化前 | 优化后 |
+  | --- | --- | --- |
+  | 后端 `RUN mvn package` | 222s | **47.3s**（首次，含填充缓存）/ **24.3s**（改代码后稳态） |
+  | 前端 `RUN npm run build` | 218s | **103s** |
+  | AI 镜像首次构建 | —（同款写法，未测） | **44s** |
+  | 全缓存重打包（save+gzip） | — | 14.2s；主系统整包流程 72.9s |
+  → **日常"改后端代码 → 出发布包"从 ~7 分钟降到 ~40 秒级**；两端都改约 2 分钟。
+- **风险点专门验证（这类优化最容易在这里翻车）**：最终镜像架构**仍是 `arm64/linux`**
+  （`pm-backend` / `pm-frontend` / `pm-ai-backend` 三个都查了）——换构建阶段没有漏进最终镜像，服务器不会 `exec format error`。
+- **AI 服务四链路对齐**：① 源码直跑 `cd ai-backend && mvn spring-boot:run`；② 容器重建 `.\scripts\dev-reload.ps1 -Project ai`；
+  ③ 出发布包 `.\scripts\make-release.ps1 <版本> -Project ai` → `dist/pm-ai-release-<版本>/`；④ 服务器 load + `up -d` +
+  `/health?with_ocr=true&with_vec=true` 自检。**AI 与主系统仍各自独立发版**（互不包含，这是刻意的）。
+- **主系统"只重建改动那一端"**：`-Only backend|frontend [-ReuseTag <旧版本>]`——未改的一端用 `docker tag` 复用现有镜像，
+  **打印实际复用的来源 tag**（可追溯）；额外两道保护：复用镜像做**架构校验**（防混架构包）、来源校验放在**构建之前**（写错立刻退出，不白等）。
+- **闭环一个挂了两次的历史遗留**：主系统包与 AI 包的 `docker save` → **`docker load` 实机验证通过**
+  （`Loaded image: pm-backend/pm-frontend/pm-ai-backend`）——`GZipStream` 产物终于被证明是 `docker load` 能吃的。
+- **脚本工程的验证**（子代理完成，我复核）：AST 解析 PS 5.1 + 7 均 0 错误；参数干跑 16 例 × 两壳；
+  **用自编译的 docker 桩**（放 PATH 最前，不碰真实 Docker）跑通 11 个场景 × 两壳（BAD=0），覆盖复用来源挑选、
+  日期优先于小数秒、无候选/来源不存在/架构不匹配的拒绝路径、AI 全流程产出与 `.env.example` 追加 `AI_IMAGE_TAG`。
+  我另外独立复核了 4 个 `.ps1` 的 BOM、孤立 LF 与 PS 5.1 解析。
+- **未验证 / 边界**：真实服务器上的 `scp`→`load`→`compose up` 与"容器到 AI 服务"的连通性仍未实测；
+  AI 服务**无入站鉴权**（已用 `AI_BIND_IP` + 防火墙建议兜住）；V13 仍未在真实崖山库执行。
+  已知遗留（属原有行为、未改）：主系统 `.env.example` 的 `IMAGE_TAG` 行会被正则吃掉 CRLF 的 `\r`（Linux 下无影响）。
+
+---
+
 ## 功能完成度
 
 | 功能 | 状态 | 说明 |
@@ -796,6 +837,9 @@ cd frontend && npm install && npm run dev  # :5173
 cd ai-backend && mvn spring-boot:run       # :8100（需 .env 里的平台网关 LLM_BASE_URL/LLM_API_KEY，见 ai-backend/README.md）
 # 主系统前端 → /api/ai/* → 主系统后端（权限/作用域/留痕）→ AI 服务 8100（仅内网，浏览器永不直连）
 # 自检与端到端：.\ai-backend\scripts\verify-e2e.ps1 -SkipBuild   # 含 citations 断言
+# 容器化重建 AI 服务 / 出 AI 发布包（v3.6.2 起，与主系统同一套脚本形状）：
+#   .\scripts\dev-reload.ps1 -Project ai              # 本机重建并重启（:8100）
+#   .\scripts\make-release.ps1 v1.0.0 -Project ai     # 出 dist/pm-ai-release-v1.0.0/
 
 # —— 演示数据（走真实 API；详见 scripts/README.md）——
 .\scripts\db-sql.ps1 scripts\demo-reset.sql   # 可选：物理清空演示数据（从干净基线开始）
@@ -803,9 +847,12 @@ node scripts/seed-demo.mjs                      # 项目/合同/付款/分工（
 node scripts/seed-attachments.mjs               # 阶段/合同/付款三类附件
 
 # —— 开发机辅助（Windows 原生 PowerShell，**不需要 Git Bash**；5.1 与 7 都能跑）——
-.\scripts\dev-reload.ps1 [all|backend|frontend]   # 重建镜像 + 重启（自测用；不主动执行，按需）
+.\scripts\dev-reload.ps1 [all|backend|frontend]   # 主系统：重建镜像 + 重启（自测用；不主动执行，按需）
+.\scripts\dev-reload.ps1 -Project ai              # AI 服务：重建 + 重启 + :8100 健康检查
 .\scripts\db-sql.ps1 <sql文件>                    # 手工查/改库（无需 yasql 客户端）
-.\scripts\make-release.ps1 <版本>                 # 产发布包（发版）
+.\scripts\make-release.ps1 <版本>                 # 主系统发布包（两端镜像）
+.\scripts\make-release.ps1 <版本> -Only backend   # 只重建后端；前端复用现有镜像（打印复用来源 tag）
+.\scripts\make-release.ps1 <版本> -Project ai     # AI 服务发布包（独立发版）
 ```
 
 > ⚠️ 本系统删除一律是**逻辑删除**（`deleted = 1`），而 seed 走 API 删项目 → 反复重跑会堆积历史行；
@@ -829,7 +876,8 @@ node scripts/seed-attachments.mjs               # 阶段/合同/付款三类附�
 9. **AI 与知识库 P1/P2**（P0 已完成）：P1 = `/ai` 页补**检索调试**（召回→融合→精排分数，判断"答不出来"是解析还是检索问题）与**问答留痕页**（`GET /api/ai/ask-logs`，表与写入已就绪）；P2 = 受控查询工具（预算/付款/统计，模型侧合并成 1 个 `query_business_data(entity, filters)`）+ 指标口径层 + 👍/👎 反馈进评测集。
 10. **V13 的落地验证**：迁移脚本已在库外通过评审（多列 `ALTER TABLE … ADD (…)` 与 V1~V12 已成功应用的写法一致），但**未在真实崖山库执行**——下次 `pm-backend` 启动/部署时由 `YashanMigrationRunner` 应用并登记；应用后请核对 `attachment_ai_task` / `ai_ask_log` 两表与 `attachment` 三列。部署顺序：**先 restart 主系统（跑 V13），再确认 `ai-backend` 为 ai-1.1.0**（否则前端引用为空列表）。
 11. **演示路径**（设计稿 §14.6 要求）：`node scripts/seed-attachments.mjs`（上传即自动触发解析，受 `AI_AUTO_PARSE` 开关控制）→ `/ai` 页看文档库与任务队列 → 悬浮窗提问 → 点引用跳附件第 N 页。
-12. **收尾清理（已登记，不在本轮做）**：① P0+P1 验收通过后删除 `ai-backend/static/index.html` 整个 `static/` 与 Dockerfile 里的 `COPY static/`（方案 §8.4）；② `make-release.ps1` 的 gzip 产物需在 Docker 引擎可用时跑一次 `SKIP_BUILD=1` 验证 `docker load` 闭环；③ 前端小口子：范围选择器只拉前 500 个项目（无分页懒加载）、无"全部重新解析"入口、缺浏览器级人工验收。
+12. **收尾清理（已登记，不在本轮做）**：① P0+P1 验收通过后删除 `ai-backend/static/index.html` 整个 `static/` 与 Dockerfile 里的 `COPY static/`（方案 §8.4）；② 前端小口子：范围选择器只拉前 500 个项目（无分页懒加载）、无"全部重新解析"入口、缺浏览器级人工验收。
+    ~~③ `make-release.ps1` 的 gzip 产物需验证 `docker load` 闭环~~ —— **已于 v3.6.2 实机验证通过**（主系统包与 AI 包都验了）。
 13. **迷你评测集（**最高优先级**——它是一切 AI 质量决策的前提）**：做 **10~20 条**问题（覆盖跨文档对比 / 金额求和 / "查不到必须说未找到"三类），人工标注标准答案与出处页码。有了它才能比较切片策略、混合检索配比、**以及"要不要引入 LangChain4j/Spring AI"这种框架级问题**；否则只能靠感觉（论证见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md) §7.4）。若确要做框架对比，再开**限时 spike**（独立分支，不碰主线）：同文档同问题对比代码行数 / 延迟 / **引用页码准确率** / 依赖体积 / **审计明细是否还拿得到**。
 14. **P2 会话管理（若做）**：按"主系统是唯一事实源、AI 服务无状态"的边界，会话与消息表建在**主系统**（与 `ai_ask_log` 归并为同一条数据），**不要**把会话状态放进 AI 服务（见 §7.2 三条硬伤）。
 

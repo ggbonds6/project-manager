@@ -37,6 +37,46 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | `OPENSEARCH_URL` / `OPENSEARCH_INDEX` | — / `pm-ai-chunks` | OpenSearch 集群与索引 |
 | `WORK_DIR` | ./work | 临时文件、文档库、向量缓存 |
 
+## 四条链路（与主系统**同一套形状**）
+
+> 主系统的对应链路见 [`../deploy/README.md`](../deploy/README.md) 与 [`../docs/部署与发布全流程手册.md`](../docs/部署与发布全流程手册.md)；
+> 本服务**独立构建、独立发版**：主系统发布包不含它，它的发布包也不含主系统（这是刻意的，见文首）。
+
+| 阶段 | 主系统 | AI 能力服务（本服务） |
+| --- | --- | --- |
+| ① 本地开发（源码直跑） | `deploy\windows\start-dev.cmd`（`mvn spring-boot:run`）+ Vite | `cd ai-backend && mvn spring-boot:run`（默认 8100；配置见上表） |
+| ② 本地开发（容器，一键重建） | `.\scripts\dev-reload.ps1 [all\|backend\|frontend]` | `.\scripts\dev-reload.ps1 -Project ai` |
+| ③ 构建 + 打包（出发布包） | `.\scripts\make-release.ps1 <版本>` | `.\scripts\make-release.ps1 <版本> -Project ai` |
+| ④ 服务器部署（离线只 load） | 发布包 `docker-compose.yml` + `.env` → `docker compose up -d` | 同上（编排就是 `ai-backend/docker-compose.deploy.yml`），自检 `/health?with_ocr=true&with_vec=true` |
+
+### ③ 出 AI 发布包（开发机，仓库根；需 Docker Desktop 已启动）
+
+```powershell
+.\scripts\make-release.ps1 v1.0.0 -Project ai                # 默认 linux/arm64（主系统那两台服务器）
+.\scripts\make-release.ps1 v1.0.0 -Project ai linux/amd64    # x86 机器（例如与平台网关同机）
+```
+
+产出 `dist/pm-ai-release-v1.0.0/`：`pm-ai-images-<arch>-v1.0.0.tar.gz`（镜像包）、`docker-compose.yml`、
+`.env.example`（`AI_IMAGE_TAG` 已预填本次版本）、`服务器部署步骤-ai.txt`（逐步照做即可）。
+
+### ④ 服务器部署（运行目录只需你上传的两个文件 + 已 load 的镜像）
+
+```bash
+cd /home/lhim/pm-ai/app && cp .env.example .env && vi .env
+#   必填：LLM_API_KEY（平台网关那把 sk）、AI_IMAGE_TAG=v1.0.0、AI_BIND_IP=<本机内网IP>
+docker load -i /home/lhim/pm-ai/releases/pm-ai-images-aarch64-v1.0.0.tar.gz
+docker compose up -d
+curl "http://127.0.0.1:8100/health?with_ocr=true&with_vec=true"   # 期望 code:0 且各模型 ok
+```
+
+> **接回主系统**：在主系统那台机器的 `.env` 里把 `AI_SERVICE_BASE_URL` 指到本机内网 IP
+> （**与本服务同宿主机**才用 `http://host.docker.internal:8100`），`docker compose up -d` 即生效——**不需要重建镜像**；
+> 打开「AI 与知识库 → 服务自检」确认全绿后，再按需把 `AI_AUTO_PARSE=true` 打开。完整说明见部署手册 §8.3。
+
+> **运维边界（发版前必须知道）**：本服务**当前没有任何入站鉴权**，端口不要对全网开放——
+> 上线时用 `AI_BIND_IP` 绑内网 IP，并用防火墙只放行主系统服务器；`WORK_DIR` 必须挂卷（丢了要重新解析，不影响正确性）；
+> 双机负载均衡场景**建议本服务集中部署一台**（否则两个索引各自演化，同一问题答案可能不一致）。
+
 ## 接口
 
 | 方法 | 路径 | 说明 |

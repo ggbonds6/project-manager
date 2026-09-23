@@ -67,7 +67,12 @@ AI 功能（知识库、悬浮问答、附件自动解析）**依赖一个独立
 
 **部署顺序（推荐）**：
 1. 先发主系统（本文件 §1）→ 打开「AI 与知识库 → 服务自检」，此时应显示 **AI 服务不可用**（这是正常的，说明开关生效、不是"未找到"）；
-2. 再发 AI 服务（镜像 + `ai-backend/docker-compose.deploy.yml`，步骤见《部署与发布全流程手册》§8）→ 自检页转为全部可用；
+2. 再发 AI 服务——**和主系统同一套脚本**（在仓库根执行）：
+   ```powershell
+   .\scripts\make-release.ps1 v1.0.0 -Project ai     # 出 dist/pm-ai-release-v1.0.0/（镜像包 + 编排 + .env 模板 + 部署步骤）
+   ```
+   服务器上：`cp .env.example .env`（填 `LLM_API_KEY`/`AI_IMAGE_TAG`/`AI_BIND_IP`）→ `docker load` → `docker compose up -d` → 自检 `/health?with_ocr=true&with_vec=true`；
+   完整步骤见《部署与发布全流程手册》§8；
 3. 最后按需把 `AI_AUTO_PARSE` 改成 `true`（改完 `docker compose up -d` 生效，无需重建镜像）。
 
 > ⚠️ 两个已知边界：① AI 服务**当前没有任何入站鉴权**，端口不要对全网开放（`ai-backend/docker-compose.deploy.yml` 里用 `AI_BIND_IP` 绑定内网 IP + 防火墙只放行主系统服务器）；

@@ -24,7 +24,7 @@
 ├─ deploy/       部署资产（docker 生产镜像 / windows 开发脚本）
 ├─ scripts/      发版打包 + 演示数据 + 开发机辅助工具 + 文档体检（清单见 scripts/README.md）
 ├─ local/        **本机启动助手**（start/stop-project-local.cmd，已 gitignore 不入库）；口令与数据库导出在仓库外 `E:\env\pm-local\`
-├─ ai-backend/   AI 能力服务（Spring Boot 3 / Java 17，与主系统同栈、独立构建与部署 · ai-1.0.1）
+├─ ai-backend/   AI 能力服务（Spring Boot 3 / Java 17，与主系统同栈、独立构建与部署 · ai-1.1.0）
 ├─ frontend/     React 前端
 └─ backend/      Spring Boot 后端
 ```
@@ -83,6 +83,18 @@
    > 注意：本系统删除一律是**逻辑删除**，反复重跑 seed 会在库里堆积 `deleted=1` 的历史行——看数据库时先按 `deleted=0` 过滤，或先用 ① 清空。
    > 需要手工查/改库（本机通常没有 yasql 客户端）时用 `.\scripts\db-sql.ps1 <sql文件>`（本机 Windows 原生，无需 Git Bash）。
 
+5. （可选）启动 **AI 能力服务**（附件智能处理 + 知识库问答，**独立服务**：不启动时主系统不报"未找到"，而是明确提示"AI 服务不可用"）：
+
+   ```powershell
+   .\scripts\dev-reload.ps1 -Project ai    # 本机容器化重建并重启（:8100）
+   # 或源码直跑：cd ai-backend && mvn spring-boot:run（需 ai-backend/.env 里的平台网关 sk）
+   ```
+
+   > 出发布包（与主系统同一套脚本形状）：`.\scripts\make-release.ps1 <版本> -Project ai` → `dist/pm-ai-release-<版本>/`；
+   > 四条链路（本地开发 → 构建 → 打包 → 服务器部署）与配置项见 [`ai-backend/README.md`](ai-backend/README.md)、
+   > 部署步骤见 [`docs/部署与发布全流程手册.md`](docs/部署与发布全流程手册.md) §8。
+   > 改了**主系统**代码重新发版：`.\scripts\make-release.ps1 <版本>`（只改了一端时可用 `-Only backend|frontend` 省一半时间）。
+
 预置登录账号（密码均 `123456`）：`admin`（管理员）/ `jingban01`（经办人）/ `lingdao01`（领导，只读）。
 
 > 本地开发用 Windows 一键脚本；生产用 Docker 一体化镜像（前后端打包，数据库为外部崖山）：
@@ -120,5 +132,5 @@
 9. 收尾顺手清理无效代码（未使用导入 / 死方法 / 只写不读的变量）；
 10. 提交说明引用对应验证结果。
 
-当前版本：主系统 **v3.6.1**（含「AI 与知识库」P0：菜单页 + 全局悬浮问答 + 引用可跳原文第 N 页；部署配置已把 AI 接入参数贯通）｜ AI 能力服务 **ai-1.1.0**（Java 版，独立构建与部署；`/chat` 返回结构化引用）｜ 文档与脚本 **docs-1.3**
+当前版本：主系统 **v3.6.2**（含「AI 与知识库」P0：菜单页 + 全局悬浮问答 + 引用可跳原文第 N 页；构建提速 4~9×、AI 服务发版链路与主系统对齐）｜ AI 能力服务 **ai-1.1.0**（Java 版，独立构建与部署；`/chat` 返回结构化引用）｜ 文档与脚本 **docs-1.3**
 （数据库已切换崖山 YashanDB Oracle 模式）（详见 [`ITERATION.md`](ITERATION.md) 迭代总表与功能完成度）。

@@ -1,6 +1,15 @@
 # backend image (build context = repo root)
 # build:  docker build -f deploy/docker/Dockerfile.backend -t pm-backend .
-FROM maven:3.9-eclipse-temurin-17 AS build
+#
+# ★ 构建加速的两处刻意写法（改之前先看这里，别"顺手"删掉）：
+#   1) FROM --platform=$BUILDPLATFORM：编译阶段跑在**构建机的原生架构**上，只让最终镜像层是目标架构。
+#      后端产物是纯 Java jar、与 CPU 架构无关，所以这样安全。
+#      不加的话，`--platform linux/arm64` 时 mvn 会在 QEMU 模拟的 arm64 里编译（本机实测 222s）。
+#   2) --mount=type=cache,target=/root/.m2/repository：Maven 仓库挂到 BuildKit 缓存上。
+#      依赖下载原本发生在本 RUN 层内部，源码一改这层就重建 → 每轮都要重新下载依赖。
+#      注意挂的是 **repository 子目录**：挂 /root/.m2 会把上面写好的 settings.xml 一起遮掉（镜像加速失效）。
+#   3) 两者都要求 BuildKit（Docker 23+ / Docker Desktop 默认开启）。
+FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-17 AS build
 WORKDIR /app
 # Maven 镜像加速（默认 central 在国内较慢；如需内网私服可替换该地址）
 RUN mkdir -p /root/.m2 \
@@ -10,7 +19,7 @@ COPY backend/pom.xml ./pom.xml
 COPY backend/lib ./lib
 COPY backend/src ./src
 # maven.test.skip：跳过测试编译/执行（一次性工具类不参与镜像构建，加快构建）
-RUN mvn -B -q -Dmaven.test.skip=true package
+RUN --mount=type=cache,target=/root/.m2/repository mvn -B -q -Dmaven.test.skip=true package
 
 FROM eclipse-temurin:17-jre
 WORKDIR /app

@@ -1,10 +1,14 @@
 # frontend image: build React SPA, serve with nginx that proxies /api and /uploads to backend
-FROM node:20-alpine AS build
+# ★ 与 Dockerfile.backend 同样的两处加速（理由见那个文件顶部注释）：
+#   --platform=$BUILDPLATFORM 让 vite 构建跑在构建机原生架构上（前端产物是静态文件，与架构无关）；
+#   cache mount 复用 npm 下载缓存。两者都需要 BuildKit。
+FROM --platform=$BUILDPLATFORM node:20-alpine AS build
 WORKDIR /fe
 COPY frontend/package*.json ./
-# npm 镜像加速（默认 registry 在国内较慢；如需内网私服可替换该地址）
-RUN npm config set registry https://registry.npmmirror.com \
- && (npm ci --ignore-scripts || npm install --ignore-scripts)
+# npm 镜像加速（默认 registry 在国内较慢；如需内网私服可替换）＋依赖下载走 BuildKit 缓存
+RUN npm config set registry https://registry.npmmirror.com
+RUN --mount=type=cache,target=/root/.npm \
+    (npm ci --ignore-scripts || npm install --ignore-scripts)
 COPY frontend ./
 RUN npm run build
 
