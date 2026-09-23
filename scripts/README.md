@@ -25,7 +25,7 @@
 | 扩展名 | 需要什么 | 本机现状（实测） |
 | --- | --- | --- |
 | `.cmd` / `.bat` | Windows 原生，双击或 cmd 直接跑 | ✅ 可用 |
-| `.ps1` | Windows 原生（PowerShell）。**5.1 与 7 都能跑**：本机默认壳是 Windows PowerShell 5.1，`pwsh` 7 也已装 | ✅ 可用；若执行策略是 Restricted，用 `powershell -ExecutionPolicy Bypass -File scripts\xxx.ps1` 调用 |
+| `.ps1` | Windows 原生（PowerShell）。**5.1 与 7 都能跑**：本机默认壳是 Windows PowerShell 5.1，`pwsh` 7 也已装 | ✅ 可用，但**本机默认策略会拦**——见下方"执行策略" |
 | `.sh` | **Git Bash 或 WSL**（本项目的 `.sh` 是 bash 脚本） | ⚠️ **本机没有 Git Bash**（PATH 上的 `bash` 只是 WSL 桩）。开发机脚本**已全部改为 `.ps1`**；**仓库里只剩 `scripts/pm-upgrade.sh` 一个 `.sh`，它随发布包下发、只在 Linux 服务器上运行**，本机不需要跑它 |
 | `.mjs` | Node.js 18+ | ✅ 可用（用 `node xxx.mjs`；PowerShell 里若 `npm` 被策略拦，用 `npm.cmd`） |
 
@@ -38,6 +38,15 @@
   （`'中文：已就绪'` → `'涓枃锛氬凡灏辩华'`），加 BOM 后 5.1 与 7 都正确 —— 也就是
   **「无 BOM + 中文 + 5.1 可跑」三者不可兼得**；真要取掉 BOM，只能同时放弃 5.1 或删掉脚本里的中文。
   新建 `.ps1` 请照抄现有文件的编码（编辑器里选「UTF-8 with BOM / 带 BOM 的 UTF-8」）。
+- **执行策略（第一次跑 `.ps1` 必踩）**：常见报错 `无法加载文件 …\.ps1，因为在此系统上禁止运行脚本`（`PSSecurityException`）。
+  根因：本机 **5 个作用域（MachinePolicy/UserPolicy/Process/CurrentUser/LocalMachine）全是 `Undefined`**，
+  Windows 客户端在此情况下**默认即 `Restricted`**（`Get-ExecutionPolicy` 会告诉你 `Restricted`）——不是脚本有问题。
+  两种修法，任选一种：
+  1. **一次性持久修（推荐，只影响当前用户）**：`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+     —— 本仓库脚本**没有 Zone.Identifier 网络锁定标记**（直接 git clone / 本地文件），`RemoteSigned` 下可正常执行；
+     想还原就 `Set-ExecutionPolicy -Scope CurrentUser Undefined`。
+  2. **免副作用（不改机器策略，每次带上）**：`powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 <版本>`
+     —— 已实测 PS 5.1 与 7 都能加载；`.cmd` 里也可以这么调。
 
 ### 0.3 三条硬约定（已写入团队协作记忆）
 

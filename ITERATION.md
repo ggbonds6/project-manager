@@ -720,6 +720,12 @@
 - **仍未验证（如实登记）**：① 没有真实服务器，`scp` / `docker load` / **容器到 AI 服务的连通性**都还没实测；
   ② AI 服务**没有任何入站鉴权**，故新增编排里用 `AI_BIND_IP` 绑定内网 IP，并要求防火墙只放行主系统服务器；
   ③ V13 仍未在真实崖山库执行（下次启动/部署时应用）。
+- **追加（同一轮，随后一次提交）**：把"**第一次跑 `.ps1` 必踩的执行策略**"写清并实测。现象
+  `无法加载文件 …\make-release.ps1，因为在此系统上禁止运行脚本`（`PSSecurityException`）；
+  实测根因：本机 **5 个作用域全为 `Undefined`**，Windows 客户端此时**默认即 `Restricted`**（不是脚本问题，也不是 BOM/编码问题）。
+  已在 `scripts/README.md` §0.2 给出两种修法并注明取舍：① **一次性持久**（推荐）`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+  —— 仓库脚本**无 Zone.Identifier 网络锁定标记**，实测 `RemoteSigned` 下可正常加载（PS 5.1 与 7 均验）；
+  ② **免副作用** `powershell -ExecutionPolicy Bypass -File scripts\make-release.ps1 <版本>`（不改机器策略，每次带上）。
 
 ---
 
