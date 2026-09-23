@@ -82,11 +82,17 @@ public class AiServiceClient {
      * <p>默认只探 OCR（代价小），与 AI 服务自身的默认一致：大模型探活要真发一次请求，
      * 失败要等十几秒，不该被一个「服务自检」请求拖住。
      *
+     * <p><b>深探走长超时 client</b>：{@code with_llm}/{@code with_vec} 会真的 ping 平台大模型与
+     * 向量网关（实测几秒到十几秒），10s 读超时的快速 client 会把探活掐断并误报成
+     * 「无法连接 AI 能力服务」——那正是想让用户看见模型状态时最不该出现的结论。
+     * 只探 OCR 时仍走快速 client，保持「页面一打开就出结论」。
+     *
      * <p>注意该接口是<b>字面量</b>响应（{@code {code,service,version,config,ocr,...}}），
      * 不套 {@code {code,data}}，所以这里不做 data 解包。
      */
     public Map<String, Object> health(boolean withOcr, boolean withLlm, boolean withVec) {
-        return call("健康探活", () -> statusHandler("健康探活", fastClient.get()
+        RestClient client = (withLlm || withVec) ? chatClient : fastClient;
+        return call("健康探活", () -> statusHandler("健康探活", client.get()
                 .uri(uri -> uri.path("/health")
                         .queryParam("with_ocr", withOcr)
                         .queryParam("with_llm", withLlm)

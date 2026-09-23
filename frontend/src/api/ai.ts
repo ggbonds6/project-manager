@@ -52,10 +52,28 @@ export function chunkIds(ids: number[], size = AI_STATUS_BATCH_SIZE): number[][]
   return out;
 }
 
+/**
+ * 深度自检的超时（毫秒）。
+ *
+ * 全局 axios 超时是 30s，而深度自检会真的去 ping 平台的对话模型与向量网关（实测几秒到十几秒，
+ * 平台侧慢时更久）。用一个明显更宽的值兜住，避免"其实在探、只是被前端掐断"被误报成服务不可用。
+ */
+export const AI_DEEP_HEALTH_TIMEOUT_MS = 120000;
+
 export const aiApi = {
-  /** #1 服务自检：available=false 时 data.message 给中文原因 */
-  health(): Promise<AiHealth> {
-    return api.get<AiHealth>('/ai/health');
+  /**
+   * #1 服务自检：available=false 时 data.message 给中文原因。
+   *
+   * @param deep `false`（默认）只探 OCR 的快速探活；`true` 额外探对话 / 向量化 / 重排模型
+   *             （真发请求，慢）。`deep` 是本次新增的**可选**查询参数，
+   *             不带它时后端行为与以前完全一致。
+   */
+  health(deep = false): Promise<AiHealth> {
+    return api.get<AiHealth>(
+      '/ai/health',
+      { deep },
+      deep ? { timeoutMs: AI_DEEP_HEALTH_TIMEOUT_MS } : undefined,
+    );
   },
 
   /** #2 文档库分页（后端按可访问项目过滤） */

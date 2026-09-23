@@ -33,6 +33,31 @@
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
+        <!--
+          reactive-streams：Spring 6 的 RestClient / ReactiveAdapterRegistry 在【运行期】需要它。
+          缺了会在真发 HTTP 时报 NoClassDefFoundError（线上 v3.6.5 故障：手动点击「附件解析」报 500
+          「系统繁忙」，日志为 Handler dispatch failed: java.lang.NoClassDefFoundError:
+          org/reactivestreams/Publisher，Caused by: ClassNotFoundException: org.reactivestreams.Publisher；
+          自动解析也因此从不产生 attachment_ai_task 记录）。
+
+          触发点具体是 multipart 上传路径：org.springframework.http.client.MultipartBodyBuilder
+          自身引用了 org/reactivestreams/Publisher（asyncPart / PublisherPartBuilder 那条 Flux 分支），
+          JVM 链接该类时就要解析这个类型。本项目只有 spring-boot-starter-web（servlet 栈，不带 webflux/reactor），
+          没有任何依赖把 reactive-streams 传进来，于是 multipart POST 一调用就崩。
+
+          ⚠️ 为什么单测全绿却线上炸：MockRestServiceServer 用假的 request factory 顶掉了真实发送，
+          而 AiServiceClientTest 又【从来没有覆盖 submitParse（multipart）这条路径】，
+          所以这个「只有真发请求才会被链接到」的缺失依赖一直躲过了测试。
+          回归测试见 RestClientReactiveStreamsTest（JDK HttpServer 起真 socket + 真 RestClient）。
+
+          版本不写死：由 spring-boot-starter-parent（Spring Boot BOM）统一管理，
+          避免和 Spring Framework 的版本漂移。
+        -->
+        <dependency>
+            <groupId>org.reactivestreams</groupId>
+            <artifactId>reactive-streams</artifactId>
+        </dependency>
+
         <!-- MyBatis-Plus (Spring Boot 3) -->
         <dependency>
             <groupId>com.baomidou</groupId>

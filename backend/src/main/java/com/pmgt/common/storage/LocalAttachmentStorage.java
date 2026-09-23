@@ -1,5 +1,6 @@
 package com.pmgt.common.storage;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
@@ -18,6 +19,7 @@ import java.nio.file.StandardOpenOption;
  * 本地磁盘附件存储（默认，app.storage.type=local 或未配置时启用）。
  * 根目录由 app.upload-dir 指定（默认 ./uploads），与 v3.0 前行为一致。
  */
+@Slf4j
 @Component
 @ConditionalOnProperty(prefix = "app.storage", name = "type", havingValue = "local", matchIfMissing = true)
 public class LocalAttachmentStorage implements AttachmentStorage {
@@ -71,6 +73,12 @@ public class LocalAttachmentStorage implements AttachmentStorage {
     public InputStream open(String relKey) throws FileNotFoundException {
         Path target = resolve(relKey);
         if (!Files.exists(target)) {
+            // 打绝对路径是为了「自证找了哪个文件」：Controller 会把 FileNotFoundException 换成
+            // 用户可见的 404「附件文件缺失」，路径就此消失，线上无法判断是文件真的没上传，
+            // 还是挂载卷/上传目录与当初写盘时不是同一个。
+            log.warn("附件文件不存在：绝对路径={}（原始 file_path={}，存储根目录={}）；"
+                            + "请核对 UPLOAD_DIR / UPLOAD_VOLUME",
+                    target, relKey, root);
             throw new FileNotFoundException(relKey);
         }
         try {

@@ -35,6 +35,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   DeleteOutlined,
+  ExperimentOutlined,
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -536,21 +537,41 @@ const MODEL_LABELS: { key: 'chat' | 'ocr' | 'embedding' | 'reranker'; label: str
   { key: 'reranker', label: '重排模型' },
 ];
 
+/** 快速探活不探的三个模型（深度自检才探）：用来判断要不要提示"点深度自检" */
+const MODEL_KEYS_DEEP_ONLY: ('chat' | 'embedding' | 'reranker')[] = ['chat', 'embedding', 'reranker'];
+
 function HealthTab() {
   const [health, setHealth] = useState<AiHealth | null>(null);
   const [loading, setLoading] = useState(false);
+  /**
+   * 深度自检单独一个 loading：它会真的去 ping 平台模型（几秒到十几秒）。
+   * 不复用卡片 loading——那会把已经显示出来的结论整块换成骨架屏，
+   * 也没法在按钮上表达"正在探测"。
+   */
+  const [deepLoading, setDeepLoading] = useState(false);
+  /** 当前结果是否来自深度自检（决定"未探测"提示与检测方式文案） */
+  const [deepProbed, setDeepProbed] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (deep = false) => {
+    if (deep) {
+      setDeepLoading(true);
+    } else {
+      setLoading(true);
+    }
     try {
-      setHealth(await aiApi.health());
+      // deep=true 时 api 层会放宽超时（见 AI_DEEP_HEALTH_TIMEOUT_MS）：
+      // 探测本身要几秒到十几秒，不能被默认短超时掐断而误报成"服务不可用"
+      setHealth(await aiApi.health(deep));
+      setDeepProbed(deep);
       setError(null);
     } catch (e) {
       setHealth(null);
+      setDeepProbed(false);
       setError((e as Error).message || '服务自检接口调用失败');
     } finally {
       setLoading(false);
+      setDeepLoading(false);
     }
   }, []);
 
@@ -558,6 +579,12 @@ function HealthTab() {
     void load();
   }, [load]);
 
+  /**
+   * 三态：可用 / 不可用 / **未探测**。
+   *
+   * 后端在没探测那个模型时给 null——以前这里渲染成"未知"，看起来像"探了但看不出结论"，
+   * 用户会以为系统坏了。实际语义是"这次没探"，必须和"不可用"区分开。
+   */
   const okTag = (ok?: boolean | null) =>
     ok === true ? (
       <Tag color="success" icon={<CheckCircleOutlined />}>
@@ -568,8 +595,12 @@ function HealthTab() {
         不可用
       </Tag>
     ) : (
-      <Tag>未知</Tag>
+      <Tag>未探测</Tag>
     );
+
+  /** 有没有该探却没探的模型（快速探活下三个恒为 null，需要引导用户点深度自检） */
+  const hasUnprobed =
+    !!health && MODEL_KEYS_DEEP_ONLY.some((k) => health.models?.[k] === null || health.models?.[k] === undefined);
 
   return (
     <Card
@@ -577,9 +608,19 @@ function HealthTab() {
       title="AI 服务自检"
       loading={loading}
       extra={
-        <Button icon={<ReloadOutlined />} onClick={() => void load()}>
-          重新检测
-        </Button>
+        <Space>
+          <Button icon={<ReloadOutlined />} onClick={() => void load()}>
+            重新检测
+          </Button>
+          <Button
+            type="primary"
+            icon={<ExperimentOutlined />}
+            loading={deepLoading}
+            onClick={() => void load(true)}
+          >
+            深度自检
+          </Button>
+        </Space>
       }
     >
       {error ? (
@@ -634,7 +675,9 @@ function HealthTab() {
                 <Descriptions.Item label="服务地址">
                   <Typography.Text style={{ fontSize: 12 }}>{health.aiServiceBaseUrl || '-'}</Typography.Text>
                 </Descriptions.Item>
-                <Descriptions.Item label="检测时间">{fmtDateTime(health.checkedAt)}</Descriptions.Item>
+                <Descriptions.Item label="检测时间">
+                  {fmtDateTime(health.checkedAt)}（{deepProbed ? '深度自检' : '快速探活'}）
+                </Descriptions.Item>
               </Descriptions>
             </Col>
             <Col xs={24} lg={12}>
@@ -650,9 +693,26 @@ function HealthTab() {
             </Col>
           </Row>
 
+          {hasUnprobed ? (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginTop: 12 }}
+              message="对话 / 向量化 / 重排模型：未探测"
+              description={
+                <Typography.Text style={{ fontSize: 12 }}>
+                  默认只做 OCR 快速探活（打开页面就能出结论，不用等）。
+                  点右上角「深度自检」可实际探测对话 / 向量化 / 重排模型——它会真的去 ping 平台模型，
+                  需要几秒到十几秒。
+                </Typography.Text>
+              }
+            />
+          ) : null}
+
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
             判定口径：四个模型任一不可用都会让解析或问答能力不完整——OCR 不可用影响扫描件入库，
             向量/重排模型不可用会让检索降级（问答会显示"降级"提示），对话模型不可用则问答直接失败。
+            「未探测」= 本次没探过（不是"探了不知道"，更不是不可用）。
           </Typography.Paragraph>
         </>
       ) : (

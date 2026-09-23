@@ -64,9 +64,18 @@ public class AiController {
     }
 
     // ── #1 服务自检（登录即可） ──────────────────────────────────────
+
+    /**
+     * 服务自检。
+     *
+     * <p>{@code deep} 是本次<b>新增的可选参数</b>（默认 false，老前端不带它时行为与以前完全一致）：
+     * {@code deep=false} 只探 OCR 的快速探活；{@code deep=true} 额外探对话模型与平台向量能力
+     * （真发请求，几秒到十几秒）。响应字段与语义不变，只是深探时 {@code models} 里的
+     * chat/embedding/reranker 由 null（未探测）变成 true/false。
+     */
     @GetMapping("/health")
-    public R<AiHealthVO> health() {
-        return R.ok(healthService.health());
+    public R<AiHealthVO> health(@RequestParam(defaultValue = "false") boolean deep) {
+        return R.ok(healthService.health(deep));
     }
 
     // ── #2 文档库列表（登录即可；按可访问项目过滤在服务层做） ────────

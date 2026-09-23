@@ -69,8 +69,15 @@ http.interceptors.response.use(
 );
 
 export const api = {
-  get<T>(url: string, params?: object): Promise<T> {
-    return http.get(url, { params }) as Promise<T>;
+  /**
+   * `opts.timeoutMs`：个别接口（如深度自检要真去 ping 平台模型，几秒到十几秒）需要比
+   * 全局 30s 更宽的超时。不传就沿用全局默认，不影响其它调用方。
+   */
+  get<T>(url: string, params?: object, opts?: { timeoutMs?: number }): Promise<T> {
+    return http.get(url, {
+      params,
+      ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
+    }) as Promise<T>;
   },
   post<T>(url: string, data?: object): Promise<T> {
     return http.post(url, data) as Promise<T>;

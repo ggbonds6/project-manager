@@ -20,7 +20,7 @@ public class AiHealthVO {
     private String vectorBackend;
     /** 平台（网关）是否可达：取自 AI 服务 /health 的 OCR 探针。 */
     private Boolean platformReachable;
-    /** 各模型可用性。 */
+    /** 各模型可用性：{@code null} = 本次没探测（快速自检下 chat/embedding/reranker 恒为 null）。 */
     private Models models;
     /** AI 服务侧已入库文档数（不可达时为 null）。 */
     private Integer documentCount;
@@ -31,7 +31,7 @@ public class AiHealthVO {
     /** 中文说明：可用时为「正常」，不可用时写明原因（关闭 / 连接失败 / 平台不可达）。 */
     private String message;
 
-    /** §9 的 {@code models:{chat,ocr,embedding,reranker}}。 */
+    /** §9 的 {@code models:{chat,ocr,embedding,reranker}}；{@code null} 表示「未探测」，不是「不可用」。 */
     @Data
     public static class Models {
         private Boolean chat;

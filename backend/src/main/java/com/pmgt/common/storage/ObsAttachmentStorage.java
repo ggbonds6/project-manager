@@ -5,6 +5,7 @@ import com.obs.services.ObsConfiguration;
 import com.obs.services.model.ObjectMetadata;
 import com.obs.services.model.ObsObject;
 import com.obs.services.model.PutObjectRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -18,6 +19,7 @@ import java.io.InputStream;
  * ObsConfiguration.setValidateCertificate(false)，SDK 默认即不校验）。
  * ObsClient 线程安全，作为单例复用。
  */
+@Slf4j
 @Component
 @ConditionalOnProperty(prefix = "app.storage", name = "type", havingValue = "obs")
 public class ObsAttachmentStorage implements AttachmentStorage {
@@ -88,6 +90,14 @@ public class ObsAttachmentStorage implements AttachmentStorage {
             throw new RuntimeException("OBS 检查附件失败[" + fullKey + "]: " + e.getMessage(), e);
         }
         if (!exists) {
+            // 打出来是为了「自证找了哪个 key」：Controller 会把 FileNotFoundException 换成
+            // 用户可见的 404「附件文件缺失」，计算出的完整 key 就此消失，线上无法判断
+            // 到底是文件真的没上传，还是 prefix/bucket 与当初上传时不一致。
+            // ⚠️ 只打 bucket / key / file_path（不含 AK/SK）。
+            log.warn("OBS 附件读取失败：bucket={}，object key={}（原始 file_path={}）"
+                            + "——对象不存在：请核对 APP_STORAGE_OBS_PREFIX / APP_STORAGE_OBS_BUCKET 是否与当初上传时一致"
+                            + "（对象 key = prefix + '/' + file_path）",
+                    bucket, fullKey, relKey);
             throw new FileNotFoundException(fullKey);
         }
         try {

@@ -93,8 +93,9 @@ export interface AiHealth {
   aiServiceBaseUrl?: string | null;
   vectorBackend?: string | null;
   platformReachable?: boolean | null;
-  /** 四个模型的可用性（键名即契约字段名，不做二次包装） */
-  models?: Record<'chat' | 'ocr' | 'embedding' | 'reranker', boolean> & Record<string, boolean>;
+  /** 四个模型的可用性（键名即契约字段名，不做二次包装）；`null` = 本次**未探测**，既不是可用也不是不可用 */
+  models?: Record<'chat' | 'ocr' | 'embedding' | 'reranker', boolean | null> &
+    Record<string, boolean | null>;
   documentCount?: number | null;
   pendingTaskCount?: number | null;
   checkedAt?: string | null;
