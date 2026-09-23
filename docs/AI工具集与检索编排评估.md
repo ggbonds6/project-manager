@@ -109,7 +109,8 @@ Dify（知识检索节点）、RAGFlow（Retrieval 节点）、FastGPT（dataset
 
 ## 5. 明确不做，以及什么时候重新评估
 
-**不做**：引入 LangChain4j / Spring AI；把检索 100% 交给模型自主决定；AI 服务直连主系统库；
+**不做**：引入 LangChain4j / Spring AI（**专项论证见 §7**：官方只有 memory 没有 history、被淘汰的消息会从持久层一并删除、
+OpenSearch store 无混合检索、文档解析是通用 Tika 路径——三条都与本项目的审计与已验证行为冲突）；把检索 100% 交给模型自主决定；AI 服务直连主系统库；
 为了"工具齐全"补 `sql_query` / `web_search`；在工具数还没到瓶颈时上"工具路由模型"。
 
 **重新评估的触发条件**（任一出现再看，不提前做）：
@@ -127,3 +128,72 @@ Dify（知识检索节点）、RAGFlow（Retrieval 节点）、FastGPT（dataset
 - 平台能力的实测数字（OCR 1.29~1.66s、`/chat` 9.93~10.27s、embedding 4096 维、rerank 分数序）：见
   [`附件智能处理-验收标准与现状.md`](附件智能处理-验收标准与现状.md)、[`../ai-backend/docs/平台能力实测结论.md`](../ai-backend/docs/平台能力实测结论.md)；
 - 现有 3 个工具的存在理由（含 `list_documents` 被删的记录）：见 `ai-backend/src/main/java/com/pmgt/ai/module/llm/Tools.java` 类注释。
+
+---
+
+## 7. 专项答复：要不要引入 **LangChain4j**（问的是"文档处理"和"消息记录"）
+
+> 问题原话："接入 LangChain4j 会不会好一些？文档的处理、消息记录等都能更好处理。"
+> 结论：**现在不引入**——但这不是"框架不好"，而是**它擅长的那部分我们没有痛点，我们有痛点的部分它帮不上，而且它的默认语义跟审计要求冲突**。
+> 真正该补的短板不是框架，是**评测集**（见 §7.4）。
+
+### 7.1 逐环节对照：它有什么、我们有什么、净收益是多少
+
+| 环节 | 我们现在的做法 | LangChain4j 提供 | 引入的净收益 | 判定 |
+| --- | --- | --- | --- | --- |
+| 文档解析（PDF/扫描件） | 文本层优先、失败回落到**平台 OCR**；页级失败清单；与 Python 基线**逐字节一致**（182/182、空页 0/0） | `langchain4j-document-parser-apache-tika` / `-pdfbox`：通用解析器，产出文本 | **负**：拿不到"文本层 vs OCR"的路由判定与页级失败语义，等于用**未验证行为替换已验证行为** | ❌ 不用 |
+| 切片（chunk） | 自己的切分（服务于"金额/条款/页码可核对"） | `DocumentSplitters.recursive(...)` 通用字符切分 | 中性偏负：换默认切分必须**重测召回**，而我们还没评测集 | ⏸ 先建评测集再谈 |
+| 向量化 | 平台 `Qwen3-VL-Embedding-8B`（4096 维，余弦与 Python 逐位一致） | `EmbeddingModel` 适配层（几行代码） | 近似为零 | ❌ 不必 |
+| 向量库/检索 | `VEC_BACKEND=local`（进程内余弦+缓存）→ OpenSearch 适配层已接；**混合召回（向量+关键词）→ Reranker 精排**已实测（0.9903 > 0.0278 > 0.0014） | `OpenSearchEmbeddingStore`：官方文档只写 **exact kNN + metadata filter**；混合检索（BM25+kNN）目前还是社区 PR 状态 | **负**：混合召回+精排的编排我们已有且已实测；用它的 store 要么丢掉这层，要么"用它的 store + 自己再写一遍混合与重排"= **更复杂** | ❌ 不用 |
+| 重排 | 平台 Reranker，分数阈值与降级语义自己定 | `ScoringModel` 适配层 | 近似为零 | ❌ 不必 |
+| OCR | 平台 OCR（框架无关） | 无 | 零 | — |
+| **会话记录（你关心的）** | AI 服务**无状态**：历史由调用方传入；问答留痕写主系统 `ai_ask_log` | `ChatMemory` / `MessageWindowChatMemory` / `TokenWindowChatMemory` + `ChatMemoryStore` 持久化接口 | 只能省**几十行样板代码**；且见 §7.2 的三条硬伤 | ⚠️ 不建议（详见 §7.2） |
+| 工具/智能体循环 | 自研 `ToolAgent`（轮数上限、token 计数、每次工具调用的参数/命中/耗时都进留痕） | `AiServices` + `@Tool` 注解 | 能省掉循环本身，但**把"这次问答检索了几次、检索到什么"藏进框架** | ❌ 与审计要求冲突 |
+| 多模型/多厂商路由 | 只有一个平台网关 | `ModelRouting`、各厂商适配器 | **真有价值**，但我们没有这个需求 | ⏸ 出现第二家模型时再评估 |
+| 结构化输出 / Guardrails / 可观测 / MCP | 自研校验层（35 用例逐字段差分） | 均有现成模块 | 无痛点是伪收益；我们的确定性校验是**资产**不是债务 | ⏸ |
+
+### 7.2 会话记录：三条硬伤（**官方文档自证**，不是我的偏好）
+
+1. **它只有 memory，没有 history**。官方《Chat Memory》原文：
+   *"LangChain4j currently offers only 'memory', not 'history'. If you need to keep an entire history, please do so manually."*
+   ——我们要的"会话记录"是**审计级完整历史**，官方明确说**得自己存**。
+2. **被淘汰的消息会从持久层一起删掉**。同一页的 note：*"messages evicted from `ChatMemory` will also be evicted from `ChatMemoryStore`"*，
+   即窗口一滑，旧消息在库里也没了——**这与"审计留痕不得因上下文窗口被丢弃"直接冲突**。要让审计通过，还是得另建一张不受淘汰影响的历史表，框架的 store 白搭。
+3. **它会把会话状态放进 AI 服务**。我们的边界是"**主系统是唯一事实源**、权限/口径/留痕都在主系统收口、AI 服务保持无状态（可重建、可重放、可水平扩）"。
+   把 memory 交给 AI 服务，等于把状态搬到边界之外——**为了省几十行代码，破坏一条已经写进设计稿的边界**，不划算。
+
+**该怎么做**（P2 会话管理）：在主系统建 `ai_conversation` + `ai_conversation_message`（或在 `ai_ask_log` 上按 `conversation_id` 归集），
+AI 服务继续保持无状态、history 由调用方传入。这样"完整历史"和"审计追溯"是同一条数据，**不需要两套存储**。
+
+### 7.3 什么情况下值得重新评估（量化触发条件，别凭感觉）
+
+任一出现即启动评估：
+
+1. 需要**第二家模型/网关**（多厂商路由）或需要厂商侧的高级能力（视觉、代码执行）——这是框架**真省钱**的地方；
+2. 工具数 **> 8**，或需要**并行工具调用 / 子代理 / 人工确认节点**；
+3. 需要 **MCP** 接入外部工具生态（届时用框架的 MCP 客户端确实比自己写省事）；
+4. 文档格式需求超出"PDF + 扫描件"（如 docx/pptx/xlsx **入库检索**）——那时 `langchain4j-document-parser-*` 才有价值，但**也要接到我们自己的 `DocumentReader` 接口后面**（新增格式，不动已验证路径）。
+5. 团队明确愿意用"框架黑盒"换开发速度，且**接受放弃"逐次检索可复现"**（这条与我们场景天然冲突，需负责人拍板）。
+
+### 7.4 与其争论框架，不如先补短板：**迷你评测集**
+
+"引入框架会不会更好"这类问题，**没有评测集就只能靠感觉**——这也是我建议的真正下一步：
+
+1. 先做 **10~20 条问题**的迷你评测集（含"跨文档对比""金额求和""查不到要说未找到"三类，答案与出处页码人工标注）；
+2. 再花 **限时 spike**（独立分支/独立模块，不动主线）用 LangChain4j 重写 `/chat` 最小版（`AiServices` + `ChatMemory` + `OpenSearchEmbeddingStore`），同一批文档、同一批问题上对比五项：
+   ① 代码行数 ② 延迟 ③ **引用页码准确率** ④ 依赖体积与传递依赖数量 ⑤ **还能不能拿到审计所需的每次工具调用明细**；
+3. 用数字决定，而不是用"框架更专业"的直觉。**评测集是第一优先级**，因为它同时是 P2 质量改进、切片策略、混合检索配比的共同前提。
+
+### 7.5 如果将来真要接入：怎么做到**不返工**
+
+我们的接缝早就留好了，任何替换只发生在这三个点后面，**主线代码不用动**：
+
+| 接缝 | 位置 | 可替换为 |
+| --- | --- | --- |
+| `SearchPort` | `module/retrieval/SearchPort.java` | LangChain4j 的 `EmbeddingStore`/`EmbeddingModel` 适配（`local` 与 `OpenSearch` 都走它） |
+| `DocumentReader` | `module/doc/DocumentReader.java` | `langchain4j-document-parser-*`（**只用于新增格式**） |
+| `Tools` | `module/llm/Tools.java` | `AiServices` + `@Tool`（工具签名与返回值契约不变） |
+
+**三条底线不能交出去**（框架没有、也不该有）：① 平台 OCR 路由与页级校验；② 引用编号与答案出处（`citations`，刚做完）；
+③ 主系统侧的权限、口径与留痕。
+

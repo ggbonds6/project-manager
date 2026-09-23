@@ -65,7 +65,8 @@
 | docs-1.1 | 2026-09-20 | **重要文档同步性审计 + 目录整理（仓库上移）+ AI 前端方案评估** | ① **同步性审计**（README / ITERATION / 设计方案 vs 现状）：发现并修 **2 处**——根 README「当前版本」仍写 v3.5（改为 主系统 v3.5.1 ｜ AI ai-1.0.1 ｜ 文档 docs-1.0）、设计方案 §7 页面结构里的项目详情页签仍是 5 个（与 §6.2 的"v3.5 起最多 8 个"不一致，已统一为 8 个）；核对无误的项：数据模型 **14 张表**（V1 建 9 张含 `sys_dept`、V3 已删 → 实存 14，与设计稿一致）、崖山/MySQL 表述均已是历史口径、脚本与端口与 `scripts/README.md` 一致。② **Python 残留排查**：全仓**无** `.py`/`pyproject.toml`/`requirements*`/`__pycache__`/`.venv`/`.pytest_cache`/`.ruff_cache`；构建资产（Dockerfile/compose/yml）里无 Python 基础镜像与依赖；仅剩 Java 注释与文档中的**历史溯源提及**（如"移植自 `checks.py`"）。③ **目录整理**：删除 `project/` 下无用内容（最初静态原型 `demo/`、已被现设计稿 §11 覆盖的 `设计方案-v0.1`、npm 缓存 `.devtools/` 1660 项、跑服务留下的 `work/`、0 字节文件），把**本机专用资产**（数据库导出/口令清单/SSH 公钥 + 两个本机启动助手）收进仓库内 **`local/`（已 gitignore）**；仓库由 `Desktop\project\project-manager` **上移到 `Desktop\project-manager`**，旧 `project\` 已删除；启动助手的 `ROOT` 改为相对路径 `%~dp0..`。④ **AI 前端方案**：新增 [`docs/AI前端与集成方案.md`](docs/AI前端与集成方案.md)——评估三条路线后**否决"独立 React 前端"**，推荐**并入主系统前端**（新增「AI 与知识库」菜单 + **全局悬浮对话图标**），含知识库面板五页签设计、主系统代理与 V13（`attachment_ai_task`/`ai_index_status`/`ai_ask_log`）、nginx 同源与鉴权边界、P0~P3 分期（P0 3~5 人日）与风险对策。⑤ 新增 `scripts/check-docs.mjs` 回显扫描根（默认扫当前工作目录，在仓库外执行会扫错对象） | `cc73509`（§⑤ 为 `a4cb785`） |
 | v3.6.0 | 2026-09-20 | **AI 与知识库 P0：并入主系统前端 + 主系统代理层（V13）**| ① **前端**：新增「AI 与知识库」菜单 `/ai`（文档库／任务队列／服务自检三个**真正可用**的页签，不放占位）；**全局悬浮问答 Drawer**（与 `/ai` 页**共用同一份对话组件**，顶部显式显示并默认跟随页面范围：项目详情页=该项目）；**引用可点击跳原文第 N 页**——为此给 `AttachmentPreviewModal` 加**纯增量**可选参数 `pageNo`（仅 PDF 拼 `#page=N`，不传时行为不变），`attachmentId` 由主系统回填、映射不到则显示"附件已删除"而不做坏链接；附件中心加索引状态标签（未解析／解析中+进度／已可检索／解析失败+原因）＋重新解析＋批量补解析；🔴 自查修掉**React #310 回归**（新增的 `useMemo` 落在 `if (!detail) return` 之后，首屏与加载后 hook 数不一致——`tsc`/`vite build` 发现不了的崩溃型缺陷）＋ `useLocation` 死引用（并纠正 `location.search` 依赖不随路由变化的问题）。验证：`npm run build` EXIT=0、`--noUnusedLocals` 清零。② **主系统后端**：**迁移 V13**（`attachment_ai_task`、`attachment` 加 `ai_index_status`/`ai_doc_id`/`ai_indexed_at`（全可空、存量零影响、NULL 归一到 NOT_PARSED）、`ai_ask_log` 审计留痕）+ `module/ai/**`（`AiServiceClient` 唯一适配 AI 原始契约且双超时、`AiScopeResolver` **权限与作用域在主系统收口**、`AiAnswerAdapter` 含 citations 回填 attachmentId、`AiChatService` 问答+留痕、`AiTaskService` 触发/重试/状态回写、`AiTaskRecoveryRunner` 启动清理残留任务、`AiHealthService` 永远给结论）；AI 不可用时 `/chat` **严格 503 不降级成"未找到"**，读接口用主系统自有记录作答；`citations` 缺失一律空数组、**绝不从 `trace.brief` 抠页码**。验证：`mvn -o test` 66 例全绿（全 mock），过程中修掉 4 个真实缺陷（含 **4xx 被误判成"AI 服务不可用"**的产品缺陷）。④ **上传后自动触发解析**（方案 §3.3 要求）：在 v3.2 两段式上传的**后台推送线程**里、附件落库成功**之后**发布事件，由**独立单线程执行器**（有界队列 200 + CallerRunsPolicy，刻意不复用上传池以免大文件解析挤掉后续上传）异步触发；**AI 失败绝不影响上传**（三层保证：监听者吞异常 + 事件单向 + 发布方再包一层 try，专门有测试钉住）；开关 `pm.ai.auto-parse`（`AI_AUTO_PARSE`，默认 true）**关闭时连事件都不发**；失败时置 `FAILED`+原因（而非 `NOT_PARSED`，否则界面显示"未解析"、没人会去查为什么没解析成）；顺带修掉一个真问题——后台线程没有 `AuthContext`，自动解析的留痕会记成"操作人为空"，故给 `OperationLogService` 加显式传操作人的重载（自动/手动/重试分别记 `AI_AUTO_PARSE`/`AI_PARSE`/`AI_RETRY`）。③ **工具集评估**：新增《AI工具集与检索编排评估》——结论是 3 个工具一个都不能删（平台给的是无状态能力，工具解决有状态编排与本地数据；平台没有"语料库"概念），但要重排分工（检索默认服务端预取、诊断字段不下发模型、未来 4 个业务查询 RPC 在模型侧合并成 1 个工具），并明确**不引入** LangChain4j/Spring AI。 | `7299404` |
 | ai-1.1.0 | 2026-09-20 | **`/chat` 结构化引用 + 请求字段名对齐（AI 服务）** | 前端"引用可点击跳原文"的前置条件：`/chat` 原先只返回 `{answer,trace,scope,llm,stopped_reason,error}`，**页码/片段/分数全被丢掉**。新增请求级 `CitationRegistry`——命中在**模型看到时就带 `cite` 编号**（`doc_id+page_no` 去重、按首次命中顺序分配、只增不改、同页重命中只刷新分数），提示词要求句末按 `[cite]` 标注，响应**追加** `citations:[{index,doc_id,filename,page_no,snippet,score}]`（既有键顺序与语义一字未动，键顺序不作契约）。**顺带修掉"静默丢参"真 bug**：契约写 `doc_ids` 而 Java 字段实为 `docIds` → 按文档发 `doc_ids` 会被静默忽略、检索范围退化成"答全库"（不报错的最危险一类），已用 `@JsonProperty("doc_ids")+@JsonAlias("docIds")` 两种都收并写进契约文档；同时清掉提示词里推荐**已删除工具** `list_documents` 的旧文案。验证：`mvn -o test` **94 例全绿**（既有 81 例未改 + 新增 13 例）；**真实内网网关 e2e** 两种字段名都真的被解析（用不存在的 docId 反证），`citations` 页码与 snippet 与原文逐字一致；`verify-e2e.ps1` 修字段搬家缺陷 + **新增 citations 断言**，整脚本真跑 EXIT=0。**遗留**：AI 服务**无任何入站鉴权**（依赖网络隔离，独立待办，不在主系统侧假装修好）。 | `7299404` |
-| docs-1.2 | 2026-09-20 | **开发机脚本 PowerShell 化 + 文档与脚本收口** | ① `docs-1.0` 遗留项落地：`scripts/{make-release,dev-reload,db-sql}.sh` → **Windows 原生 `.ps1`** 并删除 `.sh`（`pm-upgrade.sh` 与 `ai-backend/scripts/check.sh` 因只在 Linux/CI 跑而保留）；必须偏离 bash 的地方（无 `gzip.exe` → `.NET GZipStream`；`java -D…` 裸参数被按 `.` 拆参；PS 5.1 对原生命令 `2>$null` 抛终止性错误；`curl` 是别名）已写进脚本注释。② **编码定案**：`scripts/*.ps1` 一律 **UTF-8 带 BOM + CRLF**（实测 PS 5.1 对无 BOM 的 UTF-8 按 GBK 解析，中文字面量**在解析期就坏**；"无 BOM+中文+5.1 可跑"三者不可兼得），写入 `scripts/README.md` §0.2 并明确"别顺手改成无 BOM"。③ **验证**：三脚本 × (PS 5.1 + PS 7) 解析校验 6/6；`db-sql.ps1` **真实执行**（只读查询返回 11 行，走 `.env` 档，口令只打印长度、不打印不落盘）；`make-release.ps1`/`dev-reload.ps1` 因本机 Docker 引擎未启动**未实际执行**（只做逐段比对 + 隔离探针），其 gzip 产物的 `docker load` 闭环**登记为待验证项**。④ **文档收口**：`scripts/README.md`／根 `README.md`／`deploy/README.md`／`docs/部署与发布全流程手册.md`（§2.3 手工打包整段改为"等价说明、不可照抄"的 PowerShell 步骤，`\| gzip` 与 `ls -lh` 清零）／`jdbc/RunSql.java` 与 `demo-reset.sql` 注释／本文件 4 处失效的"当前用法"；新增《AI工具集与检索编排评估》并登记进 `docs/README.md`；`docs/AI前端与集成方案.md` 增 §9 冻结契约与 §10 前端工程规范，并**修正"nginx 加 `/ai-api/` 直连 AI 服务"的自相矛盾结论**（会让浏览器绕过主系统权限解析）。收尾：`check-docs` 19 份 / 0 问题（体检本轮真抓到 2 处自己引入的问题并已修）。 | `7299404` |
+| docs-1.2 | 2026-09-20 | **开发机脚本 PowerShell 化 + 文档与脚本收口**| ① `docs-1.0` 遗留项落地：`scripts/{make-release,dev-reload,db-sql}.sh` → **Windows 原生 `.ps1`** 并删除 `.sh`（`pm-upgrade.sh` 与 `ai-backend/scripts/check.sh` 因只在 Linux/CI 跑而保留）；必须偏离 bash 的地方（无 `gzip.exe` → `.NET GZipStream`；`java -D…` 裸参数被按 `.` 拆参；PS 5.1 对原生命令 `2>$null` 抛终止性错误；`curl` 是别名）已写进脚本注释。② **编码定案**：`scripts/*.ps1` 一律 **UTF-8 带 BOM + CRLF**（实测 PS 5.1 对无 BOM 的 UTF-8 按 GBK 解析，中文字面量**在解析期就坏**；"无 BOM+中文+5.1 可跑"三者不可兼得），写入 `scripts/README.md` §0.2 并明确"别顺手改成无 BOM"。③ **验证**：三脚本 × (PS 5.1 + PS 7) 解析校验 6/6；`db-sql.ps1` **真实执行**（只读查询返回 11 行，走 `.env` 档，口令只打印长度、不打印不落盘）；`make-release.ps1`/`dev-reload.ps1` 因本机 Docker 引擎未启动**未实际执行**（只做逐段比对 + 隔离探针），其 gzip 产物的 `docker load` 闭环**登记为待验证项**。④ **文档收口**：`scripts/README.md`／根 `README.md`／`deploy/README.md`／`docs/部署与发布全流程手册.md`（§2.3 手工打包整段改为"等价说明、不可照抄"的 PowerShell 步骤，`\| gzip` 与 `ls -lh` 清零）／`jdbc/RunSql.java` 与 `demo-reset.sql` 注释／本文件 4 处失效的"当前用法"；新增《AI工具集与检索编排评估》并登记进 `docs/README.md`；`docs/AI前端与集成方案.md` 增 §9 冻结契约与 §10 前端工程规范，并**修正"nginx 加 `/ai-api/` 直连 AI 服务"的自相矛盾结论**（会让浏览器绕过主系统权限解析）。收尾：`check-docs` 19 份 / 0 问题（体检本轮真抓到 2 处自己引入的问题并已修）。 | `7299404` |
+| docs-1.3 | 2026-09-20 | **专项论证：要不要引入 LangChain4j（文档处理 / 会话记录）** | 结论**不引入**，并把依据落到《AI工具集与检索编排评估》§7（原 §5 的"不做"改为指向它）：① **逐环节对照**——解析（通用 Tika 路径拿不到"文本层 vs 平台 OCR"路由与页级失败语义，等于用未验证行为替换已验证行为）、切片（换默认切分必须重测召回，而我们还没有评测集）、检索（`OpenSearchEmbeddingStore` 官方只写 exact kNN + metadata filter，**混合检索仍是社区 PR**，而我们已实测"混合召回 → Reranker 精排"分数序）、重排/OCR（框架无关）→ 净收益为负或接近零；② **会话记录三条硬伤**（官方文档自证）：**只有 memory 没有 history**（要完整历史得自己存）、**被淘汰的消息会从 `ChatMemoryStore` 一并删除**（与"审计留痕不得被窗口淘汰"直接冲突）、**会把状态放进 AI 服务**（破坏"主系统是唯一事实源、AI 服务无状态"这条已定边界）——为省几十行样板代码破坏边界不划算，P2 会话管理应在主系统建会话/消息表，与 `ai_ask_log` 同一条数据；③ **量化重估触发条件**（第二家模型/网关、工具数 >8 或需并行工具调用、需接 MCP、文档格式超出 PDF+扫描件、团队愿以可复现性换开发速度）；④ 给出**不返工的三条接缝**（`SearchPort`/`DocumentReader`/`Tools`）与**三条底线**（平台 OCR 路由与页级校验、引用编号与出处、主系统权限/口径/留痕）；⑤ 明确真正的短板是**评测集**而非框架：先做 10~20 条迷你评测集，再做限时 spike（同文档同问题对比代码行数/延迟/引用页码准确率/依赖体积/审计明细可得性）再用数字决定。 | `待提交` |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -665,6 +666,32 @@
 
 ---
 
+### docs-1.3 — 专项论证：要不要引入 LangChain4j（文档处理 / 会话记录）（2026-09-20）
+
+- **问题**："接入 LangChain4j 是不是更好？文档处理、消息记录都能更好处理。"
+- **结论：不引入**，但不是"框架不好"，而是**它擅长的那部分我们没有痛点，我们有痛点的部分它帮不上，且它的默认语义与审计要求冲突**。
+  完整对照表见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md) §7。
+- **文档处理（逐环节）**：解析是**通用 Tika/PDFBox 路径**，拿不到"文本层优先 vs 平台 OCR 兜底"的判定与页级失败清单，
+  等于用**未验证行为替换已验证行为**（我们与 PyMuPDF 是逐字节对齐：182/182、空页 0/0）；
+  切片换默认切分**必须重测召回**，而我们还没有评测集；检索层 `OpenSearchEmbeddingStore` 官方文档只写
+  **exact kNN + metadata filter**，**混合检索（BM25+kNN）目前仍是社区 PR 状态**——用它要么丢掉我们已实测的
+  "混合召回 → Reranker 精排"编排（0.9903 > 0.0278 > 0.0014），要么"用它的 store + 自己再写一遍混合与重排"= **更复杂**。
+- **会话记录（三条硬伤，官方文档自证）**：① **只有 memory、没有 history**（官方原话：*"If you need to keep an entire history,
+  please do so manually"*），而我们要的正是**审计级完整历史**；② **被淘汰的消息会从 `ChatMemoryStore` 一并删除**
+  （官方 note），窗口一滑库里也没了，与"留痕不得因上下文窗口被丢弃"直接冲突；
+  ③ **它把会话状态放进 AI 服务**，破坏"主系统是唯一事实源、AI 服务无状态（可重建/可重放/可水平扩）"这条已写进设计稿的边界。
+  → P2 会话管理应**在主系统**建会话/消息表（与 `ai_ask_log` 同一条数据），而不是把 memory 交给 AI 服务。
+- **量化重估触发条件**（任一出现再评估）：第二家模型/网关；工具数 >8 或需并行工具调用/子代理；
+  需要接 MCP 生态；文档格式需求超出"PDF + 扫描件"；团队明确愿意用可复现性换开发速度。
+- **将来要接也不返工**：三条接缝 `SearchPort` / `DocumentReader` / `Tools`（替换只发生在它们后面）；
+  三条底线不交出去：平台 OCR 路由与页级校验、引用编号与答案出处（`citations`）、主系统权限/口径/留痕。
+- **真正的短板是评测集，不是框架**：先做 **10~20 条迷你评测集**（跨文档对比 / 金额求和 / 查不到要说未找到，人工标注答案与页码），
+  再做**限时 spike**（独立分支，LangChain4j 重写 `/chat` 最小版），同文档同问题对比五项
+  （代码行数 / 延迟 / **引用页码准确率** / 依赖体积与传递依赖数 / **审计明细是否还拿得到**），**用数字决定**。
+- **记录位置**：`docs/AI工具集与检索编排评估.md` §7（新增）+ §5（原"不做"改为指向 §7）；本文档 Backlog 同步。
+
+---
+
 ## 功能完成度
 
 | 功能 | 状态 | 说明 |
@@ -751,6 +778,8 @@ node scripts/seed-attachments.mjs               # 阶段/合同/付款三类附�
 10. **V13 的落地验证**：迁移脚本已在库外通过评审（多列 `ALTER TABLE … ADD (…)` 与 V1~V12 已成功应用的写法一致），但**未在真实崖山库执行**——下次 `pm-backend` 启动/部署时由 `YashanMigrationRunner` 应用并登记；应用后请核对 `attachment_ai_task` / `ai_ask_log` 两表与 `attachment` 三列。部署顺序：**先 restart 主系统（跑 V13），再确认 `ai-backend` 为 ai-1.1.0**（否则前端引用为空列表）。
 11. **演示路径**（设计稿 §14.6 要求）：`node scripts/seed-attachments.mjs`（上传即自动触发解析，受 `AI_AUTO_PARSE` 开关控制）→ `/ai` 页看文档库与任务队列 → 悬浮窗提问 → 点引用跳附件第 N 页。
 12. **收尾清理（已登记，不在本轮做）**：① P0+P1 验收通过后删除 `ai-backend/static/index.html` 整个 `static/` 与 Dockerfile 里的 `COPY static/`（方案 §8.4）；② `make-release.ps1` 的 gzip 产物需在 Docker 引擎可用时跑一次 `SKIP_BUILD=1` 验证 `docker load` 闭环；③ 前端小口子：范围选择器只拉前 500 个项目（无分页懒加载）、无"全部重新解析"入口、缺浏览器级人工验收。
+13. **迷你评测集（**最高优先级**——它是一切 AI 质量决策的前提）**：做 **10~20 条**问题（覆盖跨文档对比 / 金额求和 / "查不到必须说未找到"三类），人工标注标准答案与出处页码。有了它才能比较切片策略、混合检索配比、**以及"要不要引入 LangChain4j/Spring AI"这种框架级问题**；否则只能靠感觉（论证见 [`docs/AI工具集与检索编排评估.md`](docs/AI工具集与检索编排评估.md) §7.4）。若确要做框架对比，再开**限时 spike**（独立分支，不碰主线）：同文档同问题对比代码行数 / 延迟 / **引用页码准确率** / 依赖体积 / **审计明细是否还拿得到**。
+14. **P2 会话管理（若做）**：按"主系统是唯一事实源、AI 服务无状态"的边界，会话与消息表建在**主系统**（与 `ai_ask_log` 归并为同一条数据），**不要**把会话状态放进 AI 服务（见 §7.2 三条硬伤）。
 
 ## 变更记录说明
 
