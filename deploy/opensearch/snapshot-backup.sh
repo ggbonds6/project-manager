@@ -19,8 +19,12 @@
 #   bash snapshot-backup.sh restore <快照名> # 恢复演练/真恢复（★会覆盖当前索引，需输入 yes 确认）
 #   bash snapshot-backup.sh help             # 用法
 #
-# 建议的 cron（每晚 02:30；见文档 §7.2）：
+# 建议的 cron（每晚 02:30；见文档 §7.2.1）：
+#   ★装到【root 的 crontab】： sudo crontab -e
 #   30 2 * * * /bin/bash /home/opensearch/config/snapshot-backup.sh snapshot >> /home/opensearch/logs/snapshot-cron.log 2>&1
+#   ⚠️ 为什么强调"谁的 crontab"：口令按「环境变量 → snapshot-backup.env → /etc/opensearch-backup.pass」读，
+#      而 /etc/opensearch-backup.pass 默认是 root:root 600 ⇒ **非 root 的 cron 用户读不到 ⇒ 每天静默失败**。
+#      装到 root 最省事；若要装到 opensearch 的 crontab，就必须把该口令文件改成 opensearch:opensearch 600。
 #
 # 退出码：0 成功 ｜ 1 环境/依赖/接口失败 ｜ 2 参数用法错误
 #
@@ -463,8 +467,10 @@ cmd_snapshot() {
   sync_remote || return 1
   log ""
   ok "快照任务完成：${name}"
-  log "      下一步：把下面这行写进 crontab -e（每晚 02:30）"
+  log "      下一步：把下面这行写进【root 的 crontab】（sudo crontab -e；每晚 02:30）"
   log "        30 2 * * * /bin/bash ${BASE}/snapshot-backup.sh snapshot >> ${BASE}/logs/snapshot-cron.log 2>&1"
+  log "      ⚠️ 装到别的用户也可以，但那个用户必须能读 ${OPENSEARCH_BACKUP_PASS:-/etc/opensearch-backup.pass}"
+  log "         （默认 root:root 600 ⇒ 非 root 读不到 ⇒ 备份会每天静默失败；见文档 §7.2.1）"
   return 0
 }
 

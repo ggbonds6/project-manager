@@ -331,8 +331,39 @@ ls -l /home/opensearch/app/config/opensearch.yml /home/opensearch/app/config/jvm
 | `/home/opensearch/dashboards/app/config` 及其中 `opensearch_dashboards.yml` | Dashboards 配置 | `opensearch:opensearch` | 目录 `750`／文件 `640` | 见 §12.2；它是 `install -D` 自动建出来的，若你手工 `mkdir` 过就要自己确认属主 |
 | `/home/opensearch/app/plugins/opensearch-security/tools/*.sh` | `hash.sh` / `securityadmin.sh` | `opensearch:opensearch` | **`750`（必须有 `x`）** | ★缺 `x` ⇒ 这两个脚本跑不了（改内部用户/角色时必然用到）。核对：`ls -l …/tools/*.sh`，期望 `-rwxr-x---`；不对就 `sudo chmod 750 /home/opensearch/app/plugins/opensearch-security/tools/*.sh` |
 | `/home/opensearch/config/snapshot-backup.env`（**可选**，脚本的覆盖配置） | 覆盖 `KEEP_DAYS` / `REMOTE` 等 | `opensearch:opensearch` | **`600`** | ★**只在里面放非敏感覆盖项**。口令推荐放 `/etc/opensearch-backup.pass`（下一行），**两处只留一处**；若确实要写进这里，则必须 `600` 且与脚本读法一致（脚本顺序：环境变量 → 该文件 → `/etc` 口令文件） |
-| `/etc/opensearch-backup.pass` | 快照脚本的口令（一行） | **`root:root`** | **`600`**（§7.2 给的是 `sudo chmod 600`，默认 root 属主） | cron 以哪个用户跑，就保证那个用户能读（`/etc/opensearch-backup.pass` 由 root 建、cron 若是 root 则天然可读） |
+| `/etc/opensearch-backup.pass` | 快照脚本的口令（一行） | **`root:root`** | **`600`**（§7.2 给的是 `sudo chmod 600`，默认 root 属主） | ★**cron 装在谁，谁就必须能读它**：本方案默认 cron 装 `root`（`sudo crontab -e`），故 `root:root 600` 正好自洽；若改装到 `opensearch` 的 crontab，必须把它改成 `opensearch:opensearch 600`，否则**备份每天静默失败**（§7.2.1） |
+| `/home/opensearch/app/config/opensearch.keystore` | 安全插件的密钥库（**首次安装由 demo 脚本生成**） | `opensearch:opensearch` | **`600`** | ★只有属主可读；它里面可能放敏感值。核对：`ls -l /home/opensearch/app/config/opensearch.keystore`，期望 `-rw-------`；不对就 `sudo chmod 600 …`。**升级时也要一起带过去并重设 600**（§7.3 第 ⑥ 步） |
+| `/home/opensearch/app/config/opensearch-security/`（**目录本身**） | 安全配置目录（`internal_users.yml` / `roles.yml` / `roles_mapping.yml` …） | `opensearch:opensearch` | **目录 `750`**／里面的 `*.yml` `640` | ★**目录和文件都要看**：目录若被开成组可写，等于谁都能往里塞一份 `internal_users.yml`（那是最危险的文件之一）。核对：`ls -ld /home/opensearch/app/config/opensearch-security`，期望 `drwxr-x---`；里面的 yml 用 `ls -l …/opensearch-security/*.yml` 看 `-rw-r-----` |
+| `/home/opensearch/logs/*.log` | 文件日志（`path.logs`） | `opensearch:opensearch` | 文件 `640`／目录 `750` | 服务自己写；**日志会持续增长**，所以必须配轮转（见下方"日志轮转"）。与 §7.5"磁盘满 / 索引变只读"那条排障直接相关 |
+| `/home/opensearch/backup/dist/`（**仅 `.111` 用**） | 归档安装包（离线重建用） | `lhim:opensearch`（或 `root:root`） | **`755`** | 只是"运维放包的地方"，不需要服务写；放完 `chown` 按上面二选一即可（属主建议 `lhim`，与 §1.3 的搬运账号一致） |
 | `/etc/profile.d/lhim-umask.sh`（**仅路线二需要**） | 给 `lhim` 设 `umask 002` | **`root:root`** | **`644`** | `/etc/profile.d/*` 一律 root 属主；它只影响登录 shell 的默认权限位 |
+
+**日志轮转（logrotate）——建议配，谁负责要写清**
+
+`path.logs` 下的文件**没有自带轮转**（journald 那份由 systemd 管，但文件日志不会自动清）。
+不配的话，长期运行 + 调试级别日志会把 `/home` 写满，而**磁盘到 95% 会让索引变只读**（§7.5）。
+
+```bash
+# 最小可用配置（由 root 建；用 copytruncate 避免让 OpenSearch 重开文件句柄）
+sudo tee /etc/logrotate.d/opensearch >/dev/null <<'EOF'
+/home/opensearch/logs/*.log {
+    daily
+    rotate 14
+    size 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su opensearch opensearch
+}
+EOF
+
+# 演练一次（-d 只打印不执行，先看它打算干什么；去掉 -d 才真的轮转）
+sudo logrotate -d /etc/logrotate.d/opensearch | head -20
+```
+> **职责归属**：若平台方有统一的日志采集/轮转（常见于政务机房），**以平台方为准**，本节这份配置就不要重复装；
+> 无论谁负责，验收口径都一样：`du -sh /home/opensearch/logs` 不会单调增长，且 `df -h /home` 有足够余量。
 
 
 ### 1.5.1 为什么会卡 + 三条纪律（**照着做就不会反复踩**）
@@ -357,7 +388,7 @@ ls -l /home/opensearch/app/config/opensearch.yml /home/opensearch/app/config/jvm
 - `sudo`（root 两侧都过得去）→ `install` / `cp` + `chown`；
 - 或先放到**两边都能读的位置**（`/tmp`、或 `/home/opensearch` 这个组可写的父目录），再搬进子目录。
 
-### 1.5.2 落位完成后的核对（**7 条命令，逐条看输出**）
+### 1.5.2 落位完成后的核对（**9 条命令，逐条看输出**）
 
 ```bash
 # ① 看 config/ 里的三样东西：属主应为 opensearch:opensearch，脚本应为可执行
@@ -400,6 +431,16 @@ ls -ld /home/opensearch/backup /home/opensearch/backup/fs-repo
 ls -l /etc/opensearch-backup.pass 2>/dev/null || echo "(还没建：见 §7.2 第 ① 条)"
 ls -l /home/opensearch/config/snapshot-backup.env 2>/dev/null || echo "(没用到这个覆盖文件就对了——口令放 /etc 那份)"
 # 期望：均为 -rw-------（600）
+
+# ⑧ keystore（600）与安全配置目录本身（750）
+ls -l  /home/opensearch/app/config/opensearch.keystore                 # 期望 -rw------- opensearch opensearch
+ls -ld /home/opensearch/app/config/opensearch-security                # 期望 drwxr-x--- opensearch opensearch
+ls -l  /home/opensearch/app/config/opensearch-security/*.yml | head   # 期望 -rw-r-----（640）
+
+# ⑨ cron 自洽性：跑 cron 的那个用户必须能读到口令（配错的现象是备份每天静默失败，见 §7.2.1）
+sudo crontab -l | grep snapshot-backup.sh && echo "cron 装在 root（与本方案默认口径一致）"
+sudo -u root bash /home/opensearch/config/snapshot-backup.sh status | head -5
+# 期望：能看到"集群健康"段（说明口令读到了）；若报"没有拿到 OpenSearch 口令" ⇒ 三者不自洽
 ```
 
 
@@ -1630,12 +1671,46 @@ bash /home/opensearch/config/snapshot-backup.sh snapshot
 # ③ 只看状态（不做任何写操作）
 bash /home/opensearch/config/snapshot-backup.sh status
 ```
+
+#### 7.2.1 ★cron 装到谁、口令谁能读（**三者必须自洽，否则备份每天静默失败**）
+
+这条是**真缺陷**：脚本读口令的顺序是「环境变量 → `snapshot-backup.env` → `/etc/opensearch-backup.pass`」，
+而 `/etc/opensearch-backup.pass` 是 **`root:root 600`** —— 也就是说**非 root 的 cron 用户读不到它**，
+于是脚本在 `require_pass` 阶段就退出，**每天 2:30 静默失败**（没有快照，而你毫不知情）。
+
+**本方案定稿口径（二选一，选了就三处一起对齐）**：
+
+| 口径 | crontab 装在谁 | `/etc/opensearch-backup.pass` 属主:权限 | 说明 |
+| --- | --- | --- | --- |
+| **A（推荐，本方案默认）** | **`root`**：`sudo crontab -e` | **`root:root` `600`** | root 读写 `/home/opensearch/backup` 与 `/home/opensearch/logs` 都不受限制，**不会因为目录是 `750`/属主是 `opensearch` 而卡住**；口令文件也最安全 |
+| B | `opensearch`：`sudo -u opensearch crontab -e` | **`opensearch:opensearch` `600`** | 与"以服务账号干活"（§1.5.3 路线一）一致；**必须把口令文件属主一起改成 `opensearch`**，否则读不到 |
+
 ```bash
-# ④ 装 cron（每晚 02:30；脚本自己会打印这行，直接复制）
-crontab -e
-# 加入：
+# 口径 A：装到 root 的 crontab（推荐）
+sudo crontab -e
+# 加入（每晚 02:30）：
 30 2 * * * /bin/bash /home/opensearch/config/snapshot-backup.sh snapshot >> /home/opensearch/logs/snapshot-cron.log 2>&1
-crontab -l      # 复核
+
+# 复核三件事是否自洽（★别只看 crontab 有没有装上）
+sudo crontab -l | grep snapshot-backup.sh                 # ① cron 行在 root 的 crontab 里
+ls -l /etc/opensearch-backup.pass                         # ② 期望 -rw------- root root
+sudo -u root bash /home/opensearch/config/snapshot-backup.sh status   # ③ 以 cron 用户身份真能读到口令
+
+# 口径 B（若你坚持用 opensearch 的 crontab）：口令文件属主必须跟着改
+#   sudo chown opensearch:opensearch /etc/opensearch-backup.pass
+#   sudo chmod 600 /etc/opensearch-backup.pass
+#   sudo -u opensearch crontab -e     # 装同一条 cron 行
+#   sudo -u opensearch bash /home/opensearch/config/snapshot-backup.sh status   # 验证它能读
+```
+
+> **配错的现象就是"备份每天静默失败"**：`crontab -l` 看着没问题、白天谁也不会去看日志。
+> 两个验证办法：① 看 cron 日志（`sudo journalctl -u crond -n 50` 或 `/var/log/cron`，按发行版）；
+> ② **手工以 cron 用户身份跑一次** `bash … snapshot`——它会把"没拿到口令"这条**明确打出来**（脚本的 `require_pass` 会给出三种给法）。
+> 再配合每周看一眼 `bash … status` 里最近一份快照的日期，就能保证"备份真的在跑"。
+
+```bash
+# ⑤ 保留那行也照抄（口径 A 直接加在 root 的 crontab 里）
+crontab -l      # 用 sudo crontab -l 才是 root 的
 ```
 
 | 项 | 值/建议 |
@@ -1784,7 +1859,7 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | 认证失败 `401 Unauthorized` | 用户名/口令不对 | `curl -u admin:'<口令>'` 单独验证；口令含特殊字符时**用单引号包住**；确认用的是本轮设的强口令（不是 demo 默认值） |
 | **`yellow`** | 主分片就绪、**副本未分配** | **单节点上几乎总是"某个索引设了 replica ≥1"**：`PUT /<索引>/_settings {"index":{"number_of_replicas":0}}`；用 `_cat/indices?v&health=yellow` 找出来逐个改 |
 | **`red`** | 有**主分片**未分配 ⇒ 检索/写入报错 | `_cat/indices?v` 与 `_cluster/allocation/explain`；单节点上常见原因是**数据目录权限**（§2.4）或**磁盘满** |
-| 磁盘满 / 索引变只读（flood stage） | 达 95% 水位 | ① 清旧快照（脚本保留期调小）；② 解锁：`PUT /<索引>/_settings {"index.blocks.read_only_allow_delete":null}`；③ 复核 §7.1 的水位 |
+| 磁盘满 / 索引变只读（flood stage） | 达 95% 水位 | ① 清旧快照（脚本保留期调小）；② **查日志是否在涨**：`du -sh /home/opensearch/logs`，没配轮转就照 §1.5 的"日志轮转"配一份；③ 解锁：`PUT /<索引>/_settings {"index.blocks.read_only_allow_delete":null}`；④ 复核 §7.1 的水位 |
 | 首次检索特别慢（几十秒~分钟级） | **惰性向量化在问答路径上**（§6.2 现状） | 按 §6.2 先灌满索引再切 `VEC_BACKEND`；临时手段是重复发几次同样的提问 |
 | 快照失败 `repository_exception` / 报目录不可写 | 仓库目录属主不对或不在 `path.repo` 之下 | `sudo chown -R opensearch:opensearch /home/opensearch/backup`；核对 `path.repo` 与脚本 `REPO_LOCATION` 的父子关系 |
 | `snapshot-backup.sh` 报无法免密 ssh | `rsync` 到 `.111` 需要免密 | `ssh-copy-id lhim@10.254.212.111`；或临时 `SKIP_REMOTE=1`（但**别长期跳过**，否则没有异地副本） |
