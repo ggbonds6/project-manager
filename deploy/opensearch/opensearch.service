@@ -1,0 +1,68 @@
+# ============================================================
+# OpenSearch systemd unit（tar 解包安装；**不用 Docker**）
+#
+# 安装位置（两台机器都一样；安装目录=/home/lhim/os/opensearch）：
+#   sudo cp deploy/opensearch/opensearch.service /etc/systemd/system/opensearch.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now opensearch
+#
+# 写法依据：官方《Installing OpenSearch from a tarball》→ "Run OpenSearch as a service using systemd"
+# 给的示例 unit。我们只做三类改动，其余保持官方原样：
+#   ① 路径：官方示例用 /opt/opensearch，本项目统一 /home/lhim/os/opensearch；
+#   ② User/Group：官方示例叫 opensearch，本项目沿用同名专用系统用户（OpenSearch 拒绝以 root 启动）；
+#   ③ 内存与文件句柄上限：官方示例没有 LimitMEMLOCK，而我们要开 bootstrap.memory_lock，
+#      所以补 LimitMEMLOCK=infinity 与 Environment=MAX_MAP_COUNT=262144（官方 configuring-opensearch
+#      文档明确：用 systemd 托管且开启 mlock 时，需要这两项，否则 JVM 无法锁定内存）。
+#
+# ⚠️ 官方在同一节里明确写了：tar + systemd 这套只适合非生产/自管环境，"We do not recommend using the
+#    following configuration in a production environment"，并建议要 systemd 托管就用 RPM 包。
+#    本项目选 tar 的理由是"新机器不装 Docker、部署完就不怎么动"（见文档 §0），
+#    因此下面的加固项（专用用户、memlock、nofile、开机自启、重启策略）必须逐条落实，别省。
+# ============================================================
+[Unit]
+Description=OpenSearch
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+# 官方示例：Type=forking + ExecStart 带 -d（后台守护），保留原样
+Type=forking
+
+WorkingDirectory=/home/lhim/os/opensearch
+ExecStart=/home/lhim/os/opensearch/bin/opensearch -d
+
+# 专用非 root 用户（OpenSearch 不能以 root 运行）
+User=opensearch
+Group=opensearch
+
+# 日志进 journald（另有 /home/lhim/os/logs 下的文件日志，见 path.logs）
+StandardOutput=journal
+StandardError=inherit
+
+# 文件句柄：官方示例写 65535，官方 Docker 示例与重要设置页写 65536；取更大的 65536
+LimitNOFILE=65536
+LimitNPROC=4096
+LimitAS=infinity
+LimitFSIZE=infinity
+# ★我们要开 bootstrap.memory_lock（禁止堆被换出）：必须放开 memlock，否则内存锁定失败
+LimitMEMLOCK=infinity
+
+# 绑定到所有网卡需要内核允许足够的映射数（官方 configuring-opensearch）：
+#   "If you're using systemd... you must also add MAX_MAP_COUNT=262144"
+Environment=MAX_MAP_COUNT=262144
+# 官方 Tar 页 Step 4：让服务用自带的 JDK
+Environment=OPENSEARCH_HOME=/home/lhim/os/opensearch
+
+# 停服与重启行为（官方示例保留；Restart 是本项目加固项，
+# 让"部署完就不管"成立：进程异常退出后自动拉起，但不要无限快速重启）
+TimeoutStopSec=0
+KillSignal=SIGTERM
+KillMode=process
+SendSIGKILL=no
+SuccessExitStatus=143
+TimeoutStartSec=75
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

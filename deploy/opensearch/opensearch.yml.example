@@ -1,0 +1,75 @@
+# ============================================================
+# OpenSearch 节点配置模板（tar 解包安装 / systemd 托管，**不用 Docker**）
+#
+# 用法（服务器上执行；安装目录按本文档统一为 /home/lhim/os/opensearch）：
+#   cp deploy/opensearch/opensearch.yml.example /home/lhim/os/opensearch/config/opensearch.yml
+#   chown opensearch:opensearch /home/lhim/os/opensearch/config/opensearch.yml
+#   chmod 644 /home/lhim/os/opensearch/config/opensearch.yml
+#
+# ⚠️ 替换时机很重要：必须【在跑完官方 opensearch-tar-install.sh 之后】再覆盖，
+#    否则 demo 安全脚本会把它的 TLS 设置写回来。顺序见文档 §3。
+#
+# ⚠️ 本文件是【静态配置】：改完必须 systemctl restart opensearch，不能热更新。
+#
+# ⚠️ 为什么本文件里有"transport 层"的证书路径：
+#    官方 Tar 页 Step 3 说明 demo 安全脚本会"apply self-signed TLS certificates"，并且把安全设置
+#    写进 config/opensearch.yml —— 其中就包含 transport 层证书路径与 admin_dn/nodes_dn。
+#    SELinux 之外，**安全插件默认要求 transport 层加密**：如果我们用一份"干净"的配置把它整份覆盖掉，
+#    节点间就无法互信，起不来（或集群形成失败）。
+#    所以本模板 = 官方默认配置的骨架 + demo 脚本会写的那几行（证书路径/两个开关）+ 我们自己的取值。
+#    证书文件名与官方 Docker 文档的示例一致（esnode.pem / esnode-key.pem / root-ca.pem）；
+#    若你的 demo 脚本产出的文件名不同，以【运行时 config/ 下实际存在的文件】为准。
+#
+# ⚠️ 为什么这些值这么定（都有依据，不是拍脑袋）：
+#   · discovery.type: single-node —— 官方 Tar 页原话："Unless you have already configured a cluster,
+#     you should set discovery.type to single-node, or the bootstrap checks will fail when you try to
+#     start the service."（2 节点集群的 quorum 问题见文档 §0.3）
+#   · network.host —— 官方 Tar 页 Step 4 推荐项：把节点绑到具体网卡（默认不绑任何网络接口，外部访问不到）
+#   · path.data / path.logs —— 放在【安装目录之外】，这样升级（解包新版本）不会碰到数据与日志
+#   · heap 不写在这里，写在 config/jvm.options.d/heap.options（官方支持 jvm.options.d 覆盖目录）
+# ============================================================
+
+# ── 集群与节点 ──
+cluster.name: pm-os
+node.name: os01
+
+# 单节点模式：不配 discovery.seed_hosts / cluster.initial_master_nodes
+# （本文件【刻意不含】这两项；将来转 3 节点集群才加，见文档附录 A）
+discovery.type: single-node
+
+# ── 网络 ──
+# ★每台机器改成自己的内网 IP：.110 写 10.254.212.110，.111 写 10.254.212.111。
+#   若想监听全部网卡写 0.0.0.0，但那样"只放行两台应用服务器"就完全依赖防火墙了 —— 见文档 §2.5。
+network.host: 10.254.212.110
+http.port: 9200
+
+# ── 路径（都在 /home/lhim/os/ 下，与安装目录平级）──
+path.data: /home/lhim/os/data
+path.logs: /home/lhim/os/logs
+# 快照仓库：必须与 snapshot-backup.sh 里注册的文件系统仓库 location 完全一致
+# （脚本默认 /home/lhim/os/backup/fs-repo，它必须在下面这个值之下）
+path.repo: /home/lhim/os/backup
+
+# ── 安全插件 ──
+plugins.security.disabled: false
+
+# ★REST 层不启用 TLS：9200 走明文 HTTP（由 basic auth + 防火墙来源限制作为补偿）。
+#   依据（官方 security-settings 页）：plugins.security.ssl.http.enabled ——
+#   "Whether to enable TLS on the REST layer. If enabled, only HTTPS is allowed. Optional. Default is false."
+#   注意：关掉的只是【REST 这一层】；transport 层 TLS 仍按下面几行开启，安全插件仍然生效，
+#   basic auth 照常要求 admin + 强口令 —— 与"禁用安全插件"是完全不同的两件事。
+plugins.security.ssl.http.enabled: false
+
+# ── transport 层 TLS（节点间通信加密；demo 脚本生成的自签证书）──
+plugins.security.ssl.transport.pemcert_filepath: esnode.pem
+plugins.security.ssl.transport.pemkey_filepath: esnode-key.pem
+plugins.security.ssl.transport.pemtrustedcas_filepath: root-ca.pem
+plugins.security.allow_unsafe_democertificates: true
+plugins.security.allow_default_init_securityindex: true
+
+# ── 如果改用"自签 TLS 保护 REST 层"（文档 §3.5 方案 B），把 plugins.security.ssl.http.enabled
+#    改成 true，并补上 REST 层的三行证书路径（证书同样由 demo 脚本生成，位置在 config/ 下）──
+# plugins.security.ssl.http.enabled: true
+# plugins.security.ssl.http.pemcert_filepath: esnode.pem
+# plugins.security.ssl.http.pemkey_filepath: esnode-key.pem
+# plugins.security.ssl.http.pemtrustedcas_filepath: root-ca.pem

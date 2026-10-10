@@ -1,15 +1,23 @@
-# OpenSearch 部署与接入（两台新服务器 10.254.212.110 / 10.254.212.111）
+# OpenSearch 部署与接入（两台新服务器 10.254.212.110 / 10.254.212.111 · tar.gz + systemd）
 
 > **文档性质：操作手册（SOP），风格与 [`部署与发布全流程手册.md`](部署与发布全流程手册.md) §0 一致** ——
-> §0~§7 是**可逐条照做**的定稿步骤（编号步骤 + 可直接复制的命令 + 预期输出）；要"为什么"看每节末尾的说明与 §9 附录。
-> 配套资产（与本文件逐字一致）：[`deploy/opensearch/docker-compose.yml`](../deploy/opensearch/docker-compose.yml)、
-> [`deploy/opensearch/.env.example`](../deploy/opensearch/.env.example)、[`deploy/opensearch/os.sh`](../deploy/opensearch/os.sh)。
+> §0~§7 是**可逐条照做**的定稿步骤（编号步骤 + 可直接复制的命令 + 预期输出）；要"为什么"看每节末尾的说明与附录。
 >
-> **关联**：[`AI模型调用与任务队列评估.md`](AI模型调用与任务队列评估.md)（"换 OpenSearch 的三条量化触发点"与本轮真机读数）、
-> [`部署与发布全流程手册.md`](部署与发布全流程手册.md) §8（AI 能力服务 ai-backend 的构建与发布）、
-> [`政府信息化项目管理系统-设计方案.md`](政府信息化项目管理系统-设计方案.md)、[`deploy/README.md`](../deploy/README.md)。
+> **部署形态：官方 `tar.gz` 解包 + systemd 托管。这两台机器上【不装 Docker、也不使用 Docker】**——
+> 理由：新机器本来就没装 Docker，且这两台"部署完就基本不用怎么运维"；官方 Tar + systemd 足够。
+> 与之配套的资产：[`deploy/opensearch/`](../deploy/opensearch/)（`opensearch.yml.example`、`jvm.options.d/heap.options`、
+> `opensearch.service`、`snapshot-backup.sh`）。
 >
-> **本轮只写文档与部署资产**：`scripts/**`、`deploy/**`、`ai-backend/**`、`frontend/**`、`backend/**` 的应用代码**一行未改**。
+> **关联**：[`AI模型调用与任务队列评估.md`](AI模型调用与任务队列评估.md)（"换 OpenSearch 的三条量化触发点"）、
+> [`部署与发布全流程手册.md`](部署与发布全流程手册.md) §8（AI 能力服务 ai-backend）、[`deploy/README.md`](../deploy/README.md)。
+>
+> **官方依据**（本文件反复引用，均已逐条核对；核对结果见 **附录 B**）：
+> [Tar 安装页](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/tar/)、
+> [安全插件启停](https://docs.opensearch.org/latest/security/configuration/disable-enable-security/)、
+> [demo 配置与口令要求](https://docs.opensearch.org/latest/security/configuration/demo-configuration/)、
+> [安全设置（含 `plugins.security.ssl.http.enabled`）](https://docs.opensearch.org/latest/install-and-configure/configuring-opensearch/security-settings/)。
+>
+> **本轮只写文档与部署资产**：`backend/**`、`ai-backend/**`、`frontend/**`、`scripts/**` 应用代码**一行未改**。
 
 ---
 
@@ -21,235 +29,234 @@
 | --- | --- | --- | --- |
 | ① | **延迟**：`local` 给**每一次提问**加的固定开销 | 每次检索把范围内**全部切片**的向量 JSON 读出来解析成 `float[]` 再逐条算余弦 | 切片 **≥ 4,000**（≈130 份）时 **+1.0s**；≥15,000 时 **+3.8s**（相对实测 10s 基线 **+38%**） |
 | ② | **内存/并发**：常驻 = `16KB × 切片数 × 并发问数` | AI 容器**当前没有 `-Xmx`**（未确认项） | 4 GB 堆、留 50% 余量 ⇒ **4 并发时 ≈3 万切片触顶**；8 并发 ⇒ **≈1.5 万切片** |
-| ③ | **架构（最硬的一条）**：`local` 是**进程内状态** | AI 服务**必须单实例**；且切片**没有 `project_id`/密级等元数据**，"先过滤再检索"今天**做不到**，而"先过滤"正是权限合规的前提 | **需要第 2 个 AI 实例时**（要做无中断检索 / 水平扩） |
+| ③ | **架构（最硬的一条）**：`local` 是**进程内状态** | AI 服务**必须单实例**；且切片**没有 `project_id`/密级等元数据**，"先过滤再检索"今天**做不到**，而"先过滤"正是权限合规的前提 | **需要第 2 个 AI 实例时** |
 
 > 数字出处：[`AI模型调用与任务队列评估.md`](AI模型调用与任务队列评估.md) §3.4 表与"量化触发点"表（本轮真机读数：
-> 1 个 4096 维切片向量 JSON = **38,333 字节**，即 **9.36 字节/维**）。该文档的结论是"建议把 OpenSearch 集群部署从 P2 **上提为 P1**"。
+> 1 个 4096 维切片向量 JSON = **38,333 字节**，即 **9.36 字节/维**）。该文档结论：把 OpenSearch 部署从 P2 **上提为 P1**。
 >
 > 一句话：**规模不是"余弦算不动"的理由（15,000 切片余弦仅 ≈61ms），但"延迟 / 内存 / HA + 元数据过滤"三条已经把切换点推到 ~4,000 切片。**
 
-### 0.2 部署形态结论：**单节点（推荐默认）**
+### 0.2 部署形态结论：**单节点 + systemd**
 
 | 项 | 本方案定稿 |
 | --- | --- |
-| 节点数 | **1 个**：`os01` = **10.254.212.110** |
-| 第二台 `10.254.212.111` | **冷备 + 演练机**（跑同一套编排，**默认停着**；存每晚快照副本，见 §6.4） |
+| 节点数 | **1 个**：`os01` = **10.254.212.110**（8 核 / 16GB 内存 / 200GB 磁盘） |
+| 第二台 `10.254.212.111` | **冷备 + 演练机**：同一套安装与同样的 unit，**服务默认停着**；只接收每晚快照副本（§6.4 / §7.2） |
+| 安装方式 | 官方 **`opensearch-<版本>-linux-x64.tar.gz`** 解包到 `/home/lhim/os/opensearch`（**这两台是 x86_64**） |
+| 托管方式 | **systemd**（unit 见 [`opensearch.service`](../deploy/opensearch/opensearch.service)），专用非 root 用户 `opensearch` |
 | 索引 | `pm-ai-chunks`，**主分片 1 + 副本 0**（见 §5.1） |
-| 端口 | `9200` **只放行两台 AI/应用服务器**；`9300` 只放行集群内节点；**绝不对全网开放** |
-| 安全 | 内网 **HTTP + basic auth（强口令）**；TLS 为可选（§3.5） |
-| 数据路径 | `/home/lhim/os/data`（宿主）；容器内 `/usr/share/opensearch/data` |
-| 快照仓库 | `/home/lhim/os/backup`（宿主）；容器内 `/usr/share/opensearch/backup` |
+| 端口 | `9200`（REST）**只放行两台应用服务器**；`9300`（transport）本方案单节点不需对外；**9200 绝不对外** |
+| 监听 | `network.host: <本机内网IP>`（不用 `0.0.0.0`） |
+| 安全 | **内网 HTTP + basic auth（强口令）**：显式关掉 REST 层 TLS（§3.5）；transport 层 TLS 保持开启 |
+| 数据/日志/快照 | `/home/lhim/os/{data,logs,backup}`（**在安装目录之外**，升级不碰数据） |
 
-### 0.3 为什么不推荐 2 节点（quorum 明账）
+> ⚠️ **架构提醒（很实际的坑）**：本项目**其它服务器（`pdmsappgh` / `ai-kingbase-gh`）是 aarch64**，
+> 而**这两台是 x86_64**。所以安装包必须是 **`...-linux-x64.tar.gz`**（不是 `arm64`）。
+> 先确认：`uname -m` 期望输出 **`x86_64`**。把 arm64 包解开在 x86 机器上，启动会直接失败。
 
-> **这一节是给运维/评审看的"明账"，不是免责声明。** 结论：**2 节点相比单节点几乎换不到可用性，却多一倍运维复杂度。**
+### 0.3 为什么是单节点：**2 节点相比单节点几乎换不到可用性**（quorum 明账）
 
-- OpenSearch 用 **majority quorum** 选 master：集群内可参与选举的节点数为 `N` 时，需要 **`⌊N/2⌋+1`** 票。
+> **这一节是给运维/评审看的"明账"，不是免责声明。**
+
+- OpenSearch 用 **majority quorum** 选举：可参与选举的节点数为 `N` 时，需要 **`⌊N/2⌋+1`** 票。
   - **N=1**：1 票即可（单节点 `discovery.type: single-node` 直接选自己）；
   - **N=2**：**quorum = 2 ⇒ 需要 2 票** ⇒ **挂掉任意一台就失去 master**；
   - **N=3**：quorum = 2 ⇒ 挂掉一台仍能选举，这才是真 HA。
-- **N=2 挂一台的实际后果**：副本 = 1 时**数据不丢**（另一台上有一份完整副本），但**集群不可写、也不可读**（没有 master 就没有集群状态：
-  分片分配、索引元数据、写入全部停摆）——**服务不可用，直到它回来**。这等于"用两倍的机器拿到单节点的可用性"。
-- **N=2 还多出来的复杂度**：`discovery.seed_hosts` + `cluster.initial_master_nodes` 必须两机一致且**只能写一次**（写错要清 `data/` 重来）、
-  两机的 `node.name` / `container_name` 不能撞、滚动重启**必须一台一台来**（同时重启 = 双双失去 quorum）、升级窗口翻倍。
+- **N=2 挂一台的实际后果**：副本 = 1 时**数据不丢**，但**集群不可写、也读不了集群状态**（分片分配、索引元数据、
+  写入全部停摆）——**服务不可用，直到它回来**。这等于"用两倍的机器拿到单节点的可用性"。
+- **N=2 还多出来的复杂度**：`discovery.seed_hosts` + `cluster.initial_master_nodes` 必须两机一致且**只能写一次**
+  （写错要清 `data/` 重来）、两台配置不能撞、重启**必须一台一台来**（同时重启 = 双双失去 quorum）、升级窗口翻倍。
 - **真正 HA 的升级路径**（附录 A）：加**第 3 台**（可用轻量机做 **dedicated cluster-manager**，不存数据）→
-  届时只需改**两个参数**：`discovery.seed_hosts` 变 3 个地址、`cluster.initial_master_nodes` 变 3 个节点名；
-  数据节点 `node.roles` 收敛为 `[data, ingest]`，第 3 台为 `[cluster_manager]`。
+  届时只需改**两个参数**：`discovery.seed_hosts` 与 `cluster.initial_master_nodes`（3 个节点名/IP），副本从 0 改成 1。
 
 ### 0.4 单节点的代价（必须接受的明账）
 
 | 风险 | 后果 | 本方案的补偿措施 |
 | --- | --- | --- |
-| **单点故障** | OpenSearch 挂 → kNN 检索不可用（**AI 问答的检索环节受影响**） | ① **快照/备份从此是强制项**（§7.2，不是可选）；② **必须定清楚 AI 侧怎么降级**（§6.3：**明确报错或降质提示，不许静默返回无关结果**）；③ `restart: unless-stopped` + 开机自启 |
-| 无副本 | 数据盘损坏即丢索引 | 每晚快照 + `rsync` 到 `.111`（§6.4），**RTO 分钟级**（演练步骤见 §6.4） |
-| 无滚动升级 | 升级要停机 | 停机窗口内升级（分钟级，详见 §7.4）；索引可重建，不阻塞业务写入 |
+| **单点故障** | OpenSearch 挂 → kNN 检索不可用（**AI 问答的检索环节受影响**） | ① **快照/备份是强制项**（[`snapshot-backup.sh`](../deploy/opensearch/snapshot-backup.sh) + cron，§7.2）；② **AI 侧降级口径定死**（§6.3：**明确报错，不许静默返回无关结果**）；③ systemd `Restart=on-failure` + `enable`（开机自启） |
+| 无副本 | 数据盘损坏即丢索引 | 每晚快照 + `rsync` 到 `.111`（§7.2 / §6.4），**RTO 分钟级** |
+| 无滚动升级 | 升级要停机（分钟级） | 升级步骤见 §7.3（停服 → 解包新版本 → 复制 `config/` → 启动；旧目录保留即回滚） |
 
 > **重要边界**：OpenSearch 里存的是**可重建物**（切片文本 + 向量 + 索引），与既有运维口径一致——
-> **业务数据仍在主系统崖山库**（`backend/src/main/resources/db/migration-yashan`，V1~V14，16 张表）。
-> 索引即使全丢，也能从主系统附件重新解析重建（代价是时间，见 §6.2）。
+> **业务数据仍在主系统崖山库**（V1~V14，16 张表）。索引即使全丢，也能从主系统附件重新解析重建（代价是时间，见 §6.2）。
 
 ### 0.5 两台新机器与既有服务器的关系（别搞混）
 
 | 机器 | 角色 | 说明 |
 | --- | --- | --- |
-| `10.254.212.110` | **OpenSearch 单节点（推荐）** | 本文 §1~§7 的主体 |
-| `10.254.212.111` | **冷备 + 演练机** | 同一套编排，默认停着；存快照副本（§6.4） |
+| `10.254.212.110` | **OpenSearch 单节点（推荐）** | 本文 §1~§7 的主体（x86_64） |
+| `10.254.212.111` | **冷备 + 演练机** | 同样的安装与 unit，服务默认停着；存快照副本（§6.4） |
 | 既有 `pdmsappgh` / `ai-kingbase-gh` | 主系统 / AI 能力服务 | **不在这两台新机器上**；本文只改它们的 `.env`（§6.1） |
 | `10.254.208.35:8090` | 平台网关（对话/OCR/向量化/重排） | 与本文无关，仅在重建索引时要它可用 |
 
-> ⚠️ 上面 `.110`/`.111` 的角色、以及"AI 服务跑在哪台上"是**本轮按任务给定信息写定的**，实际拓扑需你确认（§8 第 1、2 条）。
-
 ---
 
-## 1. 出镜像（开发机，Windows + Docker Desktop，**有外网**）
+## 1. 获取安装包（在**一台有外网**的机器上）
 
-> **服务器无外网 ⇒ 只 `docker load`，绝不 `--build` / `docker pull`。**
-> OpenSearch 官方镜像是**多架构镜像（含 `linux/arm64`）**，所以本机**不需要** `tonistiigi/binfmt` 模拟，也不需要 buildx——一条 `docker pull --platform` 即可。
-> 与主系统镜像包的差别：主系统是 `buildx build` 出来的，本包是**上游镜像直接 save**。
+> **服务器无外网** ⇒ 安装包只能先在别处下载、校验、再 scp 过去。
+> 官方包 URL 形式（官方 Tar 页原文）：`https://artifacts.opensearch.org/releases/bundle/opensearch/<版本>/opensearch-<版本>-linux-x64.tar.gz`
 
-### 第 1 步 · 确认镜像仓库里有这个 tag、且**含 arm64**（必须做，别跳）
+### 1.1 固定版本（本文示例 pin **2.19.1**，x86_64）
 
-```powershell
-# 开发机（Windows PowerShell / pwsh 均可）
-docker manifest inspect opensearchproject/opensearch:2.19.1
-```
-
-| 预期 | 处理 |
+| 项 | 值 |
 | --- | --- |
-| 输出 JSON 里 `manifests[].platform.architecture` 同时含 **`amd64`** 与 **`arm64`** | 通过，进第 2 步 |
-| 报 `no such manifest` / `manifest unknown` | 该 tag 不存在 → 换一个 2.x 稳定 tag 重试；**以镜像仓库实际可用为准** |
-| 只看到 `amd64` | **不要用这个 tag**：换 tag，或改用 `--platform` 拉取后确认（见第 2 步注） |
-| 报网络/超时错误 | 开发机没连上 registry（配镜像加速或换网络），**不要**把半截结果当成"没 arm64" |
+| 文件名 | `opensearch-2.19.1-linux-x64.tar.gz` |
+| 体积 | **≈ 920 MiB**（964,414,604 字节，本轮实测 HTTP HEAD） |
+| 校验和文件 | `opensearch-2.19.1-linux-x64.tar.gz.sha512`（**165 字节文本**，内容格式：`<128位sha512>  <文件名>`） |
+| 本轮实测的 SHA512 | `72af27eaab94f0dad092d5a97bfda0baeb995a390cdfb94ce076424216032f0d7c5081001997b95a0954bee15a44b824e8b7ecd2066b920ac6cbb313b7be24de` |
 
-> **镜像名的两种取法（先确认架构再决定拉哪个）**：
-> - 服务器是 **aarch64（银河麒麟，最可能）** → 用 `--platform linux/arm64`；
-> - 服务器是 **x86_64** → 用 `--platform linux/amd64`。
-> 第 2 步第 0 条就是让你**先在服务器上 `uname -m` 确认**，不要凭猜测拉。
->
-> 本文统一用 **`2.19.1`** 作为示例 tag（固定版本，不用 `latest`：离线环境里"这次部署的是哪个版本"必须可追溯）。
-> **`2.19.1` 只是示例，不是"已确认可用"**：本条未能联网核实该 tag 的 arm64 清单（见 §8 第 3 条），**以第 1 步的实际输出为准**。
+> ⚠️ **版本以官方下载页当前可用为准**：`2.19.1` 是本轮实际验证过 URL 与校验和可用的版本，不是"永远最新"。
+> 换版本时**只需改两个地方**（见 §1.5 的清单，别到处找）。**校验不通过绝不安装**。
 
-### 第 2 步 · 在服务器上确认架构（两台都要，先做再拉）
+### 1.2 下载（二选一，取决于你手上是什么机器）
 
-```bash
-uname -m
-# 期望：aarch64（银河麒麟）或 x86_64
-```
-
-### 第 3 步 · 拉取并导出（开发机，仓库根）
-
+**有外网的 Windows 机器（开发机）**
 ```powershell
-# 开发机（仓库根执行）；OS_VER 换成第 1 步确认过的 tag
-$OS_VER   = '2.19.1'
-$Platform = 'linux/arm64'          # 服务器 uname -m = aarch64 用这个；x86_64 改 'linux/amd64'
-$Arch     = 'arm64'                # 与上面一致：arm64 / amd64
-
-docker pull --platform $Platform "opensearchproject/opensearch:$OS_VER"
-
-# 校验"拉到的确实是目标架构"（不能只看 pull 成功）
-docker image inspect "opensearchproject/opensearch:$OS_VER" --format '{{.Architecture}} {{.Os}}'
-# 期望：arm64 linux（或 amd64 linux）
-
-# 导出成 tar（产物落在仓库根的 dist\opensearch\，与 dist\ 同级的 gitignore 约定一致）
+$VER = '2.19.1'
+$URL = 'https://artifacts.opensearch.org/releases/bundle/opensearch'
 New-Item -ItemType Directory -Path dist\opensearch -Force | Out-Null
-$tar = "dist\opensearch\opensearch-$OS_VER-linux-$Arch.tar"
-docker save -o $tar "opensearchproject/opensearch:$OS_VER"
 
-# 体积与校验和（Windows 原生；服务器侧对应 sha256sum）
-Get-Item $tar | ForEach-Object { "{0:N1} MB  {1}" -f ($_.Length / 1MB), $_.Name }
-Get-FileHash $tar -Algorithm SHA256 | Format-List Algorithm, Hash, Path
+# ① 下载 tar.gz 与官方 .sha512（两行都要执行）
+curl.exe -fL --retry 3 -o "dist\opensearch\opensearch-$VER-linux-x64.tar.gz"        "$URL/$VER/opensearch-$VER-linux-x64.tar.gz"
+curl.exe -fL --retry 3 -o "dist\opensearch\opensearch-$VER-linux-x64.tar.gz.sha512" "$URL/$VER/opensearch-$VER-linux-x64.tar.gz.sha512"
+
+# ② 看官方校验文件长什么样（应输出：<128 位 sha512>  opensearch-<VER>-linux-x64.tar.gz）
+Get-Content "dist\opensearch\opensearch-$VER-linux-x64.tar.gz.sha512"
+
+# ③ 自己算一遍并比对（Windows 原生，不需要 Git Bash / sha512sum）
+$expected = ((Get-Content "dist\opensearch\opensearch-$VER-linux-x64.tar.gz.sha512" -Raw) -split '\s+')[0].ToLower()
+$actual   = (Get-FileHash "dist\opensearch\opensearch-$VER-linux-x64.tar.gz" -Algorithm SHA512).Hash.ToLower()
+if ($expected -eq $actual) { "校验通过 ✅" } else { "校验不通过 ❌ 不要上传" }
 ```
 
-| 项 | 期望（**估算，假设：上游镜像约 1.1GB**，未实测） |
-| --- | --- |
-| tar 体积 | **1.0~1.3 GB**（未压缩；比主系统的 ~150MB 大一个量级，**scp 前先想好带宽**） |
-| 校验和 | `Get-FileHash` 打印的 64 位 SHA256；**记下来**，第 5 步服务器侧要比对 |
+**有外网的 Linux 机器**
+```bash
+VER=2.19.1
+URL=https://artifacts.opensearch.org/releases/bundle/opensearch
+mkdir -p dist/opensearch && cd dist/opensearch
 
-> **压缩（可选）**：Windows 无 `gzip.exe`，用 .NET GZipStream（与手册 §2.3 同一手法）：
-> ```powershell
-> $gz = "$tar.gz"
-> $in = [System.IO.File]::OpenRead((Resolve-Path $tar))
-> try { $out = [System.IO.File]::Create($gz)
->   try { $z = [System.IO.Compression.GZipStream]::new($out, [System.IO.Compression.CompressionMode]::Compress)
->     try { $in.CopyTo($z) } finally { $z.Dispose() } } finally { $out.Dispose() } } finally { $in.Dispose() }
-> Get-Item $gz | ForEach-Object { "{0:N1} MB  {1}" -f ($_.Length / 1MB), $_.Name }
-> ```
-> 服务器侧解压：`gunzip -c opensearch-2.19.1-linux-arm64.tar.gz > opensearch-2.19.1-linux-arm64.tar`（或直接 `docker load -i xxx.tar.gz`，`docker load` 认 gzip）。
+curl -fL --retry 3 -O "$URL/$VER/opensearch-$VER-linux-x64.tar.gz"
+curl -fL --retry 3 -O "$URL/$VER/opensearch-$VER-linux-x64.tar.gz.sha512"
 
-### 第 4 步 · 传到两台机器（开发机）
+# 官方给的 .sha512 就是 sha512sum -c 能直接吃的格式
+sha512sum -c "opensearch-$VER-linux-x64.tar.gz.sha512"
+# 期望：opensearch-2.19.1-linux-x64.tar.gz: OK
+```
+
+### 1.3 传到两台机器
 
 ```bash
-# 开发机在【仓库根】执行（dist 的上一层）；用户与既有服务器一致：lhim
-scp dist/opensearch/opensearch-2.19.1-linux-arm64.tar  lhim@10.254.212.110:/home/lhim/os/
-scp dist/opensearch/opensearch-2.19.1-linux-arm64.tar  lhim@10.254.212.111:/home/lhim/os/
+# 在【有外网那台机器】的 dist/opensearch 目录下执行（用户与既有服务器一致：lhim）
+scp opensearch-2.19.1-linux-x64.tar.gz opensearch-2.19.1-linux-x64.tar.gz.sha512 lhim@10.254.212.110:/tmp/
+scp opensearch-2.19.1-linux-x64.tar.gz opensearch-2.19.1-linux-x64.tar.gz.sha512 lhim@10.254.212.111:/tmp/
 ```
 
-### 第 5 步 · 服务器侧校验 + 装载（两台都做；装载由 §4 的 `os.sh load` 完成）
+### 1.4 服务器侧再核一次校验（**两台都做**）
 
 ```bash
-# 服务器执行（两台）
-sha256sum /home/lhim/os/opensearch-2.19.1-linux-arm64.tar
-# 期望：与开发机第 3 步的 SHA256 逐位一致；不一致 = 传输损坏，重传（不要"先 load 看看"）
+# 服务器执行
+cd /tmp
+sha512sum -c opensearch-2.19.1-linux-x64.tar.gz.sha512
+# 期望：opensearch-2.19.1-linux-x64.tar.gz: OK
+# 不一致 = 传输损坏 → 重传（不要"先解开看看"）
+```
+```bash
+# 顺手确认架构（应输出 x86_64；若输出 aarch64 说明你拿的是 ARM 机器，安装包要换 arm64 版）
+uname -m
 ```
 
-> **为什么校验和是硬要求**：`docker load` 对**截断的 tar** 有时会报错、有时会装进一个损坏的镜像层，
-> 后者起容器才炸，排查成本高得多。先比校验和，比出问题就重传。
+### 1.5 换版本时要同步改的地方（**就这两处，别到处找**）
 
-**本节说明（要"为什么"再看）**
+| 序号 | 位置 | 改什么 |
+| --- | --- | --- |
+| 1 | `docs/OpenSearch部署与接入.md`（本文件） | §1.1 表格里的版本号、文件名、体积、SHA512（**从官方 `.sha512` 文件里抄**） |
+| 2 | `deploy/opensearch/` 的使用命令 | 所有 `opensearch-<版本>-linux-x64.tar.gz` 路径（§3.1 的解包命令） |
 
-- **不需要 `tonistiigi/binfmt`**：那是为"在 x86 上 build arm64 镜像"准备的（手册 §1.1 ②）；直接 `pull --platform` 上游多架构镜像不需要模拟。
-- **为什么固定版本**：离线环境没有"自动升级"，`latest` 会让两台机器在某次重拉后悄悄变成不同版本。`OS_IMAGE_TAG`（§3.2）就是版本开关。
-- **`docker save` 出来的 tar 与 `docker load` 的关系**：`load` 只恢复镜像与 tag，**不含**数据卷、不含 `.env`，所以服务器侧的数据与配置永远是"本机资产"。
+> 版本号**不写进任何配置文件**（`opensearch.yml` / systemd unit 里都没有版本号），所以不存在第三处。
+> 服务器上"当前是哪个版本"用 `cat /home/lhim/os/opensearch/VERSION` 或看目录名即可查。
+
+**本节说明**：为什么坚持 pin 一个具体版本 + 校验和？离线环境没有"自动升级"，也**没有第二份副本可对比**；
+tar 包一旦传坏，症状是解包/启动期的各种奇怪失败，排查成本远高于先花 10 秒做一次校验。
 
 ---
 
-## 2. 服务器准备（**两台都要做一遍**）
+## 2. 宿主准备（**两台都要做一遍**）
 
-> 登录：`ssh lhim@10.254.212.110` / `ssh lhim@10.254.212.111`。
-> 下面**每一段都可独立复制执行**；执行完请对照"预期"确认，不要一口气全贴。
+> 登录：`ssh lhim@10.254.212.110` / `ssh lhim@10.254.212.111`。下面每段都可独立复制执行。
 
-### 2.1 内核参数 `vm.max_map_count`（**最关键的一步，漏了必失败**）
+### 2.1 内核参数 `vm.max_map_count`（**最关键，漏了必失败**）
 
-OpenSearch 底层的 Lucene 用 `mmap` 打开索引文件，默认 `65530` 不够（会报 `max virtual memory areas vm.max_map_count [65530] is too low`）。
+官方 Tar 页 Step 2 要求这一项：OpenSearch 底层的 Lucene 用 `mmap` 打开索引文件，
+默认 `65530` 不够（会报 `max virtual memory areas vm.max_map_count [65530] is too low`）。
 
 ```bash
 # ① 立即生效
 sudo sysctl -w vm.max_map_count=262144
 
-# ② 持久化（重启后仍生效）——写成独立文件，别去改 /etc/sysctl.conf 里别人的行
+# ② 持久化（官方示例是改 /etc/sysctl.conf；这里写成独立文件，避免和别人的行冲突）
 echo 'vm.max_map_count=262144' | sudo tee /etc/sysctl.d/99-opensearch.conf
 
-# ③ 立即读回校验
+# ③ 读回校验（含官方给的那条）
 sysctl vm.max_map_count
-# 期望：vm.max_map_count = 262144
+cat /proc/sys/vm/max_map_count
+# 两者都期望：262144
 ```
-
 ```bash
 # ④ 重启后校验（★必须做一次：不重启不算验证过持久化）
 sudo reboot
 # —— 重新登录后 ——
-sysctl vm.max_map_count      # 期望：vm.max_map_count = 262144
+cat /proc/sys/vm/max_map_count      # 期望 262144
 ```
 
-### 2.2 文件描述符 `ulimit -n`
+### 2.2 文件描述符与内存锁定上限
 
 ```bash
 # ① 当前 shell 的值
 ulimit -n
-# 期望：≥ 65536（官方镜像内已设好 65536；这里管的是【宿主 shell】与手工排查场景）
-
-# ② 持久化到 lhim 用户（重登生效）
+# 期望：≥ 65536（OpenSearch 要求"至少 65536"；systemd unit 里也设了 LimitNOFILE=65536）
+```
+```bash
+# ② 给 lhim 与 opensearch 两个用户持久化（opensearch 用户在第 3 步创建，这里先写好）
 sudo tee /etc/security/limits.d/99-opensearch.conf >/dev/null <<'EOF'
-lhim  soft  nofile  65536
-lhim  hard  nofile  65536
+lhim        soft  nofile  65536
+lhim        hard  nofile  65536
+opensearch  soft  nofile  65536
+opensearch  hard  nofile  65536
+# 内存锁定（bootstrap.memory_lock 需要）：systemd unit 里已设 LimitMEMLOCK=infinity，
+# 这里再给登录 shell 留一份，便于手工调试
+opensearch  soft  memlock unlimited
+opensearch  hard  memlock unlimited
 EOF
 
-# ③ 重新登录后校验
-ulimit -n                    # 期望：65536
+# ③ 重登后校验
+ulimit -n            # 65536（对 lhim）
 ```
 
-> 容器内的 `ulimits` 由 §3 的 compose 显式设置（`nofile: 65536`），**与宿主的 limits 是两件事**，但两边都要对。
-
-### 2.3 关闭 swap / 锁定内存（内存锁定由 `bootstrap.memory_lock` 完成）
+### 2.3 swap 处理与内存锁定
 
 ```bash
 # ① 看现状
 free -h                      # 关注 Swap 行
 swapon --show                # 有输出 = 正在用 swap
 ```
-
-| 你的选择 | 命令 | 说明 |
-| --- | --- | --- |
-| **二选一：彻底关 swap（推荐）** | `sudo swapoff -a` 并注释掉 `/etc/fstab` 里的 swap 行 | 最干净；重启后 `swapon --show` 应无输出 |
-| 二选一：保留 swap + 内存锁定 | 什么都不做，靠 §3 的 `bootstrap.memory_lock: true` | 需要容器有 `memlock` 权限（compose 里已给：`ulimits.memlock: -1`） |
-
 ```bash
-# ② 起来之后验证"内存锁定真的生效"（§4 启动完再做）
-curl -s -u "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" 'http://127.0.0.1:9200/_nodes?filter_path=nodes.*.process.mlockall'
-# 期望：每个节点 mlockall: true
+# ② 关掉 swap（官方 Tar 页 Step 2 的第一条命令就是它）
+sudo swapoff -a
+# 重启后仍生效：注释掉 /etc/fstab 里的 swap 行
+sudo cp /etc/fstab /etc/fstab.bak.$(date +%F)
+sudo sed -i.bak '/[[:space:]]swap[[:space:]]/s/^/#/' /etc/fstab
+```
+```bash
+# ③ 启动后验证"内存锁定真的生效"（§4 起来再做）
+curl -sS -u admin:'<强口令>' 'http://127.0.0.1:9200/_nodes?filter_path=nodes.*.process.mlockall'
+# 期望：{"nodes":{"<node-id>":{"process":{"mlockall":true}}}}
 ```
 
-### 2.4 数据盘挂载点与权限
+> **为什么同时要 `LimitMEMLOCK=infinity`**：官方 configuring-opensearch 文档明确——用 systemd 托管时，
+> 除了 `bootstrap.memory_lock: true`，还要在 unit 里放开 memlock，否则 JVM 无法锁定内存、启动即报错。
+> 本方案的 [`opensearch.service`](../deploy/opensearch/opensearch.service) 已经设好这一项。
+
+### 2.4 磁盘、目录规划与专用用户（属主很关键）
 
 ```bash
 # ① 看清磁盘：容量、挂载点、文件系统类型
@@ -257,326 +264,296 @@ df -hT | grep -E 'Filesystem|/home|/data'
 lsblk -f
 # 期望：/home（或你规划的数据盘）容量 ≥ 200GB（本次给定），文件系统 xfs 或 ext4
 
-# ② 写测试（★权限问题不要靠"应该能写"猜，实测一次）
+# ② 写测试（权限问题不要靠"应该能写"猜）
 sudo -u lhim sh -c 'dd if=/dev/zero of=/home/lhim/os/.wtest bs=1M count=64 oflag=direct && rm -f /home/lhim/os/.wtest'
 # 期望：64+0 records out … copied 67108864 bytes（无报错）
 ```
-
 ```bash
-# ③ 目录规划（一次建全；与 §3 编排、§4 输出、§6.4 快照路径逐字对应）
-mkdir -p /home/lhim/os/data /home/lhim/os/backup
+# ③ 目录规划（一次建全；与 opensearch.yml、unit、快照脚本逐字对应）
+mkdir -p /home/lhim/os/data /home/lhim/os/logs /home/lhim/os/backup /home/lhim/os/backup/fs-repo
 ```
-
 ```bash
-# ④ 权限：OpenSearch 容器内以 uid=1000 gid=1000 运行，宿主目录必须能写
-sudo chown -R 1000:1000 /home/lhim/os/data /home/lhim/os/backup
-sudo chmod 750 /home/lhim/os/data /home/lhim/os/backup
+# ④ 专用非 root 用户（官方 Tar 页 systemd 一节的原文命令；OpenSearch 拒绝以 root 启动）
+sudo adduser --system --shell /bin/bash -U --no-create-home opensearch
+id opensearch        # 期望能看到 uid/gid
+
+# ⑤ 让 lhim 也属于 opensearch 组（官方步骤：sudo usermod -aG opensearch $USER）
+sudo usermod -aG opensearch lhim
+#   执行后【退出 SSH 重新登录】再复核： groups | grep opensearch
+```
+```bash
+# ⑥ 属主与权限
+sudo chown -R opensearch:opensearch /home/lhim/os/data /home/lhim/os/logs /home/lhim/os/backup
+sudo chmod 750 /home/lhim/os/data /home/lhim/os/logs /home/lhim/os/backup
 sudo chmod 750 /home/lhim/os
 
-# ⑤ 复核（两个目录都应显示 1000:1000 与 drwxr-x---）
-ls -ld /home/lhim/os /home/lhim/os/data /home/lhim/os/backup
+# ⑦ 复核（三个目录都应显示 opensearch opensearch 与 drwxr-x---）
+ls -ld /home/lhim/os /home/lhim/os/data /home/lhim/os/logs /home/lhim/os/backup /home/lhim/os/backup/fs-repo
 ```
 
-| 目录（宿主） | 容器内路径 | 用途 | 属主 |
-| --- | --- | --- | --- |
-| `/home/lhim/os/data` | `/usr/share/opensearch/data` | 索引数据（**唯一有状态目录**） | `1000:1000`，`750` |
-| `/home/lhim/os/backup` | `/usr/share/opensearch/backup` | 快照仓库（`path.repo`） | `1000:1000`，`750` |
-| `/home/lhim/os/.env` | 注入容器 env | 配置（**含口令，`chmod 600`**） | `lhim` |
-| `/home/lhim/os/docker-compose.yml` | —— | 编排 | `lhim` |
-| `/home/lhim/os/os.sh` | —— | 唯一入口 | `lhim` |
+| 目录（宿主） | 用途 | 属主/权限 |
+| --- | --- | --- |
+| `/home/lhim/os/opensearch` | **安装目录**（tar 解包出来的那份，升级时整目录替换） | `opensearch:opensearch`（`chown -R`） |
+| `/home/lhim/os/data` | 索引数据（**唯一有状态目录**） | `opensearch:opensearch`，`750` |
+| `/home/lhim/os/logs` | 日志（`path.logs`；**在安装目录之外**，升级不丢日志） | `opensearch:opensearch`，`750` |
+| `/home/lhim/os/backup/fs-repo` | 快照仓库（`path.repo` 之下） | `opensearch:opensearch`，`750` |
+| `/home/lhim/os/snapshot-backup.sh` | 每晚快照脚本 | `lhim` |
 
 ### 2.5 防火墙（**9200 绝不对外**）
 
 | 端口 | 放行来源 | 用途 |
 | --- | --- | --- |
-| `9200/tcp` | 两台 AI/应用服务器 + 另一台 OS 节点（`10.254.212.111`）——**仅此** | REST（kNN 检索、`_bulk`、快照管理） |
-| `9300/tcp` | 仅集群内节点（本方案单节点=不需要；**附录 A 三节点时需要**） | 节点间传输 |
-| `9600/tcp` | **不放行**（仅本机回环排查用） | 性能分析器 |
+| `9200/tcp` | **两台应用服务器 / AI 所在机器**（仅此） | REST（kNN 检索、`_bulk`、快照管理） |
+| `9300/tcp` | 本方案**单节点：不需要对外**（将来 3 节点才在两两之间放行） | 节点间 transport |
+| `9600/tcp` | **不放行** | Performance Analyzer |
 
 ```bash
-# ① 先看用的是哪个防火墙（麒麟常见 firewalld 或 iptables；本机实际用哪个未确认，见 §8）
+# ① 先看用的哪个防火墙（麒麟常见 firewalld 或 iptables；本机实际用哪个未确认，见 §8）
 systemctl is-active firewalld 2>/dev/null || true
 systemctl is-active iptables  2>/dev/null || true
-sudo firewall-cmd --state     2>/dev/null || true
 ```
-
 ```bash
-# ② firewalld 版（稳妥做法：把 9200 只放进受信来源的富规则，不做全局开放）
-sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.254.212.111" port port="9200" protocol="tcp" accept'
-sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="10.254.208.0/24" port port="9200" protocol="tcp" accept'
-#   ↑ 上面这条 /24 只是示例占位：把 <两台 AI/应用服务器内网IP> 逐个替换成明确地址再执行，不要留网段
+# ② firewalld 版（把 9200 只放进受信来源的富规则，不做全局开放）
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<应用服务器IP>" port port="9200" protocol="tcp" accept'
+#   ↑ 把 <…> 逐个替换成明确地址（不要留网段、绝不要写 0.0.0.0/0）
 sudo firewall-cmd --reload
 sudo firewall-cmd --list-rich-rules
 ```
-
 ```bash
 # ③ iptables 版（仅当机器上确实没有 firewalld）
-sudo iptables -I INPUT -p tcp -s 10.254.212.111 -m tcp --dport 9200 -j ACCEPT
 sudo iptables -I INPUT -p tcp -s <应用服务器IP> -m tcp --dport 9200 -j ACCEPT
 sudo iptables -A INPUT -p tcp --dport 9200 -j DROP
-#   然后持久化（麒麟上一般是 iptables-services 或 firewalld；按平台方口径做）
+#   持久化按平台方口径（iptables-services / firewalld）
 ```
-
 ```bash
-# ④ 自检：从【不该通】的地方验证它真的不通
-#   在第三台机器（或任意不在白名单的机器）上执行：
+# ④ 自检：从【不该通】的机器验证它真的不通
 curl -m 3 -sS -o /dev/null -w '%{http_code}\n' http://10.254.212.110:9200/ ; echo "exit=$?"
 # 期望：超时（exit=28）或 connection refused ——【绝不能】是 200 或 401
 ```
 
-> ⚠️ **认证 ≠ 防火墙**：内网 HTTP + basic auth 意味着"口令一旦泄漏就能直连"。
-> 所以**必须**两者同时做——防火墙收紧来源，认证挡住可达者。这条是 §3.5 选型的补偿措施，不是可选项。
+> ⚠️ **认证 ≠ 防火墙**：内网 HTTP + basic auth 意味着"口令一旦泄漏就能直连"（明文过网）。
+> 所以**必须**两者同时做——防火墙收紧来源，认证挡住可达者。这是 §3.5 选型的补偿措施，不是可选项。
 
 ### 2.6 时间同步
 
 ```bash
-# ① 看时间同步状态
+# ① 看同步状态
 timedatectl                 # 期望：System clock synchronized: yes
-timedatectl show-timesync --all 2>/dev/null | head -20 || true
 chronyc sources -v 2>/dev/null || ntpq -p 2>/dev/null || true
 
 # ② 确保服务在跑（内网时间源地址需平台方给，见 §8）
 sudo systemctl enable --now chronyd 2>/dev/null || sudo systemctl enable --now ntpd 2>/dev/null || true
 
-# ③ 时区（政务系统日期敏感，与主系统容器 TZ=Asia/Shanghai 对齐）
+# ③ 时区（政务系统日期敏感，与主系统 TZ=Asia/Shanghai 对齐）
 sudo timedatectl set-timezone Asia/Shanghai
 date
 ```
 
-> **为什么时间同步是部署前提**：OpenSearch 的时间戳、快照元数据、证书有效期（若走 TLS）、
-> 以及跨机日志比对都依赖准确时间；两台机器时钟漂移会让排障时的证据互相矛盾。
-
 ### 2.7 本节完成自检
 
 ```bash
-sysctl vm.max_map_count            # 262144
+cat /proc/sys/vm/max_map_count     # 262144
 ulimit -n                          # ≥65536（重登后 65536）
-ls -ld /home/lhim/os/data          # 1000:1000, drwxr-x---
-uname -m                           # aarch64 或 x86_64（决定 §1 拉哪个平台）
+id opensearch                      # 用户存在
+ls -ld /home/lhim/os/data          # opensearch opensearch, drwxr-x---
+uname -m                           # x86_64
 timedatectl | head -3              # synchronized: yes
 ```
 
 ---
 
-## 3. 编排与 `.env`
+## 3. 安装（**两台都做一遍**）
 
-> **两个文件必须放在同一个目录**（`/home/lhim/os/`），因为 compose v2 只读**与 compose 同目录**的 `.env`。
-> 发布方式：把 [`deploy/opensearch/`](../deploy/opensearch/) 下的三个文件 `docker-compose.yml` / `.env.example` / `os.sh`
-> 用 `scp -r deploy/opensearch/* lhim@10.254.212.110:/home/lhim/os/` 铺过去（`.env.example` 不填，现场 `cp` 成 `.env`）。
+> 全程**用非 root 的 `opensearch` 用户执行解包与启动**（官方明确 OpenSearch 不能以 root 运行）。
+> 安装目录统一 `/home/lhim/os/opensearch`。
 
-### 3.1 `docker-compose.yml`（**单节点版，逐字复制**）
-
-```yaml
-# ============================================================
-# OpenSearch 单节点【服务器专用】编排（离线部署：只 load，不 build）
-#
-# 为什么没有 build: 段 —— 服务器无外网，镜像只能由开发机 docker save 后 scp 过来 docker load。
-# pull_policy: never   —— 本机没有镜像时立刻报错，绝不联网拉取、也绝不误触发构建。
-# 工程名 = 目录名      —— 本文件放在 /home/lhim/os/ 下 ⇒ compose 工程名 os（脚本不传 -p）。
-# .env 必须与本文件同目录（compose v2 只读同目录的 .env）。
-#
-# 启动： cd /home/lhim/os && bash os.sh start     （或手工 docker compose up -d）
-# 说明： 单节点（discovery.type: single-node）不写 cluster.initial_master_nodes / discovery.seed_hosts；
-#        需要 2/3 节点集群时看文档《OpenSearch部署与接入.md》附录 A。
-# 安全： 默认内网 HTTP + basic auth（强口令）；TLS 为可选，见文档 §3.5。
-# ============================================================
-services:
-  opensearch:
-    image: opensearchproject/opensearch:${OS_IMAGE_TAG:-2.19.1}
-    pull_policy: never
-    container_name: pm-opensearch
-    restart: unless-stopped
-    environment:
-      # ── 集群与节点（单节点模式：不配 seed_hosts / initial_master_nodes）──
-      cluster.name: pm-os
-      node.name: os01
-      discovery.type: single-node
-      # ── 内存：16GB 物理内存的 50%，两个值必须相等；上限 31g ──
-      #    剩下 8GB 留给文件系统 cache（Lucene 靠它读索引文件，全给堆反而更慢）
-      OPENSEARCH_JAVA_OPTS: "-Xms8g -Xmx8g"
-      # 锁定内存：禁止堆被换出（配合 ulimits.memlock: -1）
-      bootstrap.memory_lock: "true"
-      # ── 路径 ──
-      path.data: /usr/share/opensearch/data
-      path.repo: /usr/share/opensearch/backup
-      # ── 网络：network.host 绑到内网地址（不绑 0.0.0.0）；对外暴露由 ports 的 OPENSEARCH_BIND_IP 决定 ──
-      network.host: 0.0.0.0
-      http.port: 9200
-      # ── 安全插件：不用 demo 配置（证书/口令由 .env 给）──
-      DISABLE_INSTALL_DEMO_CONFIG: "true"
-      DISABLE_SECURITY_PLUGIN: "false"
-      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_PASSWORD:?必须在 .env 中设置 OPENSEARCH_PASSWORD}
-      TZ: ${TZ:-Asia/Shanghai}
-    ulimits:
-      memlock:
-        soft: -1
-        hard: -1
-      nofile:
-        soft: 65536
-        hard: 65536
-    volumes:
-      - ${OS_DATA_DIR:-/home/lhim/os/data}:/usr/share/opensearch/data
-      - ${OS_BACKUP_DIR:-/home/lhim/os/backup}:/usr/share/opensearch/backup
-    ports:
-      # ★9200 只绑内网（默认只绑回环，最保守）；绝不要写 0.0.0.0
-      - "${OPENSEARCH_BIND_IP:-127.0.0.1}:9200:9200"
-    healthcheck:
-      # 容器内自带 curl；口令从容器 env 读，不写死在文件里
-      test: ["CMD-SHELL", "curl -sS -u \"$$OPENSEARCH_USER:$$OPENSEARCH_PASSWORD\" http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 180s
-    logging:
-      # 限制容器日志体积，防长期运行打满磁盘（无外网服务器尤为重要）
-      driver: json-file
-      options:
-        max-size: "50m"
-        max-file: "5"
-```
-
-### 3.2 `.env.example`（**逐字复制；`cp .env.example .env` 后只改标了「必填」的**）
+### 3.1 解包（官方 Tar 页 Step 1）
 
 ```bash
-# ============================================================
-# OpenSearch 单节点 .env（与 docker-compose.yml 同目录：/home/lhim/os/.env）
-#
-# 为什么单独一个文件：口令不进 compose（compose 会被人复制、被贴进工单），
-# .env 只在本机、权限 600，与主系统 main/.env、ai/.env 同一套做法。
-#
-# 用法： cp .env.example .env && chmod 600 .env && vi .env
-# ============================================================
-
-# ── 镜像（★由 os.sh load 自动改写；手工 load 时自己改）──
-# 必须是本机 docker load 进来的那个 tag，例如 2.19.1
-OS_IMAGE_TAG=2.19.1
-
-# ── 对外绑定与端口 ──
-# ★必填：写【本机内网 IP】（10.254.212.110 或 10.254.212.111），让 9200 只在这张网卡上监听；
-#   默认 127.0.0.1 最保守（只有本机能连）。两者都不写 0.0.0.0。
-OPENSEARCH_BIND_IP=127.0.0.1
-OPENSEARCH_PORT=9200
-
-# ── 安全插件（basic auth）──
-OPENSEARCH_USER=admin
-# ★必填：强口令。复杂度要求（OpenSearch 安全插件校验，不满足则容器启动失败）：
-#   ≥ 8 位，且【大写字母、小写字母、数字、特殊字符】四类都要有；不要用 admin/Password123 这类。
-#   生成示例（服务器上执行）：  openssl rand -base64 24
-OPENSEARCH_PASSWORD=change-me-Strong-Passw0rd!
-
-# ── 索引名（可选）──
-# 只被 os.sh status 用来显示；真正决定检索索引的是【AI 侧】/home/lhim/pm/ai/.env 的
-# OPENSEARCH_INDEX，两边必须写得完全一样（默认 pm-ai-chunks，与代码默认值一致）。
-OPENSEARCH_INDEX=pm-ai-chunks
-
-# ── 宿主目录（compose 的两个卷映射；属主必须 1000:1000，权限 750，见文档 §2.4）──
-OS_DATA_DIR=/home/lhim/os/data
-OS_BACKUP_DIR=/home/lhim/os/backup
-
-# ── 时区（政务系统日期敏感；与主系统容器 TZ=Asia/Shanghai 对齐）──
-TZ=Asia/Shanghai
+# 用 lhim 解包到部署根（解包出来是目录 opensearch-<版本>/，改名成 opensearch）
+cd /home/lhim/os
+tar -xvf /tmp/opensearch-2.19.1-linux-x64.tar.gz
+ls -d opensearch-2.19.1        # 确认解出来的目录名
+mv opensearch-2.19.1 opensearch
+ls /home/lhim/os/opensearch    # 期望看到 bin/ config/ jdk/ lib/ modules/ plugins/ …
 ```
 
-> **`OPENSEARCH_PASSWORD` 的三条硬约束**：① 复杂度四类齐全且 ≥8 位（**不满足会直接启动失败**）；
-> ② 只存在于 `.env`（`chmod 600`）与密码库，**不入仓库、不进工单**；
-> ③ **两台机器若将来组成集群，口令必须完全一致**（否则集群内部认证失败）——本方案单节点，这条只在附录 A 生效。
+### 3.2 跑官方安装脚本（**这一步决定初始管理员口令怎么来的**）
 
-### 3.3 AI 侧要填的四个变量（**与 §6.1 是同一组，这里先登记**）
+官方 Tar 页 Step 3"Option 1: Test your OpenSearch settings with security enabled"里的脚本就是它。
+**它的实际作用（官方原话归纳）**：应用一份"generic configuration"——**定义一些环境变量、应用自签 TLS 证书**，
+并把安全设置写进 `config/opensearch.yml`；**本节点由此获得 demo 安全配置**。
 
-| 变量 | 值 | 说明 |
-| --- | --- | --- |
-| `VEC_BACKEND` | `opensearch` | 切换开关；**集群不可达时显式报错，绝不静默退回 `local`** |
-| `OPENSEARCH_URL` | `http://10.254.212.110:9200` | 从 **AI 容器内**可达的地址；**不要写 127.0.0.1**（在容器里那是它自己） |
-| `OPENSEARCH_INDEX` | `pm-ai-chunks` | 与代码默认值一致（`application.yml:60`） |
-| `OPENSEARCH_USER` / `OPENSEARCH_PASSWORD` | `admin` / 同 §3.2 的强口令 | basic auth |
+官方同时给了两条硬警告，我们照做：
+> "An OpenSearch node configured by the demo security script is **not suitable for a production environment**."
+> 至少要把 demo TLS 证书换成自己的，并**更新内部用户与口令**。
+> 以及：**2.12 起必须先用 `OPENSEARCH_INITIAL_ADMIN_PASSWORD` 指定初始管理员口令**（否则装不上/起不来）。
 
-### 3.4 堆内存取值规则（照这个表取，别拍脑袋）
+```bash
+# ① 安装目录归 opensearch 所有
+sudo chown -R opensearch:opensearch /home/lhim/os/opensearch
 
-| 物理内存 | `-Xms`/`-Xmx`（两值相等） | 留给文件系统 cache |
-| --- | --- | --- |
-| 8 GB | `4g` | 4 GB |
-| **16 GB（本次）** | **`8g`** | **8 GB** |
-| 32 GB | `16g` | 16 GB |
-| ≥64 GB | **`31g`（上限，不要超过）** | 其余 |
+# ② 设初始管理员口令（★必须满足官方要求）
+export OPENSEARCH_INITIAL_ADMIN_PASSWORD='<强口令>'
+#   官方 demo-configuration 页的口令要求（照抄，比"四类字符"更严）：
+#     ① 长度 8~100 字符；
+#     ② 至少各一个【大写字母、小写字母、数字、特殊字符】；
+#     ③ 必须通过 zxcvbn 强度估计并达到 strong 及以上（它衡量熵 ⇒ 常见词、日期、
+#        1234/qwerty 这类序列、以及 3 替 E 这种可预测替换都会拉低评级，即使四类字符齐全也会被拒）；
+#     ④ 不得与用户名 admin 相似。
+#   不满足时官方行为：日志报出未满足的项，OpenSearch 退出。
+#   生成示例： openssl rand -base64 24
 
-> 规则：**取物理内存的 50%，上限 31g**。超过 31g 会失去 JVM 的压缩指针（`UseCompressedOops`），
-> 同样的数据反而需要更多内存。**`-Xms` 与 `-Xmx` 必须相等**：不等会让堆在使用中反复扩张/收缩，产生停顿。
-> 另外：容器**不设 `mem_limit`**，靠 JVM 参数约束；若平台方要求 cgroup 限额，请把 `mem_limit` 设为 `16g` 以上并同步复核（未确认项，见 §8）。
+# ③ 切到安装目录、以 opensearch 用户跑脚本（官方写法：./opensearch-tar-install.sh）
+sudo -u opensearch -H bash -lc "cd /home/lhim/os/opensearch && OPENSEARCH_INITIAL_ADMIN_PASSWORD='$OPENSEARCH_INITIAL_ADMIN_PASSWORD' ./opensearch-tar-install.sh"
+```
 
-### 3.5 安全方案怎么选（TLS 两种选择）
+> **这一步会改 `config/opensearch.yml`**（写入 demo 的 TLS 与安全设置），并且**会在 `config/` 下生成自签证书**
+> （官方 Docker 文档里出现的 `esnode.pem` / `esnode-key.pem` / `root-ca.pem` 就是这套）。
+> 所以**下一步必须紧接着做**——用我们的配置接上它（§3.3）。
 
-| 方案 | 做法 | 优点 | 代价与风险 | 建议 |
-| --- | --- | --- | --- | --- |
-| **A. 内网 HTTP + basic auth（本方案默认）** | 不改安全插件配置，只配强口令 + 防火墙收紧来源 | 落地快、无证书运维；AI 侧只填 `http://` | **口令明文过网**（内网嗅探可截获）；一旦口令泄漏即可直连 | ✅ **推荐**，但**必须**同时满足：9200 只放行两台应用服务器 + 口令强度达标 + 定期轮换 |
-| **B. 自签 TLS（`security` 插件自带证书）** | 生成 CA + 节点证书与 `admin` 客户端证书，配 `plugins.security.ssl.http.enabled=true`、`pemcert_filepath` 等；AI 侧改用 `https://` | 传输加密、可做客户端证书认证 | 证书生成/分发/轮换/过期全要运维；JVM 需信任自签 CA（AI 侧要额外导信任库）；密钥与口令分离管理更麻烦 | 仅当**等保/合规明确要求传输加密**时选 |
+### 3.3 接入我们的配置（`opensearch.yml` + 堆大小）
 
-> - **明确不要用 demo 配置**：官方镜像默认会装一份 demo 证书与 `admin/admin` 口令，那是给本地试用用的。
->   本方案用 `DISABLE_INSTALL_DEMO_CONFIG: "true"` 关掉它，并用 `.env` 注入强口令。
-> - **`DISABLE_INSTALL_DEMO_CONFIG` 的取舍**：设为 `true` 后，**首次启动必须提供 `OPENSEARCH_INITIAL_ADMIN_PASSWORD`**（compose 里已用
->   `${OPENSEARCH_PASSWORD:?...}` 强制必填）——换句话说，**它把"忘了设口令"从"跑起来但弱口令"变成"直接启动失败"**，这是我们要的行为。
->   反之若设为 `false`（用 demo 配置），集群会带 demo 证书与弱口令起来，**不合规**。
-> - **审计日志**：安全插件自带 audit log（写容器内 `/usr/share/opensearch/logs/`），需要留存时把该目录也挂卷（本方案未挂，见 §8）。
+```bash
+# ① 先备份 demo 脚本刚写的那份（出问题能对照）
+sudo -u opensearch cp /home/lhim/os/opensearch/config/opensearch.yml \
+                      /home/lhim/os/opensearch/config/opensearch.yml.demo.bak
+# ② 看一眼 demo 都写了什么（下面替换时要保住 transport 那几行，见资产文件里的说明）
+sudo -u opensearch grep -nE 'plugins\.security|discovery|network\.host|path\.' \
+                      /home/lhim/os/opensearch/config/opensearch.yml || true
+# ③ 确认证书确实生成了（文件名以实际为准）
+sudo -u opensearch ls -l /home/lhim/os/opensearch/config/ | grep -E '\.pem$'
+```
+```bash
+# ④ 放行我们的配置（★把 network.host 改成【本机】内网 IP：.110 与 .111 不同！）
+#    资产来自仓库： deploy/opensearch/opensearch.yml.example
+sudo -u opensearch cp /tmp/opensearch.yml.example /home/lhim/os/opensearch/config/opensearch.yml
+sudo -u opensearch vi /home/lhim/os/opensearch/config/opensearch.yml      # 改 network.host 与 node.name
+#   资产文件里已含：cluster.name / node.name / discovery.type: single-node / network.host /
+#   http.port / path.data / path.logs / path.repo / plugins.security.disabled /
+#   plugins.security.ssl.http.enabled: false（= 内网 HTTP）/ transport 证书三行
+sudo chown opensearch:opensearch /home/lhim/os/opensearch/config/opensearch.yml
+sudo chmod 644 /home/lhim/os/opensearch/config/opensearch.yml
+```
+```bash
+# ⑤ 堆大小（8g = 16GB 内存的 50%）：用官方支持的 jvm.options.d 覆盖目录
+#    资产来自仓库： deploy/opensearch/jvm.options.d/heap.options
+sudo -u opensearch mkdir -p /home/lhim/os/opensearch/config/jvm.options.d
+sudo -u opensearch cp /tmp/heap.options /home/lhim/os/opensearch/config/jvm.options.d/heap.options
+sudo chown opensearch:opensearch /home/lhim/os/opensearch/config/jvm.options.d/heap.options
+sudo chmod 644 /home/lhim/os/opensearch/config/jvm.options.d/heap.options
+
+# ⑥ 核对生效值（应能看到 -Xms8g / -Xmx8g）
+cat /home/lhim/os/opensearch/config/jvm.options.d/heap.options
+```
+```bash
+# ⑦ 把资产与 unit 也都放到部署根，便于以后复查（"部署完就不管"时还能找到原件）
+cp /tmp/opensearch.yml.example /tmp/heap.options /tmp/opensearch.service /tmp/snapshot-backup.sh /home/lhim/os/
+sudo chown lhim:lhim /home/lhim/os/opensearch.yml.example /home/lhim/os/heap.options /home/lhim/os/opensearch.service /home/lhim/os/snapshot-backup.sh
+```
+
+### 3.4 权限收口（**一份都不能漏**）
+
+```bash
+# 安装目录整体归 opensearch（官方步骤：sudo chown -R opensearch /opt/opensearch/）
+sudo chown -R opensearch:opensearch /home/lhim/os/opensearch
+# 关键文件权限：官方文档反复强调 config 下的文件与 keystore
+sudo chmod 644 /home/lhim/os/opensearch/config/opensearch.yml
+sudo chmod 644 /home/lhim/os/opensearch/config/jvm.options.d/heap.options
+sudo chmod 755 /home/lhim/os/opensearch/plugins/opensearch-security/tools/*.sh 2>/dev/null || true
+sudo chmod 600 /home/lhim/os/opensearch/config/opensearch.keystore 2>/dev/null || true
+ls -l /home/lhim/os/opensearch/config/opensearch.yml /home/lhim/os/opensearch/config/opensearch.keystore 2>/dev/null
+```
+
+> **为什么 0644/0755 反复出现**：官方排障里"权限不对"是启动失败的高频原因——
+> `config/opensearch.yml` 必须对 `opensearch` 用户可读；`opensearch.keystore` 必须存在且**只有属主可读**（`600`）；
+> `plugins/opensearch-security/tools/*.sh` 要可执行（否则 `hash.sh` / `securityadmin.sh` 用不了）。详见 §7.5。
+
+### 3.5 安全方案：三选一（**必须显式选**，不能"默认飘着"）
+
+> **为什么必须显式处理**：官方 Tar 页 Step 3 写明——demo 脚本会**应用自签 TLS 证书**；
+> 它给出的验证命令是 `curl -X GET https://localhost:9200 -u 'admin:<password>' --insecure`，
+> 也就是说**默认是 HTTPS**。而我们要的是"内网 HTTP + basic auth"，这**必须显式把 REST 层 TLS 关掉**。
+
+| 方案 | 怎么做（都在 `config/opensearch.yml` 里） | 代价/风险 | 建议 |
+| --- | --- | --- | --- |
+| **A. 内网 HTTP + basic auth（本方案默认）** | `plugins.security.ssl.http.enabled: false`（资产文件里已经写好）；防火墙侧把 9200 只放行应用服务器 | **口令与数据明文过内网**（可被嗅探）；口令泄漏即可直连 | ✅ **推荐**（配合强口令 + §2.5 防火墙来源限制 + 定期轮换） |
+| **B. 保留 TLS（自签证书）** | 把 `plugins.security.ssl.http.enabled` 改成 `true`，并配 `plugins.security.ssl.http.pemcert_filepath` / `...pemkey_filepath` / `...pemtrustedcas_filepath`（证书就是 demo 生成的那套，或按官方 Tar 页 Step 4 用 openssl 自己生成） | AI 侧要改成 `https://` 且**必须信任该 CA**（否则只能关校验 = 形同虚设）；自签证书有 730 天有效期，**到期不换就全线连不上**；证书轮换要重启 | 仅当**等保/合规明确要求传输加密**时选 |
+| **C. 禁用安全插件** | `plugins.security.disabled: true`（然后**必须整集群重启**） | **不推荐**：等于 9200 无鉴权；官方明确警告——"Disabling this plugin can expose your configuration (including passwords) to the public."，且禁用后安全配置索引（`.opendistro_security`）会暴露 | ❌ **不采用** |
+
+> **三条实现细节（方案 A）**：
+> ① `plugins.security.ssl.http.enabled` 是**静态**设置，改完必须 `systemctl restart opensearch`；
+> ② 关掉的**只是 REST 这一层**：transport 层 TLS 仍然开启（资产文件里保留了 `esnode.pem` 三行），
+>    安全插件仍然生效、basic auth 照常要求 `admin` + 强口令；
+> ③ 若把整份 `opensearch.yml` 换成一份**不含 transport 证书行**的干净配置，节点会因缺证书起不来——
+>    这也是资产文件里刻意保留那三行的原因。
+
+> **补充：官方对 tar + systemd 的定位**。官方在同一节写明：tar 的 systemd 示例"only suitable for testing in a
+> non-production environment… You should install OpenSearch with the RPM distribution if you want to run OpenSearch
+> as a systemd-managed service"，并强调 tar 不定义安装路径/用户/权限，**配错了会有意外行为**。
+> 本方案之所以仍选 tar：**新机器不装 Docker、部署完基本不动**；代价是上面这些加固项（专用用户、
+> memlock、nofile、开机自启、Restart 策略、权限收口）**必须逐条落实**，不能省。
 
 ---
 
-## 4. 启动与验收
+## 4. systemd 与验收
 
-### 4.1 启动（每台机器一条命令）
-
-```bash
-cd /home/lhim/os
-cp .env.example .env          # 第一次才做
-vi .env                       # ★必填：OPENSEARCH_BIND_IP=<本机内网IP>、OPENSEARCH_PASSWORD=<强口令>
-chmod 600 .env
-
-# 装载镜像（把 OS_IMAGE_TAG 对齐到包里的版本；已一致则提示"无需修改"）+ 起容器 + 健康检查
-bash os.sh load /home/lhim/os/opensearch-2.19.1-linux-arm64.tar
-```
-
-**预期输出（关键行）**：
-
-```text
-[1/4] 装载镜像：docker load -i /home/lhim/os/opensearch-2.19.1-linux-arm64.tar
-[2/4] 解析版本并把 .env 的 OS_IMAGE_TAG 对齐到 2.19.1
-      OS_IMAGE_TAG: <无> → 2.19.1
-      原 .env 已备份为 /home/lhim/os/.env.bak
-[3/4] docker compose up -d
-[4/4] 健康检查
-[OK] OpenSearch 就绪
-```
-
-> 首次启动**约 30~90 秒**（JVM + 插件加载）；`os.sh load` 内部已做轮询（约 5s × 36 次 ≈ 180s），
-> 失败会打印排查建议，**不会静默通过**。
-
-### 4.2 日常启停（**记住这四条就够**）
+### 4.1 装 unit 并启动
 
 ```bash
-cd /home/lhim/os
-bash os.sh start              # 起（幂等：已在跑则只报状态）
-bash os.sh stop               # 停（只停不删；容器保留，下次 start 更快）
-bash os.sh restart            # 重启 = stop + start
-bash os.sh status             # 容器状态 + 集群健康 + 节点列表（可用/不可用一句话结论）
-bash os.sh logs               # 跟踪容器日志（Ctrl-C 退出）
-bash os.sh load <镜像包.tar>  # load + 切 OS_IMAGE_TAG + 重启 + 健康检查
-bash os.sh help               # 用法
+# ① 放 unit 文件（路径按官方示例：/etc/systemd/system/opensearch.service）
+#    资产来自仓库： deploy/opensearch/opensearch.service
+sudo cp /tmp/opensearch.service /etc/systemd/system/opensearch.service
+sudo chmod 644 /etc/systemd/system/opensearch.service
+
+# ② 刷新 systemd 并开机自启 + 立即启动
+sudo systemctl daemon-reload
+sudo systemctl enable --now opensearch
+
+# ③ 看状态（官方给的验证方式）
+sudo systemctl status opensearch --no-pager
+# 期望：Active: active (running)
 ```
 
-> **`os.sh` 与 `pm.sh` 的关系**：两个入口**互不调用**——`pm.sh` 管 `/home/lhim/pm/{main,ai}`，
-> `os.sh` 管 `/home/lhim/os`。日常运维记住"主系统/AI 用 `pm.sh`，OpenSearch 用 `os.sh`"即可。
-
-### 4.3 验收（**逐条对照，全过才算部署成功**）
+> 首次启动**约 30~90 秒**（JVM + 插件加载）。`systemctl start` 会在 unit 里的 `TimeoutStartSec=75` 之内返回；
+> **如果这里就失败，先看日志**（下一条），不要去改配置瞎试。
 
 ```bash
-cd /home/lhim/os
-export OPENSEARCH_USER=admin
-export OPENSEARCH_PASSWORD='<你写进 .env 的那个强口令>'
-OS=http://127.0.0.1:9200
+# ④ 跟日志（Ctrl-C 退出）
+sudo journalctl -u opensearch -f
+#   另有文件日志（path.logs）： /home/lhim/os/logs/pm-os.log
+#   日志里常见的两条"预期内"信息：demo 安全脚本的安装输出、插件加载列表
+# ⑤ 复核 unit 施加的上限（§2.2 提到的那两条）
+systemctl show opensearch -p LimitNOFILE -p LimitMEMLOCK
+# 期望：LimitNOFILE=65536 ／ LimitMEMLOCK=infinity
 ```
 
-**A1 · 集群健康 = green（★不是 yellow）**
+### 4.2 验收（**逐条对照，全过才算部署成功**）
 
 ```bash
-curl -s -u "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "$OS/_cluster/health?pretty"
+export OS=http://127.0.0.1:9200
+export AUTH='admin:<你设的强口令>'
+```
+
+**A1 · 根接口通（HTTP，不是 HTTPS）**
+```bash
+curl -sS -u "$AUTH" "$OS/" | head -20
+```
+```json
+{
+  "name" : "os01",
+  "cluster_name" : "pm-os",
+  "version" : { "distribution" : "opensearch", "number" : "2.19.1", "build_type" : "tar" },
+  "tagline" : "The OpenSearch Project: https://opensearch.org/"
+}
+```
+> `build_type` 应为 **`tar`**（确认确实走的是 tar 安装）。
+> 若报 **SSL 相关错误**（如 `wrong version number`），说明 REST 层 TLS 没关掉 —— 回 §3.5 方案 A 检查
+> `plugins.security.ssl.http.enabled: false` 是否真的写进了**运行时**那份 `config/opensearch.yml`。
+
+**A2 · 集群健康 = green（★不是 yellow）**
+```bash
+curl -sS -u "$AUTH" "$OS/_cluster/health?pretty"
 ```
 ```json
 {
@@ -585,87 +562,74 @@ curl -s -u "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "$OS/_cluster/health?pretty"
   "number_of_nodes" : 1,
   "number_of_data_nodes" : 1,
   "active_primary_shards" : 0,
-  "active_shards" : 0,
-  "relocating_shards" : 0,
-  "initializing_shards" : 0,
   "unassigned_shards" : 0,
-  "delayed_unassigned_shards" : 0,
-  "number_of_pending_tasks" : 0,
-  "number_of_in_flight_fetch" : 0,
-  "task_max_waiting_in_queue_millis" : 0,
   "active_shards_percent_as_number" : 100.0
 }
 ```
-> 期望**恰好是 `green`**。**若看到 `yellow`**：多半是某个索引设了 `number_of_replicas ≥ 1`——
-> **单节点上副本永远无法分配**，状态必然 yellow 且白占一份盘。修法见 §5.1（参数建议）与 §7.5（yellow 的判读与逐索引处置）。
+> 期望**恰好 `green`**。**看到 `yellow`** 多半是某个索引设了 `number_of_replicas ≥ 1`——
+> **单节点上副本永远无法分配**，状态必然 yellow 且白占一份盘（修法见 §5.1 / §7.5）。
 
-**A2 · 节点就位（单节点 = 1 行）**
-
+**A3 · 节点就位（单节点 = 1 行）**
 ```bash
-curl -s -u "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "$OS/_cat/nodes?v"
+curl -sS -u "$AUTH" "$OS/_cat/nodes?v"
 ```
 ```text
-ip        heap.percent ram.percent cpu load_1m load_5m load_15m node.role node.roles  master name
-127.0.0.1           31          62   3    0.42    0.51     0.60 dimr      dimr        *      os01
+ip             heap.percent ram.percent cpu node.role node.roles master name
+10.254.212.110           31          62   3 dimr      dimr       *      os01
 ```
-> ⚠️ 单节点时 `_cat/nodes` 只显示 **1 行**，且 `ip` 列常见是 `127.0.0.1`（容器内视角）——**这是正常的，不是配置错了**。
+> 单节点只显示 **1 行**、且 `master` 列是 `*`（自己就是 master）——**这是正常的**。
 
-**A3 · 内存锁定生效**
-
+**A4 · 内存锁定生效**
 ```bash
-curl -s -u "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "$OS/_nodes?filter_path=nodes.*.process.mlockall&pretty"
+curl -sS -u "$AUTH" "$OS/_nodes?filter_path=nodes.*.process.mlockall&pretty"
+# 期望：{"nodes":{"<node-id>":{"process":{"mlockall":true}}}}
 ```
-```json
-{ "nodes": { "<node-id>": { "process": { "mlockall": true } } } }
-```
-> `mlockall: false` ⇒ §2.3 的内存锁定没生效（swap 还在或 `memlock` 权限不足），按 §7.6 处置。
+> `false` ⇒ §2.3 的锁定没生效（swap 还在或 `LimitMEMLOCK` 没放开），按 §7.5 处置。
 
-**A4 · 索引列表（还没建索引时为空，属正常）**
-
+**A5 · 索引列表（还没建索引时为空，属正常）**
 ```bash
-curl -s -u "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "$OS/_cat/indices?v&expand_wildcards=all"
+curl -sS -u "$AUTH" "$OS/_cat/indices?v&expand_wildcards=all"
+# 只有表头 = 还没建索引；做完 §5.2 后应出现 green open pm-ai-chunks … 1 0 … 的行
 ```
-```text
-health status index uuid pri rep docs.count docs.deleted store.size pri.store.size
-```
-> 只有表头 = 还没建索引。做完 §5.1 后这里应出现 `green open pm-ai-chunks ... 1 0 ...`。
 
-**A5 · 从 AI 那台机器验证连通性（**关键**：证明防火墙与绑定都对）**
-
+**A6 · 从应用服务器侧验证连通性（**关键**：证明防火墙与 `network.host` 都对）**
 ```bash
-# 在【AI 能力服务所在机器】执行（不是在 OS 机器上！）
+# 在【AI 能力服务所在机器】执行（不是在 OpenSearch 机器上！）
 curl -sS -m 5 -u admin:'<强口令>' http://10.254.212.110:9200/_cluster/health
 # 期望：{"cluster_name":"pm-os","status":"green",...}
 ```
 
 ```
-A1 green ｜ A2 1 行 ｜ A3 mlockall=true ｜ A4 表头或 green 索引 ｜ A5 跨机可达
+A1 build_type=tar ｜ A2 green ｜ A3 1 行 ｜ A4 mlockall=true ｜ A5 表头或 green 索引 ｜ A6 跨机可达
+```
+
+### 4.3 重启后自动拉起（**"部署完就不管"的底线，必须验**）
+
+```bash
+sudo reboot
+# —— 重新登录后（等 1~2 分钟让它起完）——
+systemctl is-enabled opensearch        # 期望：enabled
+systemctl is-active opensearch         # 期望：active
+curl -sS -u "$AUTH" http://127.0.0.1:9200/_cluster/health | head -3
+# 期望：status green
 ```
 
 ### 4.4 单节点故障演练（**先做一次，避免真出事时误判**）
 
 ```bash
 # ① 模拟"服务挂掉"（不是删数据）
-cd /home/lhim/os && bash os.sh stop
+sudo systemctl stop opensearch
 curl -sS -m 3 http://127.0.0.1:9200/ ; echo "exit=$?"
-# 期望：连不上（exit=7/28）——这是【预期现象】，不是部署失败
+# 期望：连不上（exit=7/28）——【预期现象】，不是部署失败
 
 # ② 此时 AI 侧的表现（★这是"降级行为"的实测，§6.3 要求明确它）
 curl -s "http://127.0.0.1:8100/health?with_vec=true"     # 期望：vec 块 not ok（不可用）
 #   提问一次：期望【明确报错】，而不是"没找到相关内容"这类静默错答案
 
 # ③ 起来
-bash os.sh start && bash os.sh status                    # 期望：[OK] OpenSearch 可用
+sudo systemctl start opensearch
+curl -sS -u "$AUTH" http://127.0.0.1:9200/_cluster/health | head -3   # green
 ```
-
-**本节说明（要"为什么"再看）**
-
-- **为什么期望 green 而不是 yellow**：`yellow` = 有主分片但**副本分片未分配**。单节点没有第二台机器放副本，
-  所以**只要设了副本，状态就永远 yellow**。green 的前提是"主分片全部就绪且副本数=0"。
-- **为什么演练要现在做**：单节点是**单点故障**（§0.4）。演练的目的是让运维**认得出**这个现象
-  （连不上 ≠ 部署坏了），以及确认 AI 侧的降级行为确实是"明确报错"。
-- **开关机自启**：`restart: unless-stopped` 保证 docker daemon 重启后容器自动回来；
-  宿主机重启后请确认 `systemctl is-enabled docker`（手册 §1.2 ①）。
 
 ---
 
@@ -674,7 +638,7 @@ bash os.sh start && bash os.sh status                    # 期望：[OK] OpenSea
 ### 5.1 容量与分片（**先看这张表，再决定参数**）
 
 **单条切片的真实口径**（读代码确认）：向量 = 4096 维 `float32` = `4096 × 4 = 16,384 字节 ≈ 16 KB`；
-再加上原文（≤500 字）、`doc_id`/`filename` 等字段与倒排，**≈18~20 KB/切片**（正文与倒排为**估算（假设：平均每切片 500 字、中文 3 字节/字 ≈1.5KB 原文）**）。
+再加原文（≤500 字）、`doc_id`/`filename` 等字段与倒排，**≈18~20 KB/切片**（正文与倒排为**估算（假设：平均每切片 500 字、中文 3 字节/字 ≈1.5KB 原文）**）。
 
 | 规模（切片数） | 对应文档数（估算，假设：30 切片/份） | 向量本体 | **索引总占用（估算，含原文+倒排+段开销，约 ×1.15~1.25）** | `local`（进程内 JSON）对比 |
 | --- | --- | --- | --- | --- |
@@ -684,10 +648,8 @@ bash os.sh start && bash os.sh status                    # 期望：[OK] OpenSea
 
 > **对照口径**：现有 `local` 的实测值是 **38,333 字节/切片（9.36 字节/维）**——那是**十进制文本 JSON**，
 > 同一份数据换成 OpenSearch 的 `float32` 二进制后**只占几百 MB**，检索是毫秒级 kNN。
-> 结论：**本项目这个量级不需要量化、也不需要 `on_disk`**（那两样是百万级/磁盘受限时的手段，见 §5.3）。
-> 磁盘规划：索引数据放 §2.4 的 200GB 盘，**给快照留出与索引等量的空间**（§7.2 每天一份、按保留期轮转）。
-
-**分片与副本建议**
+> 结论：**本项目这个量级不需要量化、也不需要 `on_disk`**（那是百万级/磁盘受限时的手段，见 §5.3）。
+> 磁盘规划：索引数据放 `/home/lhim/os/data`，**给快照留出与索引等量的空间**（§7.2 每天一份、按保留期轮转）。
 
 | 参数 | 值 | 理由 |
 | --- | --- | --- |
@@ -695,11 +657,6 @@ bash os.sh start && bash os.sh status                    # 期望：[OK] OpenSea
 | `number_of_replicas` | **0** | **单节点上副本永远无法分配** ⇒ 只会让状态变 **yellow** 且白占一份盘。**副本不能替代备份**（备份看 §7.2） |
 | `refresh_interval` | 写入期 `-1`（关闭），写完改回 `1s` | 批量灌数据时避免频繁 refresh 产生大量小段 |
 | `index.knn` | `true` | kNN 索引开关（mapping 同级 settings） |
-
-> ⚠️ **`number_of_replicas: 0` 是单节点的必然结论，不是"省事"**：设 1 的后果是
-> ① 集群状态永久 yellow（运维每次看到都要重新判断一次"是不是坏了"）；② 白白占用一份磁盘；
-> ③ 换不到任何可用性（单节点挂了，副本也访问不到）。
-> 将来加第 3 台转 3 节点集群时，**才**把副本改成 1（见附录 A）。
 
 ### 5.2 索引创建（`knn_vector` 4096 维 / cosinesimil / HNSW）
 
@@ -744,7 +701,6 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
   }
 }'
 ```
-
 ```json
 {"acknowledged":true,"shards_acknowledged":true,"index":"pm-ai-chunks"}
 ```
@@ -770,7 +726,7 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
 > ⚠️ **必须说清楚的一件事**：`project_id`/`security_level` 这几个字段**不是代码自动写入的**——
 > 现有 `OpenSearchIndex.toDocument()` 只写 `doc_id`/`filename`/`page_no`/`text`/`chunk_key`/`vector` 六个字段，
 > 而**切片本身也没有项目/密级元数据**（这是《AI模型调用与任务队列评估》登记的"最硬的一条"）。
-> 所以本节的 filters 示例要真正生效，需要**先把元数据从主系统带进切片**（`attachment_id → project_id/密级`的映射在主系统崖山库），
+> 所以本节的 filters 示例要真正生效，需要**先把元数据从主系统带进切片**（`attachment_id → project_id/密级` 的映射在主系统崖山库），
 > 这件事**属于应用代码改动，不在本轮范围内**（本轮只写文档与部署资产）。过滤器仍然可以先按 `doc_id` 用起来（见 §5.4）。
 
 ### 5.3 HNSW 与引擎的版本注记
@@ -783,7 +739,7 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
 | `m` | `16`（建议值） | 每个节点的连边数；越大召回越好、内存与建索引越慢。**未实测**，属工程常规推荐值 |
 | `ef_construction` | `128`（建议值） | 建图时的候选队列长度；越大图质量越好、建索引越慢 |
 | `space_type` | `cosinesimil` | **与 `local` 后端的余弦同一口径**（这一条**未实测**：集群起来后必须做"top-k 顺序与 local 一致"的对照，见 §5.5 验证口径） |
-| `on_disk` / 量化（`sq`/`pq`、`mode: on_disk`） | **本方案不用** | 百万级切片或磁盘受限时才考虑；**版本前提**：磁盘化向量检索（`mode: on_disk`）是 2.x 后期引入的能力（2.17 起在 k-NN 插件里逐步提供），**本项目当前约 2 万切片规模用不上**。要用请先核对你的集群版本与官方 k-NN 文档，切了必须**重建索引** |
+| `on_disk` / 量化（`sq`/`pq`、`mode: on_disk`） | **本方案不用** | 百万级切片或磁盘受限时才考虑；**版本前提**：磁盘化向量检索是 2.x 后期引入的能力（2.17 起在 k-NN 插件里逐步提供），**本项目当前约 2 万切片规模用不上**。要用请先核对你的版本与官方 k-NN 文档，切了必须**重建索引** |
 
 > **验证口径（做完 §5.5 的对照才算数）**：对同一份语料、同一批问题，把 OpenSearch kNN 的 top-k 顺序与 `local` 的 top-k **逐条对比**；
 > 顺序对不上通常意味着 `space_type` 或字段名写错（对照 [`OpenSearchIndex`](../ai-backend/src/main/java/com/pmgt/ai/module/retrieval/OpenSearchIndex.java) 的注释协议：
@@ -802,7 +758,6 @@ EOF
 curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_bulk?refresh=false" \
   -H 'Content-Type: application/x-ndjson' --data-binary @/home/lhim/os/bulk-demo.ndjson
 ```
-
 ```json
 {"took":31,"errors":false,"items":[{"index":{"_index":"pm-ai-chunks","_id":"d-1001:1:9a1c0f3b7d2e","_version":1,"result":"created","status":201}}]}
 ```
@@ -815,7 +770,6 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_bulk?refresh=false" \
 ### 5.5 查询（预过滤 + kNN + hybrid）
 
 **① 纯 kNN + filter 预过滤（"先过滤再检索"的落地形态）**
-
 ```bash
 curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: application/json' -d '{
   "size": 5,
@@ -839,7 +793,6 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: applicat
   }
 }'
 ```
-
 ```json
 {
   "took": 12,
@@ -858,7 +811,6 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: applicat
 ```
 
 **② hybrid：BM25 与 kNN 融合（**两次查询 + 客户端融合**，最稳的做法）**
-
 ```bash
 # 关键词路（BM25）：同一套 filter
 curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: application/json' -d '{
@@ -886,14 +838,13 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: applicat
 | --- | --- | --- |
 | **本项目现状（推荐沿用）** | 按 `chunk_key`（= `docId:pageNo:sha1`）去重，**向量命中优先**，再交 Reranker 精排 | 与代码里 `RetrievalService` 的融合口径一致（**不做分数归一**，因此不受两路量纲差异影响） |
 | 加权求和 | `score = 0.3 × BM25_norm + 0.7 × kNN_norm` | ⚠️ 必须**各自归一化**后再加权：BM25 与 `cosinesimil` 分数**不同量纲**，直接相加会系统性偏向分数量纲大的那一路 |
-| RRF（倒数排名融合） | `score = Σ 1/(k + rank)`，按排名而非分数融合 | 更省心（无需归一化）；**属较新的能力，且各版本支持度不同，用前先核对你的集群版本文档**（本方案不依赖它） |
+| RRF（倒数排名融合） | `score = Σ 1/(k + rank)`，按排名而非分数融合 | 更省心（无需归一化）；**属较新的能力，且各版本支持度不同，用前先核对你的版本文档**（本方案不依赖它） |
 
 > **`size` 与 `k` 的关系**：`size` 是返回条数，`k` 是 kNN 候选数。
 > 本项目的口径是**召回 50 → 精排 5**（`RETRIEVAL_RECALL=50` / `RETRIEVAL_TOP_K=5`，
 > 工具侧硬上限 `HARD_MAX_TOP_K=10`），所以这里用 `k=50, size=50`，精排由 AI 侧完成。
 
 **③ 建完索引别忘了把 refresh 打开（写入期是 `-1`）**
-
 ```bash
 curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks/_settings" -H 'Content-Type: application/json' \
   -d '{"index":{"refresh_interval":"1s"}}'
@@ -920,10 +871,12 @@ vi .env
 ```bash
 # ── 检索后端切到 OpenSearch（必改）──
 VEC_BACKEND=opensearch
+# ★地址写成 http://<os主机>:9200 —— 这个默认值与"关掉 REST 层 TLS"的取舍绑定：
+#   若你选了 §3.5 方案 B（保留自签 TLS），这里必须改成 https://…，并让 AI 侧信任那套 CA。
 OPENSEARCH_URL=http://10.254.212.110:9200
 OPENSEARCH_INDEX=pm-ai-chunks
 OPENSEARCH_USER=admin
-OPENSEARCH_PASSWORD=<与 OpenSearch /home/lhim/os/.env 里的强口令完全一致>
+OPENSEARCH_PASSWORD=<与 OpenSearch 侧 admin 的强口令完全一致>
 
 # ── 检索参数：先别动（保持与 local 一致，才能做"顺序对得上"的对照）──
 RETRIEVAL_RECALL=50
@@ -931,7 +884,6 @@ RETRIEVAL_TOP_K=5
 # 维度：保持不传（平台不支持 MRL 降维，传了 HTTP 400）
 VEC_EMBED_DIMENSIONS=0
 ```
-
 ```bash
 cd /home/lhim/pm
 bash pm.sh restart ai
@@ -946,6 +898,14 @@ curl -s "http://127.0.0.1:8100/health?with_vec=true"
 | `VEC_BACKEND` | `opensearch` | 还是进程内检索，本次部署白做 |
 | `OPENSEARCH_URL` | `http://10.254.212.110:9200` | **必须是从 AI 容器内可达的地址**：写 `127.0.0.1` = 容器自己，**必然连不上** |
 | `OPENSEARCH_USER` / `OPENSEARCH_PASSWORD` | `admin` / 强口令 | 401；口令含特殊字符时 `.env` 里**不要加引号**（compose 会把引号当值的一部分） |
+
+> **技术选型（接入侧刻意保持的纪律）：走原生 REST，不引入 OpenSearch Java 客户端。**
+> 依据：现有 [`OpenSearchIndex`](../ai-backend/src/main/java/com/pmgt/ai/module/retrieval/OpenSearchIndex.java) 就是
+> `java.net.http.HttpClient` + Jackson 手写 REST（`PUT /<index>`、`POST /<index>/_bulk`、`POST /<index>/_search`、
+> `HEAD /<index>`、`GET /_cluster/health` + Basic 认证头），**零第三方依赖**，与"不引新依赖"的既有纪律一致；
+> 而官方 Java 客户端会引入**版本联动**（客户端版本要与集群版本匹配）与额外的离线依赖分发成本。
+> **代价（要认账）**：kNN 查询体、错误码语义、连接池与认证头全部自己维护——例如 `_bulk` 的 NDJSON **末尾必须换行**、
+> `dimension`/`space_type` 写错**没有编译期提示**；所以 §5.5 的"与 local 的 top-k 顺序对照"不是可选项。
 
 ### 6.2 全量重建索引（现有切片必须重新向量化）
 
@@ -991,80 +951,84 @@ curl -s "http://127.0.0.1:8100/health?with_vec=true"
 | 回滚 | `VEC_BACKEND=local` + `bash pm.sh restart ai`；`work/vectors/` 未删 ⇒ **无需重新向量化**，秒级回滚 | 自检里 backend 回到 `local` 且检索可用 |
 
 > **双写**：现有代码**没有**"同时写 local 与 OpenSearch"的双写开关（`VEC_BACKEND` 是**单选**）。
-> 所以"双写"这件事**不通过配置实现**，而是靠**保留本地 `work/vectors/` 不删**——它天然就是 `local` 的完整副本，
-> 这已经等价于"双份数据 + 秒级回滚"。**不要**为了双写去改代码，那属于应用改动（不在本轮范围）。
+> 所以"双写"不通过配置实现，而是靠**保留本地 `work/vectors/` 不删**——它天然就是 `local` 的完整副本，
+> 这已经等价于"双份数据 + 秒级回滚"。**不要**为了双写去改代码（属于应用改动，不在本轮范围）。
 
 **★ OpenSearch 不可用时 AI 侧怎么降级（本轮必须定死的口径）**
 
 | 口径 | 定稿 |
 | --- | --- |
-| **绝不静默降级** | 不允许"集群连不上就悄悄改用进程内余弦或退回关键词，却不说"——那会让用户拿到**看起来正常但来源不同**的答案。现有代码已经钉住了这条（**显式抛错**） |
+| **绝不静默降级** | 不允许"连不上就悄悄改用进程内余弦或退回关键词，却不说"——那会让用户拿到**看起来正常但来源不同**的答案。现有代码已钉住这条（**显式抛错**） |
 | 用户可见 | 问答返回**明确失败**（"检索服务不可用"类话术），**不是**"没找到相关内容" |
 | 运维可见 | AI 日志有明确原因（"集群不可达（http://…）"）；`/health?with_vec=true` 的 `vec` 块为 not ok |
-| 恢复 | OpenSearch `os.sh start` 后 AI **不需要重启**（每次请求现建连接），下一次提问即恢复 |
+| 恢复 | OpenSearch `systemctl start opensearch` 后 AI **不需要重启**（每次请求现建连接），下一次提问即恢复 |
 
-### 6.4 第二台机器 `10.254.212.111`：**冷备 + 演练机**（本方案定稿用法）
+### 6.4 第二台机器 `10.254.212.111`：**冷备 + 演练机**
 
 | 项 | 做法 |
 | --- | --- |
-| 角色 | **冷备**（同构、装了同一套编排与镜像，**默认停着**；需要时才起）+ **恢复演练机** |
-| 为什么默认停着 | 单节点方案下，它起来也**不参与**任何服务（没有 quorum、没有副本）；不如把资源留给"随时能顶上去" |
-| 每天做什么 | ① 在 `.110` 上打快照（§7.2）；② 把 `/home/lhim/os/backup` **`rsync` 到 `.111`** |
-| 何时真的切过去 | `.110` 硬件故障且短期修不好 → 在 `.111` 上 `os.sh start` + 注册快照仓库 + `_snapshot/.../_restore`（RTO 分钟级） |
+| 角色 | **冷备**（同构安装、同样的 unit，**服务默认 `systemctl disable --now`**）+ **恢复演练机** |
+| 为什么默认停着 | 单节点方案下它起来也**不参与**任何服务（没有 quorum、没有副本）；不如把资源留给"随时能顶上去" |
+| 每天做什么 | ① 在 `.110` 上打快照（§7.2）；② `snapshot-backup.sh` 自动把快照目录 **`rsync` 到 `.111`** |
+| 何时真的切过去 | `.110` 硬件故障且短期修不好 → 在 `.111` 上 `systemctl start opensearch` + 注册仓库 + `_restore`（RTO 分钟级） |
 | 何时不用它了 | ① 需要**两个 AI 实例**做无中断检索；② 切片 **>50 万** → 加**第 3 台**转 3 节点集群（附录 A） |
 
 ```bash
-# 每晚在 .110 上执行（建议做成 cron；具体时间与保留期见 §8）
-# ① 打快照（需先在 .110 注册仓库，见 §7.2）
-curl -sS -u "$AUTH" -XPUT "$OS/_snapshot/os-backup/nightly-$(date +%F)?wait_for_completion=true" \
-  -H 'Content-Type: application/json' \
-  -d '{"indices":"pm-ai-chunks","ignore_unavailable":true,"include_global_state":false}'
-
-# ② 把快照目录同步到 .111（快照文件是可复制物）
-rsync -a --delete /home/lhim/os/backup/ lhim@10.254.212.111:/home/lhim/os/backup/
-#   ⚠️ .111 上目录属主同样必须 1000:1000（否则恢复时 OpenSearch 读不了），见 §2.4
+# 在 .111 上（一次性准备；注意：默认不 enable，避免和 .110 抢角色）
+sudo systemctl disable --now opensearch 2>/dev/null || true
+# 目录先建好、属主给对（rsync 过来的快照要能被 opensearch 读）
+sudo mkdir -p /home/lhim/os/backup/fs-repo && sudo chown -R opensearch:opensearch /home/lhim/os/backup
 ```
 
-**恢复演练步骤（建议每季度一次；RTO 口径见下）**
+**恢复演练步骤（建议每季度一次；演练时 `.110` 正常跑着，不动它）**
 
 ```bash
-# 在 .111 上（演练机；演练时 .110 正常跑着，不动它）
-cd /home/lhim/os
-# ① 确认目录权限与 .env（OPENSEARCH_BIND_IP / OPENSEARCH_PASSWORD 与 .110 一致）
-ls -ld data backup
-# ② 起容器（此时 .111 是一个【独立的空集群】）
-bash os.sh start
-# ③ 注册快照仓库（指向 rsync 过来的那个目录）
-curl -sS -u "$AUTH" -XPUT "$OS/_snapshot/os-backup" -H 'Content-Type: application/json' \
-  -d '{"type":"fs","settings":{"location":"/usr/share/opensearch/backup","compress":true}}'
+# 在 .111 上执行
+# ① 确认快照副本在（.110 每晚 rsync 过来的）
+ls -l /home/lhim/os/backup/fs-repo/ | head
+sudo chown -R opensearch:opensearch /home/lhim/os/backup/fs-repo
+
+# ② 起这个"独立空集群"
+sudo systemctl start opensearch
+curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3    # 期望 green
+
+# ③ 注册仓库（与 .110 同名同路径）
+curl -sS -u admin:'<强口令>' -XPUT 'http://127.0.0.1:9200/_snapshot/os-backup' \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"fs","settings":{"location":"/home/lhim/os/backup/fs-repo","compress":true,"index.latest":false}}'
+
 # ④ 看有哪些快照
-curl -sS -u "$AUTH" "$OS/_snapshot/os-backup/_all?pretty" | head -40
-# ⑤ 恢复
-curl -sS -u "$AUTH" -XPOST "$OS/_snapshot/os-backup/nightly-2026-09-24/_restore?wait_for_completion=true" \
-  -H 'Content-Type: application/json' -d '{"indices":"pm-ai-chunks"}'
-# ⑥ 核数：与 .110 的 _count 一致
-curl -sS -u "$AUTH" "$OS/pm-ai-chunks/_count"
-# ⑦ 演练完把 .111 停掉，别让它长期跑着（避免以后误判"哪个是主"）
-bash os.sh stop
+curl -sS -u admin:'<强口令>' 'http://127.0.0.1:9200/_snapshot/os-backup/_all?pretty' | grep -E '"snapshot"|"state"' | head
+
+# ⑤ 恢复（演练机上索引通常是空的，可直接恢复）
+curl -sS -u admin:'<强口令>' -XPOST 'http://127.0.0.1:9200/_snapshot/os-backup/nightly-<日期>/_restore?wait_for_completion=true' \
+  -H 'Content-Type: application/json' -d '{"indices":"pm-ai-chunks","include_global_state":false}'
+
+# ⑥ 核数：与 .110 上的 _count 一致
+curl -sS -u admin:'<强口令>' 'http://127.0.0.1:9200/pm-ai-chunks/_count'
+
+# ⑦ 演练完停掉，别让它长期跑着（避免以后误判"哪个是主"）
+sudo systemctl stop opensearch
 ```
 
 | 指标 | 口径 |
 | --- | --- |
-| RTO（恢复时间目标） | **分钟级**（估算（假设：索引 ≈2 万切片 ≈400MB，本地 `_restore` 速率按 20~50MB/s）⇒ **约 10~60 秒**，加上起容器≈90s、注册仓库与核数操作 ⇒ **约 5 分钟**） |
-| RPO（可接受的数据丢失） | **≈1 天**（每晚一份快照）。要更小就把快照频次提到每小时（对索引无影响，只多占盘） |
+| RTO（恢复时间目标） | **分钟级**（估算（假设：索引 ≈2 万切片 ≈400MB，本地 `_restore` 速率按 20~50MB/s）⇒ **约 10~60 秒**，加起服务≈90s、注册仓库与核数操作 ⇒ **约 5 分钟**） |
+| RPO（可接受的数据丢失） | **≈1 天**（每晚一份快照）。要更小就把 cron 频次提高（对索引无影响，只多占盘） |
 | 演练判据 | ⑥ 的 `count` 与主节点一致，且随机抽 3 个问题能检索到相同页码 |
 
 ### 6.5 切换前检查清单（**逐条打勾，缺一不可**）
 
 ```
-□ A1~A5 全绿（§4.3），且 _cluster/health 是 green（不是 yellow）
+□ A1~A6 全绿（§4.2），且 _cluster/health 是 green（不是 yellow）
 □ 索引映射已建：dimension=4096、space_type=cosinesimil、number_of_replicas=0（§5.2）
 □ _count 与 N_chunks 一致；抽样 20 条，page_no 与原文页码对得上（§6.2 ⑥⑧）
-□ AI 那台能跨机访问 9200（§4.3 A5），且【不该通的机器确实不通】（§2.5 ④）
-□ ai/.env 已备份（.env.bak.<时间戳>）；OPENSEARCH_PASSWORD 与 os/.env 完全一致
+□ AI 那台能跨机访问 9200（§4.2 A6），且【不该通的机器确实不通】（§2.5 ④）
+□ ai/.env 已备份（.env.bak.<时间戳>）；OPENSEARCH_PASSWORD 与 OpenSearch 侧 admin 口令完全一致
 □ work/vectors/ 与 work/docs/ 已备份（回滚 local 的保险）
 □ 降级口径已确认（§6.3）：连不上时【明确报错】，不静默换检索方式
-□ 快照仓库已注册 + 至少成功打过一份快照 + 已 rsync 到 .111（§7.2 / §6.4）
+□ 快照脚本已跑通至少一次（bash snapshot-backup.sh snapshot 返回 0）+ cron 已装（§7.2）
+□ 从 .111 做过一次恢复演练（§6.4 七步）
 □ 有人知道回滚怎么做（VEC_BACKEND=local + pm.sh restart ai，秒级）
 ```
 
@@ -1078,116 +1042,153 @@ bash os.sh stop
 
 ---
 
-## 7. 运维
+## 7. 运维（systemd + tar 语汇）
 
-### 7.1 容量与水位（磁盘）
-
-| 水位 | 默认阈值（2.x） | 触发后的行为 | 处置 |
-| --- | --- | --- | --- |
-| `low` | 85% | **不再向该节点分配新分片** | 清理旧快照 / 扩容 / 迁移分片 |
-| `high` | 90% | 尝试把分片迁走；迁不走就继续涨 | 立即清理，别等 critical |
-| `flood` | 95% | **索引变只读**（`index.blocks.read_only_allow_delete`） | 见 §7.5 |
+### 7.1 日常命令速查
 
 ```bash
-# 看水位与磁盘
-curl -sS -u "$AUTH" "$OS/_cat/allocation?v"
-curl -sS -u "$AUTH" "$OS/_cluster/settings?include_defaults=true&flat_settings=true" | grep -o '"cluster.routing.allocation.disk[^,]*'
-df -h /home/lhim/os/data /home/lhim/os/backup
+sudo systemctl status opensearch            # 状态（先看这个）
+sudo journalctl -u opensearch -n 200        # 最近 200 行（journald）
+sudo journalctl -u opensearch -f            # 跟日志
+sudo tail -f /home/lhim/os/logs/pm-os.log   # 文件日志（path.logs）
+sudo systemctl restart opensearch           # 重启（改 opensearch.yml / heap.options 后必须重启）
+sudo systemctl stop opensearch              # 停
+sudo systemctl start opensearch             # 起
+sudo systemctl is-enabled opensearch        # 是否开机自启
+curl -sS -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health?pretty
 ```
 
-> **单节点方案的水位要更敏感**：没有第二台机器可以"迁走分片"，到 `low` 就只能靠**清理**（快照轮转、删无用索引）。
-> 建议把 `low` 提前到 **75%**（`PUT _cluster/settings {"persistent":{"cluster.routing.allocation.disk.watermark.low":"75%"}}`），
-> 给 `.110` 这台 200GB 盘留出反应时间（**这个 75% 是运维建议值，不是官方默认**）。
+> **日志在哪**：① journald（`journalctl -u opensearch`，unit 里 `StandardOutput=journal`）；
+> ② 文件日志 `/home/lhim/os/logs/`（`path.logs`，主日志名为 `<cluster.name>.log`，即 `pm-os.log`）。
+> 排查时**两个都看**：启动期失败往往只在 journald 里，运行期异常两条都有。
 
 ### 7.2 快照与恢复（**单节点的强制项**）
 
+用资产脚本 [`snapshot-backup.sh`](../deploy/opensearch/snapshot-backup.sh)（幂等：重复执行安全）：
+
 ```bash
-# ① 注册文件系统仓库（location 必须与 compose 的 path.repo 一致）
-curl -sS -u "$AUTH" -XPUT "$OS/_snapshot/os-backup" -H 'Content-Type: application/json' \
-  -d '{"type":"fs","settings":{"location":"/usr/share/opensearch/backup","compress":true}}'
-curl -sS -u "$AUTH" "$OS/_snapshot/os-backup/_verify"      # 期望 {"nodes":{...}} 全 ok
+# ① 给脚本准备口令（不给就只能把口令写进命令历史，cron 更不安全）
+printf '%s\n' '<强口令>' | sudo tee /etc/opensearch-backup.pass >/dev/null
+sudo chmod 600 /etc/opensearch-backup.pass
 
-# ② 打一份快照（wait_for_completion=true 便于脚本判成功）
-curl -sS -u "$AUTH" -XPUT "$OS/_snapshot/os-backup/nightly-$(date +%F)?wait_for_completion=true" \
-  -H 'Content-Type: application/json' -d '{"indices":"pm-ai-chunks","include_global_state":false}'
+# ② 手动跑一次（验证全链路：注册仓库 → 打快照 → 清理 → rsync 到 .111）
+bash /home/lhim/os/snapshot-backup.sh snapshot
+# 期望末尾：[OK] 快照任务完成：nightly-<日期>
+# 任一步失败都会打印"下一步该敲什么命令"
 
-# ③ 看结果：state 应为 SUCCESS
-curl -sS -u "$AUTH" "$OS/_snapshot/os-backup/_all?pretty" | grep -E '"state"|"snapshot"|"duration_in_millis"'
-
-# ④ 恢复（演练或真故障）
-curl -sS -u "$AUTH" -XPOST "$OS/_snapshot/os-backup/nightly-2026-09-24/_restore?wait_for_completion=true" \
-  -H 'Content-Type: application/json' -d '{"indices":"pm-ai-chunks"}'
+# ③ 只看状态（不做任何写操作）
+bash /home/lhim/os/snapshot-backup.sh status
+```
+```bash
+# ④ 装 cron（每晚 02:30；脚本自己会打印这行，直接复制）
+crontab -e
+# 加入：
+30 2 * * * /bin/bash /home/lhim/os/snapshot-backup.sh snapshot >> /home/lhim/os/logs/snapshot-cron.log 2>&1
+crontab -l      # 复核
 ```
 
-| 项 | 建议 |
+| 项 | 值/建议 |
 | --- | --- |
-| 频次 | **每晚一次**（RPO ≈1 天）；要更小就每小时 |
-| 保留 | 最近 **7 天**（`_snapshot/os-backup/_all` + 删除超过 7 天的 `nightly-*`）；具体保留期见 §8 |
-| 异地 | 每晚 `rsync` 到 `.111`（§6.4），**这是单节点方案里"防硬件损坏"的唯一手段** |
-| 演练 | 每季度一次（§6.4 的七步），**演练过才算有备份** |
-
-### 7.3 滚动重启与版本升级
-
-| 场景 | 做法 |
-| --- | --- |
-| 重启容器（改 `.env` / 改堆） | `cd /home/lhim/os && bash os.sh restart`；**单节点无需"滚动"**，重启期间检索不可用（分钟级），选低峰窗口 |
-| 改索引 mapping | mapping 字段**只能加**、不能改类型；`knn_vector` 的 `dimension`/`space_type`/`engine` **改了就必须重建索引**（新建索引 → 重新灌 → 用别名切） |
-| 升级 OpenSearch（2.x → 2.x 小版本） | ① 读官方升级说明（版本间的 breaking change 与 k-NN 变更）；② **先打快照**；③ 开发机出**新 tag** 的镜像（§1，`OS_IMAGE_TAG` 改新版本）；④ `bash os.sh load <新包.tar>`；⑤ 验收（§4.3 A1~A5）；⑥ 出问题回滚：`os.sh load <旧包.tar>`（**注意**：索引数据是"新版本写过"的，**降级前先确认该版本支持读回**，不行就用快照恢复） |
-| 2.x → 3.x 大版本 | **不要直跳**：按官方"先升到最后一个 2.x，再升 3.x"的路径走；每步都打快照 |
+| 仓库 | 文件系统仓库 `os-backup` → `/home/lhim/os/backup/fs-repo`（必须在 `path.repo` 之下） |
+| 频次 | **每晚一次**（RPO ≈1 天）；要更小就提高 cron 频次 |
+| 保留 | 脚本默认 **7 天**（`KEEP_DAYS=7`；更早的 `nightly-*` 自动删） |
+| 异地 | 每晚 `rsync` 到 `.111`（**单节点方案里防硬件损坏的唯一手段**） |
+| 演练 | 每季度一次（§6.4 七步），**演练过才算有备份** |
 
 ```bash
-# 升级的标准动作（低峰窗口；先看清版本再动）
+# 手工等价命令（脚本坏了时的兜底）
+curl -sS -u admin:'<口令>' -XPUT 'http://127.0.0.1:9200/_snapshot/os-backup' -H 'Content-Type: application/json' \
+  -d '{"type":"fs","settings":{"location":"/home/lhim/os/backup/fs-repo","compress":true,"index.latest":false}}'
+curl -sS -u admin:'<口令>' -XPUT "http://127.0.0.1:9200/_snapshot/os-backup/nightly-$(date +%F)?wait_for_completion=true" \
+  -H 'Content-Type: application/json' -d '{"indices":"pm-ai-chunks","ignore_unavailable":true,"include_global_state":false}'
+curl -sS -u admin:'<口令>' 'http://127.0.0.1:9200/_snapshot/os-backup/_all?pretty' | grep -E '"snapshot"|"state"'
+```
+
+### 7.3 升级路径（官方 Tar 升级做法 + 回滚）
+
+> **不变式**：**数据（`/home/lhim/os/data`）与配置（`config/opensearch.yml`、`config/jvm.options.d/`）都在安装目录之外或可复用**，
+> 所以升级 = 换掉"程序目录"，数据与配置原地保留。
+
+```bash
+# ① 先打一份快照（升级前必做；出问题能回到原点）
+bash /home/lhim/os/snapshot-backup.sh snapshot
+
+# ② 记录当前版本 + 停服
+cat /home/lhim/os/opensearch/VERSION 2>/dev/null || ls -d /home/lhim/os/opensearch
+sudo systemctl stop opensearch
+
+# ③ 解包新版本到【新目录】（不要覆盖旧的，旧的留着回滚）
 cd /home/lhim/os
-grep '^OS_IMAGE_TAG=' .env                       # 当前版本
-curl -sS -u "$AUTH" "$OS/" | grep -o '"number" : "[^"]*"'   # 集群报告的版本
-bash os.sh load /home/lhim/os/opensearch-<新版本>-linux-arm64.tar
-bash os.sh status
+sudo -u opensearch tar -xvf /tmp/opensearch-<新版本>-linux-x64.tar.gz
+sudo mv opensearch-<新版本> opensearch-new
+
+# ④ 把我们改过的配置复制过去（★这两样是你自己的东西，务必带过去）
+sudo -u opensearch cp /home/lhim/os/opensearch/config/opensearch.yml /home/lhim/os/opensearch-new/config/opensearch.yml
+sudo -u opensearch mkdir -p /home/lhim/os/opensearch-new/config/jvm.options.d
+sudo -u opensearch cp /home/lhim/os/opensearch/config/jvm.options.d/heap.options /home/lhim/os/opensearch-new/config/jvm.options.d/heap.options
+#   另外：config/ 下由 demo 脚本生成的证书（*.pem）与 config/opensearch-security/ 也要一起带过去，
+#   否则安全插件会因为没有证书/配置起不来（对照官方 Tar 页的 warning：demo 配置要自己接管）
+
+# ⑤ 换目录（旧目录改名保留 = 回滚点）+ 权限归位
+sudo mv /home/lhim/os/opensearch /home/lhim/os/opensearch-old-<旧版本>
+sudo mv /home/lhim/os/opensearch-new /home/lhim/os/opensearch
+sudo chown -R opensearch:opensearch /home/lhim/os/opensearch
+
+# ⑥ 起服务 + 验收
+sudo systemctl start opensearch
+curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/ | head -12                 # 看 version.number 是否新版本
+curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3   # 期望 green
 ```
+```bash
+# 回滚（升级后起不来或行为异常）：把目录换回去再起
+sudo systemctl stop opensearch
+sudo mv /home/lhim/os/opensearch /home/lhim/os/opensearch-failed-<新版本>
+sudo mv /home/lhim/os/opensearch-old-<旧版本> /home/lhim/os/opensearch
+sudo chown -R opensearch:opensearch /home/lhim/os/opensearch
+sudo systemctl start opensearch
+# ⚠️ 若新版本【已经写过数据】，直接回退旧版本可能读不了新格式 → 那时用快照恢复（§7.2）
+```
+
+> **大版本（2.x → 3.x）不要直跳**：按官方"先升到最后一个 2.x，再升 3.x"的路径走，每步都打快照。
+> 本方案是单节点，停机升级即可（分钟级）。
 
 ### 7.4 监控要看哪些指标
 
 | 类别 | 指标 | 看它判什么 | 怎么看 |
 | --- | --- | --- | --- |
-| **JVM 堆** | 堆使用率（`heap.percent`）、GC 次数/耗时 | 堆长期 >85% 或 GC 停顿变长 ⇒ 调 `-Xms/-Xmx` 或扩内存 | `_cat/nodes?v`、`_nodes/stats/jvm` |
-| **内存锁定** | `mlockall` | 必须 `true`，否则可能被换出导致停顿 | `_nodes?filter_path=nodes.*.process.mlockall`（§4.3 A3） |
-| **线程池** | `search`/`write` 队列与拒绝数（`rejected`） | 有拒绝 ⇒ 检索/写入压力超容量 | `_cat/thread_pool/search,write?v&h=node_name,active,queue,rejected` |
-| **磁盘** | 各盘使用率与水位 | 见 §7.1；**单节点最容易死在这里**（快照会吃盘） | `_cat/allocation?v`、`df -h` |
-| **磁盘 I/O** | 读写延迟、IO util | kNN 检索是内存+磁盘混合负载，I/O 饱和会拖慢查询 | 宿主 `iostat -x 1`（若有 sysstat；**麒麟上是否预装未确认**） |
-| **段与合并** | 段数、merge 次数与耗时 | 段数暴涨（批量写入期）⇒ 用 `forcemerge` 收口 | `_cat/segments/pm-ai-chunks?v`、`_nodes/stats/indices/merges` |
-| **kNN** | `_plugins/_knn/stats`（缓存、加载的图） | 图未被缓存 ⇒ 每次查询走磁盘 | `GET _plugins/_knn/stats?pretty` |
-| **集群状态** | `status`、`unassigned_shards`、`number_of_pending_tasks` | yellow/red 判读见 §7.5；pending tasks 长期 >0 说明 master 忙 | `_cluster/health`、`_cat/pending_tasks?v` |
-| **快照** | 最近快照的 `state` 与耗时 | 失败要在 24h 内发现（否则等于没有备份） | `_snapshot/os-backup/_all` |
-| **容器** | `os.sh status` 的结论行 | 一句话"可用/不可用" | `bash os.sh status` |
+| **JVM 堆** | 堆使用率（`heap.percent`）、GC 统计 | 堆长期 >85% 或 GC 停顿变长 ⇒ 调 heap.options 或扩内存 | `_cat/nodes?v`、`_nodes/stats/jvm` |
+| **内存锁定** | `mlockall` | 必须 `true`（§4.2 A4） | `_nodes?filter_path=nodes.*.process.mlockall` |
+| **线程池** | `search`/`write` 队列与 `rejected` | 有拒绝 ⇒ 检索/写入压力超容量 | `_cat/thread_pool/search,write?v&h=node_name,active,queue,rejected` |
+| **磁盘** | 使用率与水位 | §7.5 的水位判读；**单节点最容易死在这里**（快照也吃盘） | `_cat/allocation?v`、`df -h /home/lhim/os` |
+| **段与合并** | 段数、merge 次数/耗时 | 段数暴涨（批量写入期）⇒ 用 `_forcemerge` 收口 | `_cat/segments/pm-ai-chunks?v` |
+| **kNN** | `_plugins/_knn/stats` | 图未被缓存 ⇒ 查询走磁盘 | `GET _plugins/_knn/stats?pretty` |
+| **集群状态** | `status`、`unassigned_shards`、`number_of_pending_tasks` | yellow/red 判读见 §7.5 | `_cluster/health`、`_cat/pending_tasks?v` |
+| **快照** | 最近快照 `state` 与耗时 | 失败要在 24h 内发现（否则等于没有备份） | `bash /home/lhim/os/snapshot-backup.sh status` |
+| **服务本身** | systemd 状态、重启次数 | `Restart=on-failure` 生效说明崩过 | `systemctl status opensearch`（看 `Main PID` 与 `Active`） |
 
 > ⚠️ **本项目 AI 侧目前没有 actuator/micrometer**（《AI模型调用与任务队列评估》已登记"无任何指标"），
-> OpenSearch 侧也**没有接 Prometheus/告警**——本节的指标目前**只能靠命令巡检**。要不要上监控栈见 §8。
+> OpenSearch 侧也**没有接 Prometheus/告警**——本节指标目前**只能靠命令巡检**。要不要上监控栈见 §8。
 
 ### 7.5 常见故障
 
 | 现象 | 判读 | 处置 |
 | --- | --- | --- |
-| 容器起不来，日志 `max virtual memory areas vm.max_map_count [65530] is too low` | 内核参数没设或没持久化（重启后丢了） | §2.1 全做一遍；**注意容器内改不了**，必须在宿主设 |
-| 启动失败并提示口令不合规（密码复杂度） | `OPENSEARCH_PASSWORD` 没满足"四类字符 + ≥8 位" | 换口令（`openssl rand -base64 24`），`os.sh restart` |
-| 启动失败：`OPENSEARCH_INITIAL_ADMIN_PASSWORD is not set` | `.env` 里没写口令，或 compose 没读到 `.env` | 确认 `.env` **与 compose 同目录**、`OS_IMAGE_TAG` 与 `OPENSEARCH_PASSWORD` 都有值 |
-| **`red`** | 有**主分片**未分配 ⇒ 检索/写入报错 | 看 `_cat/indices?v` 与 `_cluster/allocation/explain`；单节点上常见原因是**数据目录权限**（§2.4 属主/权限）或**磁盘满**（§7.1） |
-| **`yellow`** | 主分片就绪、**副本未分配** | **单节点上几乎总是"某个索引设了 replica ≥1"**：`PUT /<索引>/_settings {"index":{"number_of_replicas":0}}`。**幂等修法**：`_cat/indices?v&health=yellow` 找出来逐个改 |
-| 健康检查一直 not ok，日志报内存锁定失败 | `memlock` 权限不足（或 cgroup 限制） | 确认 compose 的 `ulimits.memlock: -1` 生效；仍失败就临时 `bootstrap.memory_lock: false`（**性能会降，属临时手段**），同时查宿主 limits |
-| 查询报 `401 Unauthorized` | 口令不一致 / `.env` 引号问题 | 比对 `os/.env` 与 `ai/.env` 的 `OPENSEARCH_PASSWORD` **逐字符**；`.env` 里**不要加引号**；用 `curl -u admin:'口令'` 单独验证 |
-| 查询报 `403 Forbidden` | `admin` 之外的账号权限不足（如只读账号做写入） | 用 `admin` 做写入；只读账号另外建并给 `read` 权限 |
-| 磁盘满 / 索引变只读（`flood stage`） | 达到 95% 水位，索引被置只读 | ① 清旧快照（`_snapshot/os-backup/nightly-*`）；② 解锁：`PUT /<索引>/_settings {"index.blocks.read_only_allow_delete":null}`；③ 复核 §7.1 水位 |
-| 首次检索特别慢（几十秒~分钟级） | **惰性向量化在问答路径上**（§6.2 现状） | 说明索引没预热：按 §6.2 先灌满索引，再切 `VEC_BACKEND`；临时手段是发几次同样的提问 |
-| AI 日志"集群不可达（http://…）" | 网络/防火墙/绑定三者之一 | 在 AI 那台跑 §4.3 A5；核对 `OPENSEARCH_BIND_IP` 与 §2.5 白名单 |
-| 日志出现 `unassigned_shards` 长期不降 | 分片分配卡住（磁盘水位 / 权限） | `_cluster/allocation/explain` 看原因；按 §7.1 / §2.4 处理 |
-
-### 7.6 一条命令速查
-
-```bash
-cd /home/lhim/os
-bash os.sh status                 # 容器 + 集群健康 + 节点（先看这个）
-bash os.sh logs | tail -100       # 最近日志
-bash os.sh restart                # 重启（改 .env 后）
-bash os.sh load <新包.tar>        # 升级/换版本
-```
+| 启动即退出，日志 `max virtual memory areas vm.max_map_count [65530] is too low` | 内核参数没设或没持久化（重启后丢了） | §2.1 全做一遍；**进程内改不了**，必须在宿主设 |
+| 直接拒绝启动并提示不能以 root 运行 | 用 root（或 root 的 unit）拉起来了 | unit 里 `User=opensearch` / `Group=opensearch`（资产已设）；手工调试也要 `sudo -u opensearch …` |
+| 启动失败：`OPENSEARCH_INITIAL_ADMIN_PASSWORD` 相关报错 / demo 配置装不上 | 口令没设或**不满足官方要求**（8~100 字符、四类字符、zxcvbn 达 strong、不与 admin 相似） | 换强口令（`openssl rand -base64 24`），重新跑 §3.2 |
+| 启动报权限错误：`AccessDeniedException` / 读不到 `config/opensearch.yml` | 属主或权限不对 | §3.4：`chown -R opensearch:opensearch`；`config/opensearch.yml` 644；`opensearch.keystore` 600；`plugins/opensearch-security/tools/*.sh` 755 |
+| 日志报 keystore 相关错误 | `config/opensearch.keystore` 缺失或权限不对 | `sudo -u opensearch /home/lhim/os/opensearch/bin/opensearch-keystore list` 看是否可读；必要时重建并用 systemd 环境变量注入敏感值 |
+| 日志报"没有证书 / 集群形成失败（`Transport client authentication no longer supported` 之类）" | 我们替换 `opensearch.yml` 时**把 transport 证书那几行丢了** | 对照 §3.5 与资产文件，把 `plugins.security.ssl.transport.*` 三行补回；证书文件在 `config/*.pem`，确认存在 |
+| curl 报 SSL 错误（`wrong version number` / `certificate verify failed`） | REST 层 TLS 与请求协议不匹配：官方默认是 HTTPS，我们要 HTTP | 确认运行时 `config/opensearch.yml` 里是 `plugins.security.ssl.http.enabled: false`（§3.5 方案 A），改完 `systemctl restart opensearch` |
+| curl 用 HTTP 时报 `Empty reply from server` | 仍是 HTTPS 端口在应答 | 同上；先用 `curl -k https://127.0.0.1:9200/` 确认服务本身活着 |
+| 认证失败 `401 Unauthorized` | 用户名/口令不对 | `curl -u admin:'<口令>'` 单独验证；口令含特殊字符时**用单引号包住**；确认用的是本轮设的强口令（不是 demo 默认值） |
+| **`yellow`** | 主分片就绪、**副本未分配** | **单节点上几乎总是"某个索引设了 replica ≥1"**：`PUT /<索引>/_settings {"index":{"number_of_replicas":0}}`；用 `_cat/indices?v&health=yellow` 找出来逐个改 |
+| **`red`** | 有**主分片**未分配 ⇒ 检索/写入报错 | `_cat/indices?v` 与 `_cluster/allocation/explain`；单节点上常见原因是**数据目录权限**（§2.4）或**磁盘满** |
+| 磁盘满 / 索引变只读（flood stage） | 达 95% 水位 | ① 清旧快照（脚本保留期调小）；② 解锁：`PUT /<索引>/_settings {"index.blocks.read_only_allow_delete":null}`；③ 复核 §7.1 的水位 |
+| 首次检索特别慢（几十秒~分钟级） | **惰性向量化在问答路径上**（§6.2 现状） | 按 §6.2 先灌满索引再切 `VEC_BACKEND`；临时手段是重复发几次同样的提问 |
+| 快照失败 `repository_exception` / 报目录不可写 | 仓库目录属主不对或不在 `path.repo` 之下 | `sudo chown -R opensearch:opensearch /home/lhim/os/backup`；核对 `path.repo` 与脚本 `REPO_LOCATION` 的父子关系 |
+| `snapshot-backup.sh` 报无法免密 ssh | `rsync` 到 `.111` 需要免密 | `ssh-copy-id lhim@10.254.212.111`；或临时 `SKIP_REMOTE=1`（但**别长期跳过**，否则没有异地副本） |
+| AI 日志"集群不可达（http://…）" | 网络/防火墙/`network.host` 三者之一 | 在 AI 那台跑 §4.2 A6；核对 `network.host` 与 §2.5 白名单 |
 
 ---
 
@@ -1195,23 +1196,24 @@ bash os.sh load <新包.tar>        # 升级/换版本
 
 | 序号 | 未确认项 | 影响 | 谁来确认 |
 | --- | --- | --- | --- |
-| 1 | **两台机器的实际 CPU 架构**（本文按银河麒麟 aarch64 写，但 §1 第 2 步要求 `uname -m` 确认） | 决定 `docker pull --platform` 与镜像包后缀（`arm64`/`amd64`） | 你（在服务器上执行 `uname -m`） |
-| 2 | **AI 能力服务（ai-backend）实际跑在哪台机器上**（决定 §6.1 的 `OPENSEARCH_URL` 与 §2.5 的防火墙白名单） | 白名单写错 = 要么连不上、要么开太宽 | 你 |
-| 3 | **`opensearchproject/opensearch:2.19.1` 这个 tag 是否真的存在且含 `arm64`** | 出镜像第一步就会验证；本文**未能联网核实**（开发机到 registry 的连接超时） | 你（`docker manifest inspect`） |
-| 4 | **磁盘类型与容量**（本次给定 200GB；要确认是 SSD 还是 HDD、是否单盘） | HDD 上 kNN 检索延迟会明显变差；单盘则数据与快照抢 I/O | 你 / 平台方 |
-| 5 | **是否允许在业务网段使用内网 HTTP**（§3.5 方案 A） | 若等保/合规要求传输加密，必须改走自签 TLS（工作量与证书运维都增加） | 平台方（安全/合规） |
-| 6 | **是否需要 OpenSearch Dashboards** | 要的话需额外出镜像（Dashboards 与 OpenSearch 版本必须**同版本**）、加一个容器与端口；本文未包含 | 你 |
-| 7 | **时间源**（内网 NTP 服务器地址） | 时间不同步会让日志/快照时间戳不可比 | 平台方 |
-| 8 | **防火墙用哪个**（firewalld / iptables；麒麟发行版差异） | 决定 §2.5 用哪段命令 | 你（`systemctl is-active firewalld`） |
-| 9 | **快照保留期与执行时间**（本文建议每晚 1 次、留 7 天） | 影响备份盘容量与 RPO | 你 |
-| 10 | **现网真实文档数与切片总数**（§5.1 的规模表按 30 切片/份估算） | 决定"要不要现在就上"以及 §6.2 的重建耗时 | 你（`/documents` 或自检页） |
-| 11 | **AI 容器是否设置 `-Xmx`**（《AI模型调用与任务队列评估》登记为未确认） | 与"内存触发点"（第 2 条）直接相关 | 你（查 `ai/docker-compose.yml` 与运行中容器） |
-| 12 | **"切片带项目/密级元数据"这件事的落地排期**（§5.4 的 `project_id`/`security_level` 目前无人写入） | 不做这一步，OpenSearch 的"先过滤再检索"只是**能力就绪**、不是**功能可用** | 你 / 开发方 |
-| 13 | **上一轮未确认项的继承**：平台是否真的不支持降维（本仓库实测传 `dimensions` → HTTP 400） | 决定 `VEC_EMBED_DIMENSIONS` 永远为 0（本文按"不传"写） | 平台方 |
-| 14 | **是否要上监控/告警栈**（Prometheus、Grafana、OpenSearch 告警插件） | §7.4 的指标目前只能手工巡检 | 你 |
+| 1 | **官方当前 tar 版本号与其 SHA512**（本文按 `2.19.1` 写，并已实测该版本的下载 URL 与 `.sha512` 可用；**换版本必须重新核对**） | 决定 §1 的下载/校验命令与文件名 | 你（在能联网的机器上核对官方下载页 + `.sha512`） |
+| 2 | **AI 能力服务（ai-backend）实际跑在哪台机器上** | 决定 §6.1 的 `OPENSEARCH_URL` 与 §2.5 的防火墙白名单 | 你 |
+| 3 | 磁盘类型与容量（本次给定 200GB；要确认 SSD/HDD、是否单盘） | HDD 上 kNN 检索延迟会明显变差；单盘则数据与快照抢 I/O | 你 / 平台方 |
+| 4 | 是否允许在业务网段使用内网 HTTP（§3.5 方案 A） | 若等保/合规要求传输加密，必须改走方案 B（自签 TLS + AI 侧信任策略） | 平台方（安全/合规） |
+| 5 | 是否需要 OpenSearch Dashboards | 要的话需额外下载 Dashboards 包（**版本必须与 OpenSearch 一致**）并给它一套 `opensearch_dashboards.yml` 与端口 | 你 |
+| 6 | 时间源（内网 NTP 服务器地址） | 时间不同步会让日志/快照时间戳不可比 | 平台方 |
+| 7 | 防火墙实现（firewalld / iptables；麒麟发行版差异） | 决定 §2.5 用哪段命令 | 你（`systemctl is-active firewalld`） |
+| 8 | 快照保留期与执行时间（本文默认每晚 02:30、留 7 天） | 影响备份盘容量与 RPO | 你 |
+| 9 | 现网真实文档数与切片总数（§5.1 规模表按 30 切片/份估算） | 决定"要不要现在就上"以及 §6.2 的重建耗时 | 你（`/documents` 或自检页） |
+| 10 | AI 容器是否设置 `-Xmx`（《AI模型调用与任务队列评估》登记为未确认） | 与"内存触发点"（第 2 条）直接相关 | 你 |
+| 11 | **"切片带项目/密级元数据"的落地排期**（§5.2 的 `project_id`/`security_level` 目前无人写入） | 不做这一步，OpenSearch 的"先过滤再检索"只是**能力就绪**、不是**功能可用** | 你 / 开发方 |
+| 12 | 平台是否真的不支持降维（本仓库实测传 `dimensions` → HTTP 400） | 决定 `VEC_EMBED_DIMENSIONS` 永远为 0（本文按"不传"写） | 平台方 |
+| 13 | 是否要上监控/告警栈（Prometheus、Grafana、OpenSearch 告警插件） | §7.4 的指标目前只能手工巡检 | 你 |
+| 14 | `.111` 演练机的 ssh 免密是否允许配置（`snapshot-backup.sh` 的 rsync 需要） | 不配就只能 `SKIP_REMOTE=1`，等价于没有异地副本 | 你 |
 
-> **已由本轮决定解决、故不再列为未确认**：节点数（定为**单节点**，理由见 §0.3）、第二台机器的作用（**冷备 + 演练机**，§6.4）、
-> 副本数（**0**，§5.1）、堆大小（**8g / 16GB 内存的 50%**，§3.4）。
+> **已由本轮决定解决、故不再列为未确认**：部署形态（**tar + systemd，不用 Docker**）、节点数（**单节点**，§0.3）、
+> 第二台机器的作用（**冷备 + 演练机**，§6.4）、副本数（**0**，§5.1）、堆大小（**8g / 16GB 内存的 50%**，§3.3）、
+> 机器架构（**x86_64**，§0.2）。
 
 ---
 
@@ -1219,80 +1221,68 @@ bash os.sh load <新包.tar>        # 升级/换版本
 
 > **什么时候做**：① 需要**两个 AI 实例**做无中断检索；② 切片 **>50 万**（单节点磁盘/恢复窗口吃紧）。其余情况**不要动**（§0.3）。
 
-**届时只需改两个参数（两台老机器各改一遍，第 3 台按新配置写）**
-
 | 参数 | 单节点现值 | 3 节点改为 | 说明 |
 | --- | --- | --- | --- |
 | `discovery.seed_hosts` | **不写** | `os01,os02,os-mgr` | 3 个节点的**可解析名或 IP**；顺序不重要，但要**一致** |
-| `cluster.initial_master_nodes` | **不写** | `os01,os02,os-mgr` | ★**只能在数据目录为空时写一次**：写错/改错必须清 `data/` 重来（这是最容易踩的坑） |
-
-**另外要一起改的（不改这两个参数不足以成为真 HA）**
-
-| 项 | 单节点 | 3 节点 |
-| --- | --- | --- |
-| `discovery.type` | `single-node` | **删掉这一行**（集群模式不能有它） |
-| 第 3 台角色 | —— | `node.roles: [cluster_manager]`（**dedicated cluster-manager，不存数据**，可用轻量机） |
-| 数据节点角色 | （默认全角色） | `node.roles: [data, ingest]`（两台老机器） |
-| 副本数 | **0** | **1**（此时才有第二台机器放副本，green 才成立） |
-| `OPENSEARCH_JAVA_OPTS` | `-Xms8g -Xmx8g` | 数据节点不变；dedicated cluster-manager 用小堆（如 `-Xms2g -Xmx2g`，**估算（假设：管理节点不存数据）**） |
-| `container_name` | `pm-opensearch` | **必须改成 `os-node1`/`os-node2`/`os-node3`**：三台机器各自的容器名可以相同，但同一个部署根里若并存多个容器会撞名；为免歧义，节点名与容器名一一对应 |
-| 防火墙 | 9200 白名单 | **另加 9300**（节点间传输）在 3 个节点两两之间放行 |
-| 快照仓库 | 每台本地 `fs` 仓库 | 建议共享一个（NFS）或用 `s3` 类插件指向内网对象存储 |
+| `cluster.initial_master_nodes` | **不写** | `os01,os02,os-mgr` | ★**只能在数据目录为空时写一次**：写错/改错必须清 `data/` 重来（最容易踩的坑） |
+| `discovery.type` | `single-node` | **删掉这一行** | 集群模式不能有它 |
+| 第 3 台角色 | —— | `node.roles: [cluster_manager]` | **dedicated cluster-manager，不存数据**（可用轻量机） |
+| 数据节点角色 | （默认全角色） | `node.roles: [data, ingest]` | 两台老机器 |
+| 副本数 | **0** | **1** | 此时才有第二台机器放副本，green 才成立 |
+| heap | `-Xms8g -Xmx8g` | 数据节点不变；管理节点用 `-Xms2g -Xmx2g`（**估算（假设：管理节点不存数据）**） | 各写各的 `jvm.options.d/heap.options` |
+| 防火墙 | 9200 白名单 | **另加 9300**（节点间 transport）在两两之间放行 | §2.5 |
+| 快照仓库 | 每台本地 `fs` 仓库 | 建议共享一个（NFS）或对象存储 | §7.2 |
 
 ```yaml
-# 3 节点时的环境变量片段（示意，供届时改 os-node1/os-node2）
-      cluster.name: pm-os
-      node.name: os01
-      node.roles: [data, ingest]
-      discovery.seed_hosts: os01,os02,os-mgr
-      cluster.initial_master_nodes: os01,os02,os-mgr
-      # 删掉 discovery.type: single-node
+# 3 节点时 opensearch.yml 的差异片段（示意，两台老机器）
+cluster.name: pm-os
+node.name: os01
+node.roles: [data, ingest]
+discovery.seed_hosts: os01,os02,os-mgr
+cluster.initial_master_nodes: os01,os02,os-mgr
+# 删掉 discovery.type: single-node
 ```
-
-```yaml
-# 第 3 台（dedicated cluster-manager，不存数据）
-      cluster.name: pm-os
-      node.name: os-mgr
-      node.roles: [cluster_manager]
-      discovery.seed_hosts: os01,os02,os-mgr
-      cluster.initial_master_nodes: os01,os02,os-mgr
-      OPENSEARCH_JAVA_OPTS: "-Xms2g -Xmx2g"
-```
-
 ```bash
 # 改完逐台重启（★一次只重启一台，等它回到 green 再动下一台）
-cd /home/lhim/os && bash os.sh restart && bash os.sh status
-```
-```bash
-# 验收：3 行节点、1 个 master、副本已分配、green
-curl -sS -u "$AUTH" "$OS/_cat/nodes?v"
-curl -sS -u "$AUTH" "$OS/_cluster/health?pretty"    # 期望 status=green, number_of_nodes=3, unassigned_shards=0
-curl -sS -u "$AUTH" "$OS/_cat/indices?v"            # 期望 pm-ai-chunks 的 rep=1 且 health=green
+sudo systemctl restart opensearch
+curl -sS -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health?pretty    # 期望 number_of_nodes=3, green
 ```
 
-> **单节点 → 3 节点不需要重建索引**：把原来的 `data/` 目录拷到第 1 台（或从快照恢复），
-> 再把副本数从 0 改成 1 即可（`PUT /pm-ai-chunks/_settings {"index":{"number_of_replicas":1}}`）。
-> ⚠️ **`cluster.initial_master_nodes` 与已有数据目录冲突**：从单节点（数据目录非空）转集群时，
-> 该参数**只在"引导一个全新集群"时用**；已有数据时正确做法是**只在其中一台保留数据**并以集群模式启动它，
-> 其余两台以空数据目录加入（**这一步最容易出错，届时务必按官方"从单节点迁移到多节点集群"的步骤做并先在 `.111` 上演练**）。
+> **单节点 → 3 节点不需要重建索引**：只在其中一台保留 `data/`，其余两台以**空数据目录**加入；
+> 再把副本数从 0 改成 1（`PUT /pm-ai-chunks/_settings {"index":{"number_of_replicas":1}}`）。
+> ⚠️ 已有数据时**不要**再写 `cluster.initial_master_nodes` 去"引导新集群"；这一步最容易出错，
+> 届时务必按官方"从单节点迁移到多节点集群"的步骤做，并**先在 `.111` 上演练**。
 
-## 10. 附录 B · 与既有部署规范的对齐（自查表）
+## 10. 附录 B · 官方文档逐条核对（官方怎么写 → 我们原来怎么写 → 现在怎么写）
 
-| 规范（来源） | 本方案做法 | 一致 |
-| --- | --- | --- |
-| 服务器无外网：只 `docker load`，**绝不** `--build` | 编排**无 `build:` 段** + `pull_policy: never`；镜像由开发机 `docker save` 后 scp | ✅ |
-| 工程名 = 目录名 | 文件放 `/home/lhim/os/`，脚本**不传 `-p`** ⇒ 工程名 `os` | ✅ |
-| `.env` 与 compose **同目录** | `/home/lhim/os/{docker-compose.yml,.env}` | ✅ |
-| 唯一入口、中文提示、幂等、失败给下一步命令 | [`os.sh`](../deploy/opensearch/os.sh)：`start\|stop\|restart\|status\|logs\|load\|help` | ✅ |
-| 容器名沿用仓库习惯（单数） | `pm-opensearch`（与 `pm-backend`/`pm-frontend`/`pm-ai-backend` 同一命名风格） | ✅ |
-| 日志限体积 | `logging: json-file, max-size 50m, max-file 5` | ✅ |
-| 密钥不入仓库/不进镜像 | `OPENSEARCH_PASSWORD` 只在服务器 `.env`（`chmod 600`）；仓库里只有 `.env.example` 占位 | ✅ |
-| 实例资产与文档逐字一致 | `docs/OpenSearch部署与接入.md` §3 ↔ [`deploy/opensearch/docker-compose.yml`](../deploy/opensearch/docker-compose.yml)、[`.env.example`](../deploy/opensearch/.env.example) | ✅ |
+> 核对对象：官方 Tar 安装页、安全插件启停页、demo 配置页、安全设置页（链接见文首）。
+> **"原来"指本文件的 Docker 版初稿与本仓库当时的资产。**
 
----
+| # | 项 | 官方怎么说 | 我们原来怎么写 | 现在改成什么 |
+| --- | --- | --- | --- | --- |
+| 1 | **默认 REST 层是 HTTPS** | Tar 页 Step 3 的验证命令是 `curl -X GET https://localhost:9200 -u 'admin:<password>' --insecure`；demo 脚本"applies self-signed TLS certificates" | 写的是"内网 HTTP + basic auth"，**没有显式处理 TLS** | §3.5 给出**三选一**（HTTP+basic auth / 自签 TLS / 禁插件并说明不推荐），并在配置资产里**显式写下** `plugins.security.ssl.http.enabled: false` |
+| 2 | **口令复杂度** | demo 配置页四条：8~100 字符；四类字符各至少一个；**zxcvbn 达 strong 或以上**；**不得与用户名 admin 相似** | 只写了">=8 位 + 四类字符齐全" | §3.2 按官方**四条**逐字写全，并说明"四类字符齐全也可能被拒" |
+| 3 | **`DISABLE_INSTALL_DEMO_CONFIG=true` 的后果** | 镜像/安装脚本 README 的 Scenario 3：跳过 demo 脚本 ⇒ **没有证书与安全配置**，安全插件开着就会**启动失败** | Docker 编排里设了 `DISABLE_INSTALL_DEMO_CONFIG: "true"` 且同时启用安全插件 —— **这是错的，会起不来** | **删掉 Docker 路线**；tar 路线改为"**让 demo 脚本正常跑**（拿到证书与 admin 用户），用强口令保证口令安全"，并在 §3.2/§3.3 讲清顺序 |
+| 4 | **`OPENSEARCH_INITIAL_ADMIN_PASSWORD` 的用法** | tar 路线：先 `export OPENSEARCH_INITIAL_ADMIN_PASSWORD=<强口令>`，再 `./opensearch-tar-install.sh`；2.12 起不设会失败 | 把它当成 Docker 的环境变量写在 compose 里 | 改为 §3.2 的 **`export` + 脚本**（tar 语汇），并说明它只在**首次**生效 |
+| 5 | **安装脚本的实际作用** | `opensearch-tar-install.sh` 会"apply a generic configuration… defines some environment variables and also applies self-signed TLS certificates"，并把安全设置写进 `config/opensearch.yml` | 没提这个脚本 | §3.2 说明它的作用与"改了 `opensearch.yml`"，并强制**紧接着** §3.3 接入我们的配置（含先备份 `config/opensearch.yml.demo.bak`） |
+| 6 | **transport 层证书不能漏** | demo 脚本写入的 `opensearch.yml` 含 transport 证书路径；安全插件默认要求 transport 加密（缺证书 ⇒ 集群起不来 / 报 `Transport client authentication no longer supported`） | 我们的配置模板**只有** `plugins.security.ssl.http.enabled`，把 transport 段丢了 | 配置资产补回 `plugins.security.ssl.transport.pemcert_filepath` / `pemkey_filepath` / `pemtrustedcas_filepath` + `allow_unsafe_democertificates` / `allow_default_init_securityindex`，并解释**为什么不能整份覆盖成"干净配置"** |
+| 7 | **`vm.max_map_count` 与 swap** | Tar 页 Step 2：`sudo swapoff -a`；`vm.max_map_count=262144`（官方示例改 `/etc/sysctl.conf` 后 `sysctl -p`，再 `cat /proc/sys/vm/max_map_count` 校验） | 有（写了 `sysctl.d` 与重启校验） | 与官方一致；保留 `sysctl.d` 写法（更不容易和别人的行冲突）并补上 `cat /proc/sys/vm/max_map_count` 这条官方校验 |
+| 8 | **systemd unit 示例** | 官方给了完整示例：`Type=forking`、`ExecStart=/opt/opensearch/bin/opensearch -d`、`User/Group=opensearch`、`StandardOutput=journal`、`LimitNOFILE=65535`、`LimitNPROC/LimitAS/LimitFSIZE`、`TimeoutStopSec=0`、`KillSignal=SIGTERM`、`KillMode=process`、`SendSIGKILL=no`、`SuccessExitStatus=143`、`TimeoutStartSec=75`；并提醒 **tar + systemd 非生产推荐**（要 systemd 就用 RPM） | 原来用 Docker，**没有 unit** | 资产 [`opensearch.service`](../deploy/opensearch/opensearch.service) **照官方示例改写**，只改三处：路径→`/home/lhim/os/opensearch`、保留 User/Group 语义、**补 `LimitMEMLOCK=infinity` + `Environment=MAX_MAP_COUNT=262144`**（官方 configuring-opensearch 要求），并保留官方的"非生产推荐"提醒 |
+| 9 | **memlock 与 `MAX_MAP_COUNT`** | 官方 configuring-opensearch：systemd 托管且开 `bootstrap.memory_lock` 时，需要放开 memlock 并设 `MAX_MAP_COUNT=262144` | 原 compose 用 `ulimits.memlock: -1`（容器语汇） | 改为 unit 的 `LimitMEMLOCK=infinity` + `Environment=MAX_MAP_COUNT=262144`，并在 §2.2/§4.2 A4 给出验证命令 |
+| 10 | **专用非 root 用户** | Tar 页：`sudo adduser --system --shell /bin/bash -U --no-create-home opensearch`；`sudo usermod -aG opensearch $USER`；`sudo chown -R opensearch /opt/opensearch/`；OpenSearch 不能以 root 运行 | 原方案靠容器内 uid 1000（宿主 `chown 1000:1000`） | §2.4/§3.4 全部改为**系统用户 `opensearch` + `chown -R opensearch:opensearch`**，并给"权限不对"的排障行 |
+| 11 | **端口 9600** | 官方（Docker 与 tar）都提 `9200`（REST）与 `9600`（Performance Analyzer） | 原来只讨论 9200，9600 未表态 | §0.2/§2.5 明确：**9600 不放行**（本方案不用 Performance Analyzer） |
+| 12 | **数据/日志/备份路径与属主** | 官方 tar 路线不规定安装路径（"The tarball installation does not define a specific installation path, users, roles, or permissions"），但要自己保证权限正确；官方示例把 `data` 放在安装目录下 | 原来绑定宿主目录 `1000:1000`（容器语汇） | §0.2/§2.4 定稿 `/home/lhim/os/{opensearch,data,logs,backup}`，**data/logs 放在安装目录之外**（升级不碰数据），属主 `opensearch:opensearch`、权限 750（文件 644 / keystore 600） |
+| 13 | **升级与"复制 config"** | 官方 tar 升级思路是"换程序目录、带上你自己的 `config/`"（安全配置与证书都要自己接管） | 原来是 `docker load` 换 tag | §7.3 改为 stop → 解包新目录 → **复制 `config/opensearch.yml` + `jvm.options.d/` + demo 生成的证书与 `opensearch-security/`** → chown → start，旧目录留作回滚 |
+| 14 | **`plugins.security.ssl.http.enabled` 的默认值** | 安全设置页：该设置 "Default is `false`"，但 demo 脚本会把它设成 **true**（所以 quickstart 用 HTTPS） | 原来只有"TLS 可选"一句，说不清默认到底是什么 | §3.5 明确：**字段默认 false，但 demo 配置会改成 true**，因此我们**必须显式写 false**（而不是"默认就是 HTTP"） |
+| 15 | **禁用安全插件的代价** | 启停页：禁用后"exposes the configuration index… If the index contains sensitive information, make sure to protect it"；安全设置页：`plugins.security.disabled` 的警告是"can expose your configuration (including passwords) to the public"；且**禁用/启用需要整集群重启** | 原方案把"禁插件"只当作"简单"选项 | §3.5 方案 C 明确列为**不采用**，并原样引用官方的暴露警告与"需要重启"这一操作代价 |
+| 16 | **下载 URL 与校验** | 官方 Tar 页给的是 `wget https://artifacts.opensearch.org/releases/bundle/opensearch/<版本>/opensearch-<版本>-linux-x64.tar.gz`（**页面没有给 `.sha512` 的说明**） | 原文没有校验步骤 | §1 用官方 URL 形式，并**实测确认**同目录下有 `.sha512`（165 字节文本，`sha512sum -c` 可直接吃），给出 Windows/Linux 两种校验命令 + "校验不通过绝不安装" |
+| 17 | **架构** | 官方按 x64 / arm64 分别给下载命令 | 原方案假设这两台是 aarch64（银河麒麟） | §0.2 明确这两台是 **x86_64**，用 `linux-x64.tar.gz`；并提醒别和既有 aarch64 服务器的产物搞混 |
+| 18 | **`jvm.options.d` 覆盖目录** | 官方 Tar 页 Step 4 是让你直接改 `config/jvm.options` 里的 `-Xms/-Xmx` | 原来把堆写在容器环境变量 `OPENSEARCH_JAVA_OPTS` 里 | §3.3 改为官方支持的 `config/jvm.options.d/heap.options`（**升级时 `jvm.options` 会被新版本覆盖，我们的文件不会**），并在资产里解释为什么是 8g |
+| 19 | **快照仓库位置** | 官方快照文档要求仓库 location 在 `path.repo` 之下 | 原方案把 `path.repo` 与宿主目录直接对应（容器语汇） | §7.2 明确 `path.repo: /home/lhim/os/backup` 与脚本 `REPO_LOCATION=/home/lhim/os/backup/fs-repo` 的**父子关系**，并给出 `repository_exception` 的排障行 |
 
 ## 11. 变更记录
 
 | 版本 | 日期 | 变更 |
 | --- | --- | --- |
-| docs-1.6 | 2026-09-23 | 首版：为两台新服务器（`10.254.212.110` / `.111`）出 OpenSearch 部署与接入文档 + 部署资产（`deploy/opensearch/{docker-compose.yml,.env.example,os.sh}`）。**定稿单节点**（`.110`），第二台为**冷备 + 演练机**；含 2 节点 quorum 明账（为何不推荐）、3 节点升级路径（附录 A）、容量与 mapping 设计（4096 维 / cosinesimil / 1 分片 0 副本）、AI 侧接入与切换/回滚、快照与恢复演练、排障表与未确认项（14 条）。**无源码变更** |
+| docs-1.6 | 2026-09-23 | 首版（**已被下方"修订二"取代**）：为两台新服务器出 OpenSearch 部署与接入文档 + 部署资产，当时定稿**单节点 + Docker（`docker load`）**路线 |
+| docs-1.6（修订二） | 2026-09-23 | **部署形态改为官方 `tar.gz` 解包 + systemd（不用 Docker）**（新机器没装 Docker）：删除全部 Docker 路线资产（compose / `.env.example` / `os.sh`），新增 `opensearch.yml.example` / `jvm.options.d/heap.options` / `opensearch.service` / `snapshot-backup.sh`；两处决策级修正：**架构 x86_64**、**按官方文档逐条对齐**（默认 REST 层是 HTTPS ⇒ 必须显式关 TLS；口令复杂度补 zxcvbn 与"不得与 admin 相似"；`DISABLE_INSTALL_DEMO_CONFIG=true` 会让节点起不来 ⇒ 改为让 demo 脚本正常跑；transport 证书不能漏；systemd unit 照官方示例并补 `LimitMEMLOCK`/`MAX_MAP_COUNT`；升级路径改为换程序目录 + 复制 `config/`）。逐条核对表见 **附录 B** |
