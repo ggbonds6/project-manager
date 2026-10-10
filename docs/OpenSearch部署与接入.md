@@ -279,7 +279,6 @@ ls "$ASSETS"        # 期望看到 6 个资产：opensearch.yml.example / jvm.op
 | `opensearch-dashboards.service` | `/etc/systemd/system/opensearch-dashboards.service` | **`root:root`** | **`644`** |
 
 **逐条命令（`install -D` 一条同时完成「建目录 + 复制 + 定属主 + 定权限」）**
-
 ```bash
 # ① OpenSearch 配置：落到「我们维护的副本」config/ 下（这一步需要 root 跨用户搬）
 sudo install -D -o opensearch -g opensearch -m 640 \
@@ -322,6 +321,20 @@ ls -l /home/opensearch/app/config/opensearch.yml /home/opensearch/app/config/jvm
 > `sudo systemctl restart opensearch`。**别直接改 `app/config/`** —— 下次升级换 `app/` 时会被换掉，
 > 你会以为"配置丢了"。这条在 §3.3 与 §7.3 都各写了一遍，因为这是最容易反复踩的地方。
 
+**落位表（二）：目录、其它文件、脱壳后的可执行位**（第 1 张表是"仓库资产"，这张是"运行期要管的其它落位点"）
+
+| 目标 | 用途 | 属主:组 | 权限 | 备注 |
+| --- | --- | --- | --- | --- |
+| `/home/opensearch/data` | `path.data`（索引数据） | `opensearch:opensearch` | `750`（建议 `2750`） | ★**服务只它一个能写**；这里被误删/误覆盖等于索引报废（§7.2） |
+| `/home/opensearch/logs` | `path.logs`（文件日志） | `opensearch:opensearch` | `750` | 服务自己写；journald 另有一份（§7.1） |
+| `/home/opensearch/backup` 与 `backup/fs-repo` | `path.repo`（快照仓库） | `opensearch:opensearch` | `750` | ★**与 data 同类的"服务要写、运维不该写"**：快照是唯一的恢复来源，被手工改坏等于没有备份。`fs-repo` 是仓库 `location`，必须落在 `path.repo` 之下（§7.2） |
+| `/home/opensearch/dashboards/app/config` 及其中 `opensearch_dashboards.yml` | Dashboards 配置 | `opensearch:opensearch` | 目录 `750`／文件 `640` | 见 §12.2；它是 `install -D` 自动建出来的，若你手工 `mkdir` 过就要自己确认属主 |
+| `/home/opensearch/app/plugins/opensearch-security/tools/*.sh` | `hash.sh` / `securityadmin.sh` | `opensearch:opensearch` | **`750`（必须有 `x`）** | ★缺 `x` ⇒ 这两个脚本跑不了（改内部用户/角色时必然用到）。核对：`ls -l …/tools/*.sh`，期望 `-rwxr-x---`；不对就 `sudo chmod 750 /home/opensearch/app/plugins/opensearch-security/tools/*.sh` |
+| `/home/opensearch/config/snapshot-backup.env`（**可选**，脚本的覆盖配置） | 覆盖 `KEEP_DAYS` / `REMOTE` 等 | `opensearch:opensearch` | **`600`** | ★**只在里面放非敏感覆盖项**。口令推荐放 `/etc/opensearch-backup.pass`（下一行），**两处只留一处**；若确实要写进这里，则必须 `600` 且与脚本读法一致（脚本顺序：环境变量 → 该文件 → `/etc` 口令文件） |
+| `/etc/opensearch-backup.pass` | 快照脚本的口令（一行） | **`root:root`** | **`600`**（§7.2 给的是 `sudo chmod 600`，默认 root 属主） | cron 以哪个用户跑，就保证那个用户能读（`/etc/opensearch-backup.pass` 由 root 建、cron 若是 root 则天然可读） |
+| `/etc/profile.d/lhim-umask.sh`（**仅路线二需要**） | 给 `lhim` 设 `umask 002` | **`root:root`** | **`644`** | `/etc/profile.d/*` 一律 root 属主；它只影响登录 shell 的默认权限位 |
+
+
 ### 1.5.1 为什么会卡 + 三条纪律（**照着做就不会反复踩**）
 
 **① 为什么父目录能写、而 `config` 不能？**
@@ -344,7 +357,7 @@ ls -l /home/opensearch/app/config/opensearch.yml /home/opensearch/app/config/jvm
 - `sudo`（root 两侧都过得去）→ `install` / `cp` + `chown`；
 - 或先放到**两边都能读的位置**（`/tmp`、或 `/home/opensearch` 这个组可写的父目录），再搬进子目录。
 
-### 1.5.2 落位完成后的核对（**4 条命令，逐条看输出**）
+### 1.5.2 落位完成后的核对（**7 条命令，逐条看输出**）
 
 ```bash
 # ① 看 config/ 里的三样东西：属主应为 opensearch:opensearch，脚本应为可执行
@@ -372,6 +385,22 @@ find /home/opensearch -perm /022 -type f
 > **为什么第 ④ 条这么重要**：这不是"洁癖"。安全插件对 `config/` 下的 `.yml`、`.pem`、keystore 有**硬校验**，
 > 一旦"组或其他人可写"，节点会**拒绝启动**并在日志里给出明确原因。用 `install -m 640` 落位就天然满足；
 > 只有当你用 `cp` + `chmod 664/666` 之类手工操作时才可能踩到。
+
+```bash
+# ⑤ 安全插件工具脚本必须带 x 位（否则 hash.sh / securityadmin.sh 跑不了）
+ls -l /home/opensearch/app/plugins/opensearch-security/tools/*.sh
+# 期望：-rwxr-x---（750）。若是 -rw-r-----，补：
+#   sudo chmod 750 /home/opensearch/app/plugins/opensearch-security/tools/*.sh
+
+# ⑥ 快照仓库目录（服务要写、运维不该写；与 data 同类）
+ls -ld /home/opensearch/backup /home/opensearch/backup/fs-repo
+# 期望：drwxr-x--- opensearch opensearch（750）。它不是"传文件的地方"，别按父目录那套开组写。
+
+# ⑦ 口令与覆盖配置的落位（两者只留一处，且都不许组/其他人可读）
+ls -l /etc/opensearch-backup.pass 2>/dev/null || echo "(还没建：见 §7.2 第 ① 条)"
+ls -l /home/opensearch/config/snapshot-backup.env 2>/dev/null || echo "(没用到这个覆盖文件就对了——口令放 /etc 那份)"
+# 期望：均为 -rw-------（600）
+```
 
 
 ### 1.5.3 两条省事路径（**"权限太麻烦"时的正解**）
@@ -481,6 +510,21 @@ root 本来就两边都过得去。是否可行取决于运维是否允许 root 
 > ——**这是故意的**，只为让 `lhim` 能把**安装包**直传进来（§1.3 做法 A）；
 > 而 `config` / `data` / `logs` / `backup` 是 **`750`（组仅 `r-x`）**——**这也是故意的**，因为服务自己的运行目录
 > 只应给服务账号写。路线一保留了这个分工，路线二**主动放弃**了它（所以有上述代价）。
+
+#### 给"看不懂权限"的读者：一句话判断能不能传
+
+> **往目录里新建/拖入文件 ⇒ 看目录有没有 `w`；覆盖已有文件 ⇒ 还要看那个文件有没有 `w`。**
+
+| 你想做的事 | 看什么 | 结果 |
+| --- | --- | --- |
+| 把**新文件**拖进 `/home/opensearch`（父目录） | 父目录 `2775` → **组有 `w`** | ✅ 能拖（所以安装包能 scp 进来） |
+| 把**新文件**拖进 `/home/opensearch/config`（子目录） | 子目录 `750` → **组只有 `r-x`，没有 `w`** | ❌ 不能拖（`Permission denied`——真机就卡在这） |
+| **覆盖**已存在的 `/home/opensearch/config/opensearch.yml` | 目录**和这个文件**都要有 `w`；文件是 `640` → 组**没有 `w`** | ❌ 覆盖失败（**即使目录开了组写也不行**——这就是路线二必须把文件也设 `664` 的原因） |
+| 以 `opensearch` 身份（`sudo -u opensearch -s`）做上面三件事 | 它是属主，`rwx` 都有 | ✅ 都行（**路线一为什么推荐**） |
+
+> 记住这张表，就不用背"setgid/sticky/umask"这些名词了：
+> **目录的 `w` 管"能不能往里放东西"，文件的 `w` 管"能不能改这个文件本身"。**
+
 
 
 ### 1.6 换版本时要同步改的地方（**就这两处，别到处找**）
@@ -1652,28 +1696,42 @@ cp -a /home/opensearch/app/config/opensearch-security    /home/opensearch/app-<�
 cp -a /home/opensearch/app/config/opensearch.keystore    /home/opensearch/app-<新版本>/config/ 2>/dev/null || true
 ls -l /home/opensearch/app-<新版本>/config/ | grep -E '\.pem$|security|keystore'
 #   不带这些，安全插件会因为"没有证书/配置"起不来（对照官方 Tar 页的 warning：demo 配置要自己接管）
+
+# ⑥ ★证书/安全配置/keystore 的【属主与权限】——升级后最常见的 644/640 事故就在这里
+#    规则（与 §1.5 落位表一致）：属主一律 opensearch:opensearch；
+#      · *.pem（含私钥 esnode-key.pem / admin-key.pem）→ 640（组可读、组不可写）
+#      · opensearch-security/*.yml（内部用户/角色）  → 640
+#      · opensearch.keystore                          → 600（只属主可读）
+sudo chown -R opensearch:opensearch /home/opensearch/app-<新版本>/config
+sudo find /home/opensearch/app-<新版本>/config -maxdepth 1 -name '*.pem' -exec chmod 640 {} +
+sudo find /home/opensearch/app-<新版本>/config/opensearch-security -name '*.yml' -exec chmod 640 {} + 2>/dev/null || true
+sudo chmod 600 /home/opensearch/app-<新版本>/config/opensearch.keystore 2>/dev/null || true
+sudo chmod 750 /home/opensearch/app-<新版本>/plugins/opensearch-security/tools/*.sh 2>/dev/null || true
+ls -l /home/opensearch/app-<新版本>/config/*.pem /home/opensearch/app-<新版本>/config/opensearch-security/*.yml 2>/dev/null | head
+ls -l /home/opensearch/app-<新版本>/config/opensearch.keystore 2>/dev/null
+#   期望：pem 与 opensearch-security/*.yml 为 -rw-r-----（640）；keystore 为 -rw-------（600）
 ```
 
 ```bash
-# ⑥ 停服 + 换目录（旧 app/ 改名保留 = 回滚点）
+# ⑦ 停服 + 换目录（旧 app/ 改名保留 = 回滚点）
 sudo systemctl stop opensearch
 sudo mv /home/opensearch/app           /home/opensearch/app-<旧版本>
 sudo mv /home/opensearch/app-<新版本>   /home/opensearch/app
 
-# ⑦ 权限归位（换目录后必须重做，属主会跟着改名的目录走，但确认一次更稳）
+# ⑧ 权限归位（换目录后必须重做，属主会跟着改名的目录走，但确认一次更稳）
 sudo chown -R opensearch:opensearch /home/opensearch
 sudo chmod 640 /home/opensearch/app/config/opensearch.yml \
                /home/opensearch/app/config/jvm.options.d/heap.options
 sudo -u opensearch ls /home/opensearch/app/bin/opensearch     # 最终确认能读到
 
-# ⑧ 启动 + 验收
+# ⑨ 启动 + 验收
 sudo systemctl start opensearch
 curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/ | head -12                 # 看 version.number 是否新版本
 curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3   # 期望 green
 curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cat/nodes?v                # 1 行
 ```
 ```bash
-# 回滚（升级后起不来或行为异常）：把目录换回去再起（就是 ⑥⑦⑧ 的反操作）
+# 回滚（升级后起不来或行为异常）：把目录换回去再起（就是 ⑦⑧⑨ 的反操作）
 sudo systemctl stop opensearch
 sudo mv /home/opensearch/app            /home/opensearch/app-failed-<新版本>
 sudo mv /home/opensearch/app-<旧版本>    /home/opensearch/app
@@ -1821,7 +1879,7 @@ curl -sS -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health?pretty    # �
 | 10 | **专用非 root 用户** | Tar 页：`sudo adduser --system --shell /bin/bash -U --no-create-home opensearch`；`sudo usermod -aG opensearch $USER`；`sudo chown -R opensearch /opt/opensearch/`；OpenSearch 不能以 root 运行 | 原方案靠容器内 uid 1000（宿主 `chown 1000:1000`） | §2.4/§3.4 全部改为**系统用户 `opensearch` + `chown -R opensearch:opensearch`**，并给"权限不对"的排障行 |
 | 11 | **端口 9600** | 官方（Docker 与 tar）都提 `9200`（REST）与 `9600`（Performance Analyzer） | 原来只讨论 9200，9600 未表态 | §0.2/§2.5 明确：**9600 不放行**（本方案不用 Performance Analyzer） |
 | 12 | **数据/日志/备份路径与属主** | 官方 tar 路线不规定安装路径（"The tarball installation does not define a specific installation path, users, roles, or permissions"），但要自己保证权限正确；官方示例把 `data` 放在安装目录下 | 原来绑定宿主目录 `1000:1000`（容器语汇） | §0.2/§2.4 定稿 `/home/opensearch/{app,config,data,logs,backup}`，**data/logs 放在安装目录之外**（升级不碰数据），属主 `opensearch:opensearch`、权限 750（文件 644 / keystore 600） |
-| 13 | **升级与"复制 config"** | 官方 tar 升级思路是"换程序目录、带上你自己的 `config/`"（安全配置与证书都要自己接管） | 原来是 `docker load` 换 tag | §7.3 改为 stop → 解包新目录 → **复制 `config/opensearch.yml` + `jvm.options.d/` + demo 生成的证书与 `opensearch-security/`** → chown → start，旧目录留作回滚 |
+| 13 | **升级与"复制 config"** | 官方 tar 升级思路是"换程序目录、带上你自己的 `config/`"（安全配置与证书都要自己接管） | 原来是 `docker load` 换 tag；升级段只写了"把证书/`opensearch-security/`/keystore 也带过去"，**没有属主与权限** | §7.3 改为 stop → 解包新目录 → **复制 `config/opensearch.yml` + `jvm.options.d/` + demo 生成的证书与 `opensearch-security/`** → **⑥ 明确属主与权限（`*.pem`/`opensearch-security/*.yml` = `640`、`keystore` = `600`、`tools/*.sh` = `750`，一律 `opensearch:opensearch`）** → chown/chmod → 换目录 → start；旧目录留作回滚。**升级后最常见的 644/640 事故就发生在这里** |
 | 14 | **`plugins.security.ssl.http.enabled` 的默认值** | 安全设置页：该设置 "Default is `false`"，但 demo 脚本会把它设成 **true**（所以 quickstart 用 HTTPS） | 原来只有"TLS 可选"一句，说不清默认到底是什么 | §3.5 明确：**字段默认 false，但 demo 配置会改成 true**，因此我们**必须显式写 false**（而不是"默认就是 HTTP"） |
 | 15 | **禁用安全插件的代价** | 启停页：禁用后"exposes the configuration index… If the index contains sensitive information, make sure to protect it"；安全设置页：`plugins.security.disabled` 的警告是"can expose your configuration (including passwords) to the public"；且**禁用/启用需要整集群重启** | 原方案把"禁插件"只当作"简单"选项 | §3.5 方案 C 明确列为**不采用**，并原样引用官方的暴露警告与"需要重启"这一操作代价 |
 | 16 | **下载 URL 与校验** | 官方 Tar 页给的是 `wget https://artifacts.opensearch.org/releases/bundle/opensearch/<版本>/opensearch-<版本>-linux-x64.tar.gz`（**页面没有给 `.sha512` 的说明**） | 原文没有校验步骤 | §1 用官方 URL 形式，并**实测确认**同目录下有 `.sha512`（165 字节文本，`sha512sum -c` 可直接吃），给出 Windows/Linux 两种校验命令 + "校验不通过绝不安装" |
@@ -1843,6 +1901,7 @@ curl -sS -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health?pretty    # �
 | 32 | **heap 覆盖目录 `jvm.options.d/` 与自带 JDK（3.x）** | 3.x Tar 页：**"The tarball is a self-contained directory with everything needed to run OpenSearch, including an integrated Java Development Kit (JDK)"**；Step 4 给的是 `export OPENSEARCH_JAVA_HOME=/path/to/opensearch-<版本>/jdk`；调整堆的官方写法是**改 `config/jvm.options`**（页面未提 `jvm.options.d`） | 上一版声称 `jvm.options.d/` 是"官方支持的覆盖目录" | §3.3 保留 `jvm.options.d/heap.options` 做法，但**改口径**：把它写成"**我们的做法**（借 JVM 官方启动脚本会读取 `jvm.options.d/*.options` 的机制）"，并注明**官方 Tar 页只写了改 `config/jvm.options`**；同时写入 **3.x 自带 JDK**（`app/jdk`）与 `OPENSEARCH_JAVA_HOME` 的设置方式，明确"宿主不需要预装 Java" |
 | 33 | **systemd 示例（3.x 是否与 2.x 相同）** | 3.x Tar 页的 systemd 一节与 2.x **逐行相同**（`Type=forking`、`ExecStart=/opt/opensearch/bin/opensearch -d`、`User/Group`、`StandardOutput=journal`、`LimitNOFILE=65535`、`LimitNPROC/LimitAS/LimitFSIZE`、`TimeoutStopSec=0`、`KillSignal=SIGTERM`、`KillMode=process`、`SendSIGKILL=no`、`SuccessExitStatus=143`、`TimeoutStartSec=75`），并且**同样标注"只适合非生产、要 systemd 就用 RPM"**；Dashboards tar 页在 3.x **仍然只给三步、仍没有 systemd 示例** | 上一版已照该示例写 | **保持**（`opensearch.service` 不动逻辑），只在附录 B 登记"3.x 逐行相同"；Dashboards 的 unit 继续按"照官方 OpenSearch unit + 按 Node 运行方式改 3 处"的口径，并在 §12.5 与 unit 注释里标明"官方无示例" |
 | 34 | **Dashboards 的 yml 键与 Node 堆默认值（3.x）** | 3.x 官方示例 `config/opensearch_dashboards.yml`：`opensearch.requestHeadersWhitelist` **仍标注 DEPRECATED**（新名 `requestHeadersAllowlist`）、`opensearch_security.multitenancy.enabled` 仍存在且官方注释仍写"**workspace 与多租户互斥**"；`config/node.options` 的示例默认**仍是 `--max-old-space-size=4096`**（`--max-semi-space-size=64` 注释保留） | 上一版已按这套写 | **保持**，附录 B 登记"3.x 复核：键名/互斥关系/4096 默认值均未变" |
+| 35 | **资产落位与权限（官方未覆盖，属本项目运维约定）** | 官方 Tar 页只说"不定义安装路径/用户/权限，要自己保证正确"；安全插件文档要求配置不得"组/其他人可写"；systemd 要求 unit 属主为 root | 前几版把落位/属主/权限散落在 §1.3、§3.3、§3.4、§12.2 各处，**出现两套说法**（`644` 与 `640` 混用、§12.2 还写了服务器上不存在的仓库相对路径 `deploy/…`、且没先建 `dashboards/app/config`） | **新增 §1.5 落位对照表（两张表：6 个仓库资产 + 7 个运行期落位点）**，统一 `install -D -o/-g/-m`；权限统一 **配置 `640` / 脚本 `750` / unit `root:root 644` / keystore `600`**；§1.5.1 三条纪律、§1.5.2 **7 条核对命令**、§1.5.3 两条省事路径；**§12.2 改为引用 §1.5**（`install -D` 自动建目录、解压后必须 `chown -R`）；§3.3/§3.4 加交叉引用。**"往目录放文件看目录 `w`、覆盖已有文件还要看文件 `w`"** 这条最小解释也写进 §1.5.3 |
 
 ## 11. 变更记录
 
@@ -1892,27 +1951,42 @@ scp opensearch-dashboards-3.1.0-linux-x64.tar.gz* lhim@10.254.212.111:/home/open
 
 ### 12.2 安装（解包 + 配置 + 只读账号）
 
+> **落位规则与 §1.5 完全一致，本节不再另立一套说法**：目录 `750` / 配置文件 `640` / 属主 `opensearch:opensearch`；
+> 命令用 `sudo install -D`（**`-D` 会自动建出 `dashboards/app/config`**，不需要先 `mkdir`）。
+> 若你走 §1.5.3 的**路线一**（以服务账号身份干活），把下面的 `sudo install …` 换成"先 `sudo -u opensearch -s` 进去、再用普通 `cp`"即可。
+
 ```bash
-# ① 解包到 dashboards/app（与 OpenSearch 同属主 opensearch，非 root 运行）
+# ① 解包到 dashboards/app —— ★"以谁解压就归谁"，所以解压后必须统一改属主
 sudo -u opensearch mkdir -p /home/opensearch/dashboards
 cd /home/opensearch/dashboards
 tar -zxf /home/opensearch/opensearch-dashboards-3.1.0-linux-x64.tar.gz
 mv opensearch-dashboards-3.1.0 app
 ls /home/opensearch/dashboards/app        # 期望看到 bin/ config/ node/ plugins/ src/ …
-# ★解压后同样把属主归位（用 lhim 解压会让 app/ 混入 lhim 属主）
+
+# ★属主归位（用 lhim 解压会让 dashboards/ 里混入 lhim 属主 ⇒ Dashboards 以 opensearch 运行会读不了）
 sudo chown -R opensearch:opensearch /home/opensearch/dashboards
+ls -ld /home/opensearch/dashboards /home/opensearch/dashboards/app
+# 期望：均为 opensearch opensearch；目录 750（app/ 常见 drwxr-sr-x，属正常）
+sudo -u opensearch ls /home/opensearch/dashboards/app/bin/opensearch-dashboards   # 最终确认它读得到
 ```
 
 **配置文件（官方规定的位置就是解包目录下的 `config/opensearch_dashboards.yml`）**
 
 ```bash
-# ② 放行我们的配置（资产：deploy/opensearch/opensearch_dashboards.yml.example）
-sudo -u opensearch cp deploy/opensearch/opensearch_dashboards.yml.example \
-                       /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+# ② 放行我们的配置：一条 install 同时完成「建目录（-D）+ 复制 + 定属主 + 640」
+#    资产源用 §1.5 约定的 $ASSETS（= 你 scp 上去的 deploy/opensearch 路径），不要写仓库相对路径
+sudo install -D -o opensearch -g opensearch -m 640 \
+     "$ASSETS/opensearch_dashboards.yml.example" \
+     /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+
+# ③ 改两处必改项（改的是落位后的那份；用服务账号身份编辑，避免又变成 lhim 属主）
 sudo -u opensearch vi /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
-#   ★必改两处：server.host 改成 10.254.212.110；opensearch.password 填只读账号口令
-sudo chown opensearch:opensearch /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
-sudo chmod 640 /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+#   ★必改：server.host 改成 10.254.212.110；opensearch.password 填只读账号口令
+#   （用 root 的 vi 直接改也可以——文件属主不会变，只有"新建/覆盖"才需要担心属主）
+
+# ④ 复核落位（与 §1.5 表里的 Dashboards 行逐项对齐）
+ls -l  /home/opensearch/dashboards/app/config/opensearch_dashboards.yml   # 期望 -rw-r----- opensearch opensearch
+ls -ld /home/opensearch/dashboards/app/config                            # 期望 drwxr-x--- opensearch opensearch
 ```
 
 | 配置项 | 本方案取值 | 为什么 |
