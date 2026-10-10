@@ -5,6 +5,7 @@
 | 目录 | 用途 | 谁在用 |
 | --- | --- | --- |
 | `deploy/docker` | **生产部署（唯一方式）**：后端 jar + 前端 nginx 一体化镜像 | 两台服务器（离线 `docker load`） |
+| `deploy/opensearch` | **OpenSearch 单节点部署资产**：`docker-compose.yml`（无 `build:` + `pull_policy: never`）、`.env.example`、`os.sh`（唯一入口：`start\|stop\|restart\|status\|logs\|load\|help`） | 两台新服务器 `10.254.212.110` / `.111`（离线 `docker load`），步骤见 [`docs/OpenSearch部署与接入.md`](../docs/OpenSearch部署与接入.md) |
 | `deploy/windows` | 源码模式启动（`mvn spring-boot:run` + Vite） | 开发机本地开发 |
 | `ai-backend/`（**独立**） | **AI 能力服务**（Spring Boot 3 / Java 17）：附件解析 / 平台 OCR / 抽取问答 / 向量检索 | 独立镜像 `pm-ai-backend`、单独发版；**不在本发布包内**（见部署手册 §8） |
 
