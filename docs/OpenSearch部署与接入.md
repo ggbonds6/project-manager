@@ -774,8 +774,9 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 
 ## 步骤 16：创建索引 `pm-ai-chunks`（约 1 分钟）
 
-> **参数已定死**：`knn_vector` **4096 维** / `space_type: cosinesimil` / HNSW（`engine: lucene`，`m=16`，`ef_construction=128`）/
-> **主分片 1 + 副本 0**（单节点上副本无法分配，会一直 `yellow`）。
+> **参数已定死**：`knn_vector` **4096 维** / `space_type: cosinesimil` / HNSW（`engine: lucene`，`m=16`，`ef_construction=100`）/
+> **主分片 1 + 副本 0**（单节点上副本无法分配，会一直 `yellow`）/ `refresh_interval: 1s`（不关）。
+> **以本节参数为准（与 AI 服务 `OpenSearchIndex.indexDefinition()` 一致）；索引一旦存在不会被服务改写，建错了要 `DELETE /pm-ai-chunks` 再重建。**
 ① 执行
 
 
@@ -783,10 +784,10 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 OS=http://127.0.0.1:9200
 AUTH='admin:<强口令>'
 curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json' -d '{
-  "settings": { "index": { "knn": true, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "-1" } },
+  "settings": { "index": { "knn": true, "number_of_shards": 1, "number_of_replicas": 0, "refresh_interval": "1s" } },
   "mappings": { "properties": {
     "vector":  { "type": "knn_vector", "dimension": 4096, "data_type": "float", "space_type": "cosinesimil",
-                 "method": { "name": "hnsw", "engine": "lucene", "parameters": { "m": 16, "ef_construction": 128 } } },
+                 "method": { "name": "hnsw", "engine": "lucene", "parameters": { "m": 16, "ef_construction": 100 } } },
     "text":          { "type": "text" },
     "filename":      { "type": "text", "fields": { "kw": { "type": "keyword" } } },
     "doc_id":        { "type": "keyword" },
@@ -982,13 +983,9 @@ curl -sS -u admin:'<步骤 11 的强口令>' 'http://127.0.0.1:9200/_cat/indices
 curl -sS -u admin:'<步骤 11 的强口令>' http://10.254.212.110:9200/_cluster/health?pretty
 ```
 
-> **建索引两种方式的取舍（★先看这一条，别踩）**：`步骤 16` 给的是**手工 `curl -XPUT`** 建索引；
-> AI 服务自己在**首次写入/首次检索**时也会建（`OpenSearchIndex.ensureIndexOnce`：先 `HEAD /<index>`，404 才 `PUT`，
-> 已存在则**原样不动**）。所以两种方式**只能选一种**，参数必须与代码一致：
-> `dimension` **4096**、`space_type` **cosinesimil（只写字段层）**、`engine` **lucene**、`m` **16**、
-> **`ef_construction` = 100**（代码用 HNSW 官方默认值；步骤 16 的示例写的是 128）、
-> **`refresh_interval` = 1s**（代码是 1s，为了"灌完即可查"；步骤 16 的离线灌库示例给的是 `-1`）。
-> **索引已存在时不会被改写**——若你已按 128/`-1` 手工建过，`DELETE /pm-ai-chunks` 后让服务自建（或按本节参数重建），再跑 ①-4。
+> **两种建索引方式只能选一种**：`步骤 16` 的手工 `curl -XPUT`，或让 AI 服务在首次写入/首次检索时自建
+> （`OpenSearchIndex.ensureIndexOnce`：先 `HEAD /<index>`，404 才 `PUT`）——**参数必须一致，以 步骤 16 为准**。
+> **索引一旦存在就不会被服务改写**：建错了（参数与 步骤 16 不符）要 `DELETE /pm-ai-chunks` 再重建，然后跑 ①-4。
 
 **①-2 AI 服务侧改配置（AI 服务器上的 `/home/lhim/pm/ai/.env`）**
 
@@ -1089,7 +1086,7 @@ cd /home/lhim/pm && bash pm.sh restart ai
 启动或检索直接返回 **503 + "向量后端不可用"** ⇒ 这是**预期行为**（不静默降级）：按上一条查网络与口令，**不要指望它自己退回 `local`**；
 回答"没找到相关内容"而不是明确报错 ⇒ 说明实际走的还是 `local`（`.env` 没生效或没重启 AI）；
 相似度/顺序对不上 ⇒ 按 ①-3 的顺序查 `space_type` → 字段名 → 是否漏灌（附录 E · HNSW 与引擎的版本注记 / 索引设计 · 查询）；
-索引是我按 步骤 16 手工建的、怕和代码参数不一致 ⇒ 见 ①-1 的"建索引两种方式的取舍"（`ef_construction` 100/128 与 `refresh_interval` 1s/-1 这两处最容易踩）。
+索引是我按 步骤 16 手工建的、怕和代码参数不一致 ⇒ 见 ①-1：**以 步骤 16 为准**（该节参数已与 `OpenSearchIndex.indexDefinition()` 对齐），已存在且参数不符的要 `DELETE /pm-ai-chunks` 再重建。
 
 ---
 
@@ -1551,7 +1548,7 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 | 25 | **Dashboards 的 Node 堆默认值** | 官方 `config/node.options` 里给的示例是 **`--max-old-space-size=4096`**（默认 4GB 老生代）；官方示例 yml 提到 `opensearch.memoryCircuitBreaker` 的阈值基于该值 | 上一版没有 | **步骤 17** 明确"默认 4GB、16GB 机器上必须封顶"，本方案在 unit 里压到 **1024MB**，并给出"官方支持两种设置方式（`config/node.options` 或 `NODE_OPTIONS`），我们选后者"的取舍 |
 | 26 | **快照默认不含系统索引（脚本级修正）** | 官方快照/恢复文档说明：恢复快照时不能包含全局状态、且**不恢复 `.opendistro_security`**（除非 admin 证书签名）⇒ 系统索引默认不在快照里 | 上一版脚本只备 `pm-ai-chunks` ⇒ 恢复后 Dashboards 空白、安全配置回默认 | 步骤 20 + 脚本：默认索引列表改为 `pm-ai-chunks,.opensearch_dashboards*,.opendistro_security`；给出三条验证命令（快照后看 `indices`、恢复后看 `_cat/indices`、浏览器里看仪表盘） |
 | 27 | **k-NN 引擎可用性（3.x）** | `docs/latest` 的 Methods and engines 页：引擎有 **Lucene / Faiss / NMSLIB（legacy，标注 "now deprecated"）/ JVector**；`engine` 省略时**默认 `faiss`**；Lucene 支持 `hnsw`（space：`l2`/`cosinesimil`/`innerproduct`），Faiss 支持 `hnsw`/`ivf`，其中 **`cosinesimil` 对 Faiss 是 2.19+**，且"Faiss 用 `cosinesimil` 时向量会被自动归一化 ⇒ 存储值与你输入的不同"；另有 **JVector（`disk_ann`，需单独插件 `opensearch-jvector`，不能与 opensearch-knn 同集群）** | 上一版把 `engine` 写成"可选 lucene/faiss"，并说"nmslib 需要额外参数"，没说清楚 3.x 的取舍 | 步骤 8 重写：**默认用 `lucene`**（与代码 `OpenSearchIndex` 一致、支持带过滤检索、官方定位"smaller deployments / <1000 万向量"）、`faiss` 作为可选并**明确写出归一化的副作用**、**3.x 新索引不要用 `nmslib`**、并登记 JVector 这条路（未采用，需额外插件） |
-| 28 | **k-NN mapping 的键名与默认值** | k-NN vector 页：`dimension` 合法区间 **[1, 16000]**；`data_type` 默认 `float`（可选 `binary`/`byte`/`float`/`half_float`）；`space_type` **既可写在字段层也可写在 `method` 内**（"This value can also be specified within the `method`"），默认 `l2`；`mode` 默认 **`in_memory`**（`on_disk` 为低成本路线，配合 `compression_level`，默认 `32x`、默认开启 rescore）；方法参数键名是 **`parameters`**（不是 `params`）；`m` 默认 **16**、`ef_construction` 默认 **100** | 上一版把 `space_type` 同时写在字段层与 `method` 内（两种写法混用），`ef_construction` 写 128 没说这是"偏离默认"，也没提 `dimension` 上限与 `mode` 默认值 | 步骤 16 改为：`space_type` **只写字段层**、`data_type: float` 显式写出、`method` 内只留 `name`/`engine`/`parameters`；附录 E 补 `dimension` 上限 16000（我们的 4096 合规）、`mode` 默认 `in_memory`（故不写）、`m`/`ef_construction` 与官方默认值的对照。**`ai-1.2.0` 的代码取 `ef_construction=100`（官方默认），与 步骤 16 示例的 128 不同——这是刻意偏差，已在 步骤 19 ①-1 写明两者不能混用** |
+| 28 | **k-NN mapping 的键名与默认值** | k-NN vector 页：`dimension` 合法区间 **[1, 16000]**；`data_type` 默认 `float`（可选 `binary`/`byte`/`float`/`half_float`）；`space_type` **既可写在字段层也可写在 `method` 内**（"This value can also be specified within the `method`"），默认 `l2`；`mode` 默认 **`in_memory`**（`on_disk` 为低成本路线，配合 `compression_level`，默认 `32x`、默认开启 rescore）；方法参数键名是 **`parameters`**（不是 `params`）；`m` 默认 **16**、`ef_construction` 默认 **100** | 上一版把 `space_type` 同时写在字段层与 `method` 内（两种写法混用），`ef_construction` 写 128 没说这是"偏离默认"，也没提 `dimension` 上限与 `mode` 默认值 | 步骤 16 改为：`space_type` **只写字段层**、`data_type: float` 显式写出、`method` 内只留 `name`/`engine`/`parameters`；附录 E 补 `dimension` 上限 16000（我们的 4096 合规）、`mode` 默认 `in_memory`（故不写）、`m`/`ef_construction` 与官方默认值的对照。**`ai-1.2.0` 起代码与手册已完全对齐**：`ef_construction=100`（官方默认）、`refresh_interval=1s`（OpenSearch 默认），步骤 16 的手工示例与 `OpenSearchIndex.indexDefinition()` **逐字一致**（`docs-1.7 修订十二` 把原先手册写 128/`-1` 的分叉彻底消除：索引一旦存在不会被服务改写，参数不一致必须 `DELETE` 重建） |
 | 29 | **k-NN 查询语法（3.x）** | k-NN query 页的请求体结构：**`"knn": { "<vector_field>": { "vector": [...], "k": n, "filter": {...}, "method_parameters": {...}, "rescore": {...} } }`** —— **字段名直接是 `knn` 下第一层**；`filter` **只能配合 `faiss`/`lucene`**；`k` 合法区间 [1, 10000]；`method_parameters.ef_search` 对 **lucene** 的行为是"与 `k` 取较大者传给引擎" | 上一版按 2.x 的固定键结构写（`knn.vector.vector`），没有区分"结构里的 `vector` 是键名还是字段名"；适配层代码也按 2.x 固定结构拼查询体 | **文档侧**：附录 E · 索引设计 · 查询 写明 3.x 语法（`knn` 下第一层是**字段名**）与 `filter` 的引擎前提（文档 步骤 16 是手工建索引的示例）。**代码侧（`ai-1.2.0`）**：`OpenSearchIndex.search()` 已改为 3.x 结构并带 `filter` 硬作用域，`OpenSearchIndexTest` 有离线断言；但**真集群未实测**，切换前必须按 步骤 19 ①-3 做"top-k 顺序与 local 一致"的对照（登记在 参考 C 第 10 条） |
 | 30 | **快照请求体字段（3.x）** | Create Snapshot API 页：请求体字段**只有** `indices`（支持 `,` 列表与 `*` 通配与 `-` 排除，**"Don't put spaces between items"**）、`ignore_unavailable`（默认 false）、`include_global_state`（默认 true）、`partial`（默认 false）；**没有 `expand_wildcards`**。官方示例本身就用了通配 + 系统索引：`{"indices": "opensearch_dashboards*,my-index*,-my-index-2016", ...}` | 上一版脚本在请求体里加了 **`"expand_wildcards": "all"`**，并声称"通配符必须显式展开"——**这是错的**（该参数不属于这个 API） | 脚本**移除 `expand_wildcards`**（注释留档说明为什么不能加回来）；`indices` 直接用逗号 + `*`（官方原生支持）；文档 步骤 20 同步改正 |
 | 31 | **安全插件键与 tar 安装脚本（3.x 是否仍存在）** | 3.x 的 Tar 页与 security-settings 页：`opensearch-tar-install.sh` **仍存在**（Step 3 Option 1 仍叫这个名字，且仍会"apply self-signed TLS certificates"并改 `config/opensearch.yml`）；`OPENSEARCH_INITIAL_ADMIN_PASSWORD` **仍是 2.12+ 的必需项**；口令四条要求（8~100 字符、四类字符各一、zxcvbn 达 strong 以上、不得与 admin 相似）在 3.x 文档里**未变**；`plugins.security.ssl.http.enabled`、transport 三个 `pem*_filepath`、`allow_unsafe_democertificates`、`allow_default_init_securityindex` 这些键**在 3.x 文档里都还在**（且 Tar 页的追加脚本仍然写 `plugins.security.allow_default_init_securityindex: true`） | 上一版已按 2.x 写对；但没说明"3.x 是否仍成立" | 步骤 5/步骤 8 内容**不变**，在附录 B 这里登记"已按 3.x 复核、四项键与口令要求均未变" |
@@ -1723,7 +1720,7 @@ sudo systemctl status opensearch --no-pager | head -12
 | --- | --- | --- |
 | `number_of_shards` | **1** | 单节点 + 这个量级（≤100 万切片）：**分片越少越好**。分片是并行度单位，但每个分片都有固定开销（段、堆、文件句柄），1 个分片在单节点上就是最优的检索并行度来源 |
 | `number_of_replicas` | **0** | **单节点上副本永远无法分配** ⇒ 只会让状态变 **yellow** 且白占一份盘。**副本不能替代备份**（备份看 步骤 18） |
-| `refresh_interval` | 写入期 `-1`（关闭），写完改回 `1s` | 批量灌数据时避免频繁 refresh 产生大量小段 |
+| `refresh_interval` | **`1s`**（不关） | **本服务既是写入方也是查询方**：关掉 refresh 会让"刚写完的切片查不到"，所以与 `OpenSearchIndex.indexDefinition()` 一致固定为 `1s`（OpenSearch 默认值）。代价是写入期多刷段，本项目量级可忽略 |
 | `index.knn` | `true` | kNN 索引开关（mapping 同级 settings） |
 
 ### 索引设计 · 索引创建（`knn_vector` 4096 维 / cosinesimil / HNSW）
@@ -1745,7 +1742,7 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
       "knn": true,
       "number_of_shards": 1,
       "number_of_replicas": 0,
-      "refresh_interval": "-1"
+      "refresh_interval": "1s"
     }
   },
   "mappings": {
@@ -1758,7 +1755,7 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
         "method": {
           "name": "hnsw",
           "engine": "lucene",
-          "parameters": { "m": 16, "ef_construction": 128 }
+          "parameters": { "m": 16, "ef_construction": 100 }
         }
       },
       "text":          { "type": "text" },
@@ -1817,7 +1814,7 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
 | `engine` | ~~`nmslib`~~ | **3.x 不要用**：官方 `docs/latest` 把它标为 legacy、"now deprecated"。老集群的 2.x 索引还在用它，但**新索引一律选 `lucene` 或 `faiss`** |
 | `name` | `hnsw` | 近似最近邻图索引（`ivf` 需要训练步骤，本方案不用） |
 | `m` | `16`（= 官方默认值） | 每个节点的双向连边数（官方要求保持 2~100）；越大召回越好、内存与建索引越慢 |
-| `ef_construction` | `128`（官方默认 **100**，我们略调高） | 建图时的候选队列长度；越大图质量越好、建索引越慢 |
+| `ef_construction` | **`100`**（= 官方默认值，与代码一致） | 建图时的候选队列长度；越大图质量越好、建索引越慢。取官方默认值：**够用且建索引更快**，并与 `OpenSearchIndex.indexDefinition()` 保持**逐字一致**（手工建索引与代码自建只允许一种参数） |
 | `space_type` | `cosinesimil` | **与 `local` 后端的余弦同一口径**（这一条**未实测**：集群起来后必须做"top-k 顺序与 local 一致"的对照，见 步骤 19 ①-3）。官方对 `lucene` 支持的 space 列表是 `l2` / `cosinesimil` / `innerproduct`，`cosinesimil` 在列 |
 | `data_type` | `float` | 官方默认值；`on_disk` 模式只支持 `float` / `half_float` |
 | `mode` | **不写**（默认 `in_memory`） | 官方默认 `in_memory`（低延迟优先）。`on_disk` 是 2.17 引入的低成本路线，官方明确"配合 `compression_level`、默认 `32x`、并默认开启 rescore（用磁盘上的全精度向量重排）" |
@@ -1942,10 +1939,10 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: applicat
 > 本项目的口径是**召回 50 → 精排 5**（`RETRIEVAL_RECALL=50` / `RETRIEVAL_TOP_K=5`，
 > 工具侧硬上限 `HARD_MAX_TOP_K=10`），所以这里用 `k=50, size=50`，精排由 AI 侧完成。
 
-**③ 建完索引别忘了把 refresh 打开（写入期是 `-1`）**
+**③ 建完索引顺手核对 refresh 与文档数（索引创建时就是 `1s`，**不需要再改**）**
 ```bash
-curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks/_settings" -H 'Content-Type: application/json' \
-  -d '{"index":{"refresh_interval":"1s"}}'
+# 核对 refresh_interval 确实是 1s（建索引请求里写的就是它；这里只是复核，不改任何东西）
+curl -sS -u "$AUTH" "$OS/pm-ai-chunks/_settings?pretty" | grep -E '"refresh_interval"'
 curl -sS -u "$AUTH" "$OS/pm-ai-chunks/_count"      # 期望 {"count":<N>,"_shards":{...}}
 ```
 
@@ -1970,6 +1967,7 @@ curl -sS -u "$AUTH" "$OS/pm-ai-chunks/_count"      # 期望 {"count":<N>,"_shard
 | docs-1.6（修订九） | 2026-09-23 | **由"部署记录"改写为傻瓜式部署手册**（用户意见：这是部署文档，不是部署记录，要能照着从零部署成功）。① **删除全部状态标注与既成事实**（`（已完成）`/`（待执行）`/`（当前状态）`/"已解压完成"等）；② **新增 §1 前置条件（开始前必须具备）**：机器/架构/内存/磁盘/Docker 检查、**专用账号 `opensearch` 的从零建立命令**（`useradd -m -d /home/opensearch -s /bin/bash` + `passwd -l` + `chown` + `usermod -aG`）、目录结构建立、两个安装包位置、资产位置、端口与网络前置，**每条都有"怎么达成"的命令**；③ **"解压 tarball 到 `app/`"恢复为正式步骤**（步骤 3：`sudo -u opensearch tar -zxf … ` + `mv … app` + `chown -R` + 期望输出）；④ **主线 20 步全部改为四件套**：① 执行（可直接复制的命令块）② 期望输出（逐字给出 `"status":"green"`、`-rwxr-x---` 等）③ ✅ 完成判据 ④ ✗ 失败了怎么办（指向 §4.5 或参考 B · 常见故障的具体条目），并给出**耗时估计**；⑤ 顶部新增 **"怎么用这份文档"（3 条）+ 总步骤清单（可勾选，20 步 + 耗时）**；⑥ 危险动作（递归 `chmod`、防火墙、停机演练）在命令块紧邻处加 🔴 警告；⑦ 删除主线回溯性文字（"本项目已实际踩过这个坑"、"用户真机现状"、"本次部署不做校验"等），仅保留在附录/变更记录里；⑧ 参考章节去编号改为 **参考 B · 运维与排障 / 参考 C · 未确认项 / 附录 D · 结论与前提 / 附录 E · 索引与检索设计**，`附录 A`（3 节点）`附录 B`（变更项）`附录 C`（官方 35 条）与**变更记录**保留不动。**每步只依赖它前面的步骤**，新机器可从零照做 |
 | docs-1.6（修订十） | 2026-09-23 | **补 Dashboards 侧的同源漏洞**：上机时 `opensearch-dashboards.service` 启动失败，journald 报 `bin/use_node: cannot execute: Permission denied` → `Main process exited, code=exited, status=126/n/a`（重启计数 22）。根因与修订八同源：**之前那次全量 `chmod 664` 也波及了 `dashboards/` 树**，而手册只给了 OpenSearch `app/` 的执行位恢复。① **步骤 17 新增「恢复块 A · Dashboards 程序树执行位恢复」**（`dashboards/app/bin` + `node/bin` 与 `*.sh` 三条 `chmod 750` → 核对 `use_node`/`node` 为 `-rwxr-x---` → **`systemctl reset-failed` + `restart`**），并在失败指引里加 `126`；② **排障表新增 `status=126/n/a` 与 `status=203/EXEC` 两行**，写明 **exec 阶段失败 ⇒ 应用日志为空**、四处取证与**四类原因**，并注明"**`126` 与 `203` 都是权限位问题、修法一致**"；③ **步骤 4 权限红线扩写**：`chmod 664` 只作用于 `config`/`data`/`logs`/`backup`；**`app/` 与 `dashboards/app/` 两棵程序树都不得递归**，并给出**一次核对两棵树的四文件判据**（`app/bin/opensearch`、`app/jdk/bin/java`、`dashboards/app/bin/use_node`、`dashboards/app/node/bin/node` 必须都带 `x`） |
 | docs-1.7 | 2026-09-23 | **把 步骤 19 从占位句写成可复制的真实步骤（本轮唯一的实质内容改动）**，因为 AI 侧接入代码已随 `ai-1.2.0` 落地（`ai-backend/**`）。① **步骤 19 重写为 5 步固定顺序**：①-1 建索引 + 验连通（`_mapping`/`_cat/indices`/`_cluster/health`）→ ①-2 改 `.env`（`VEC_BACKEND`/`OPENSEARCH_URL`/`OPENSEARCH_INDEX`/`OPENSEARCH_USER`/`OPENSEARCH_PASSWORD`，口令只放 `.env`）+ `bash pm.sh restart ai` → **①-3 先做 top-k 一致性验证再做全量切换**（`TopKCompareTool` 的完整可复制命令 + 判据：**相似度数值不必逐位相等，要求一致的是排序/集合**；重合率偏低先查 `space_type` → 字段名 → 是否漏灌）→ ①-4 全量重建（真实端点 `/admin/reindex` 全量/局部/强制/进度/取消 5 条 `curl`）→ ①-5 回滚 `local`；② **写明不静默降级**：集群不可达时检索与重建**立刻 503 + "向量后端不可用"**，`/health?with_vec=true` 的 `vec.ok` 取**集群真实状态**，**不会**悄悄退回 `local`；③ **写明建索引两种方式的取舍**：手工 `步骤 16` 与代码自建只能选一种，`ef_construction` **100（代码）vs 128（步骤 16 示例）**、`refresh_interval` **1s（代码）vs -1（步骤 16 灌库示例）**，**索引已存在不会被改写**；④ **写明只接一台**：`.110` 与 `.111` 是彼此独立的单节点集群，生产 = `.110`；⑤ **参考 C 同步落定**：向量后端选型（生产 `opensearch`、`local` 仅回滚）与两台机器角色（`.110` 生产 / `.111` 冷备演练）移入"已定死"清单；第 3/4/6/7/10 条按 `ai-1.2.0` 的实际状态改写（元数据接口与硬作用域已就绪、待定的是"谁在什么时候填"；top-k 真机验证**仍未做**）；⑥ **顺带修掉 8 处失效的步骤引用**（`步骤 17`/`步骤 19`/`步骤 20` 误指：kNN 语法与 mapping → 步骤 16 与 附录 E、升级 → 参考 B · 升级路径、logrotate → 步骤 18、磁盘水位与 yellow/red → 参考 B · 常见故障）与 2 处已过期的表述（**向量化已前移**，不再是"惰性在问答路径上"；**元数据字段代码已写入**，不再是"不是代码自动写入的"）；⑦ 文档头部原"`ai-backend/**` 应用代码一行未改"改为如实说明"手册改的是 步骤 19，AI 侧代码随 `ai-1.2.0` 落地" |
+| docs-1.7（修订十二） | 2026-09-23 | **收掉最后一处分叉：把 步骤 16 与 附录 E 的手工建索引参数对齐到代码**。原状态是"手册写 `ef_construction: 128`、`refresh_interval: -1`，而代码（`OpenSearchIndex.indexDefinition()`）是 `100`/`1s`"——照 步骤 16 手工建索引的人会建出一个**与代码不一致、且因为 `ensureIndexOnce` 只在 404 时才 `PUT`、已存在就不动而永远不会被自动纠正**的索引。改动：① **步骤 16** 的两处参数改为 `ef_construction: 100`、`refresh_interval: "1s"`，并在"参数已定死"处加一句**"以本节参数为准（与 AI 服务 `OpenSearchIndex.indexDefinition()` 一致）；索引一旦存在不会被服务改写，建错了要 `DELETE /pm-ai-chunks` 再重建"**；② **附录 E** 同步：建索引请求体（`refresh_interval: 1s` / `ef_construction: 100`）、参数表两行（`refresh_interval` 由"写入期 -1、写完改回 1s"改为"固定 1s，不关"；`ef_construction` 由"128（官方默认 100，我们略调高）"改为"100（= 官方默认，与代码逐字一致）"）、以及原来的"③ 建完索引别忘了把 refresh 打开（写入期是 -1）"整段改为**"③ 建完索引顺手核对 refresh 与文档数（索引创建时就是 1s，不需要再改）"**（只读核对，不再有写操作）；③ **步骤 19 ①-1** 的"建索引两种方式的取舍"**简化**为三句（两种方式只能选一种 / 参数必须一致、以 步骤 16 为准 / 已存在不改写，建错要 DELETE 重建），**去掉 128 与 -1 的差异对照**，④ 失败指引里指向该对照的句子同步收敛；④ **附录 C 第 28 条**尾部由"代码取 100 与手册 128 不同（刻意偏差）"改为"**代码与手册已完全对齐**"。**结论：`ai-1.2.0` 起 `ef_construction` 与 `refresh_interval` 不再构成偏差（两者都是官方默认值），刻意偏差只剩"kNN 的 k 用生效召回数而非 `TOP_K`"一条** |
 
 
 
