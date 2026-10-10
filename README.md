@@ -24,7 +24,7 @@
 ├─ deploy/       部署资产（docker 生产镜像 / windows 开发脚本）
 ├─ scripts/      发版打包 + 演示数据 + 开发机辅助工具 + 文档体检（清单见 scripts/README.md）
 ├─ local/        **本机启动助手**（start/stop-project-local.cmd，已 gitignore 不入库）；口令与数据库导出在仓库外 `E:\env\pm-local\`
-├─ ai-backend/   AI 能力服务（Spring Boot 3 / Java 17，与主系统同栈、独立构建与部署 · ai-1.1.0；问答支持受控查询（项目/合同/付款/统计口径））
+├─ ai-backend/   AI 能力服务（Spring Boot 3 / Java 17，与主系统同栈、独立构建与部署 · ai-1.2.0；问答支持受控查询（项目/合同/付款/统计口径）；**向量后端可切换 OpenSearch（内网单节点）**）
 ├─ frontend/     React 前端
 └─ backend/      Spring Boot 后端
 ```
@@ -134,5 +134,5 @@
 9. 收尾顺手清理无效代码（未使用导入 / 死方法 / 只写不读的变量）；
 10. 提交说明引用对应验证结果。
 
-当前版本：主系统 **v3.7.0**（含「AI 与知识库」P2 **受控查询**：项目/合同/付款/统计口径走主系统受控查询 RPC + 短时效 `scope_token`，口径与详情页同源；AI 侧条件注册 `query_business_data` 工具；前端新增「系统数据」区块；新增 `eval/smoke-30.json` 评测集 + `scripts/eval-ai.mjs`）｜ AI 能力服务 **ai-1.1.0**（Java 版，独立构建与部署；`/chat` 返回结构化引用；问答支持受控查询（项目/合同/付款/统计口径））｜ 文档与脚本 **docs-1.6**（新增《OpenSearch部署与接入》：为两台新服务器 `10.254.212.110` / `.111` 出 OpenSearch 部署 + 接入 SOP 与部署资产 `deploy/opensearch/`；**定稿单节点**并写明 2 节点 quorum 明账与加第 3 台的升级路径，**只写文档与部署资产、不改源码**；上一轮为 docs-1.5《AI模型调用与任务队列评估》）
+当前版本：主系统 **v3.7.0**（含「AI 与知识库」P2 **受控查询**：项目/合同/付款/统计口径走主系统受控查询 RPC + 短时效 `scope_token`，口径与详情页同源；AI 侧条件注册 `query_business_data` 工具；前端新增「系统数据」区块；新增 `eval/smoke-30.json` 评测集 + `scripts/eval-ai.mjs`）｜ AI 能力服务 **ai-1.2.0**（Java 版，独立构建与部署；`/chat` 返回结构化引用；问答支持受控查询（项目/合同/付款/统计口径）；**向量后端可切换 OpenSearch（内网单节点）**，默认 `local`、生产用 `opensearch`——原生 REST 接入 + 索引自建 + `_bulk` 幂等 + kNN 硬作用域过滤 + `/admin/reindex` 全量重建；集群不可达**不回退**（503 + 明说）；另含 P0 分级超时/每模型信号量/向量化前移/队列满诚实失败与 micrometer 指标）｜ 文档与脚本 **docs-1.7**（把《OpenSearch部署与接入》**步骤 19 从占位句写成可复制的真实步骤**：建索引 + 验连通 → 改 `.env` 并重启 AI → **先做 top-k 一致性验证** → 全量重建 → 回滚 `local`；同步参考 C 未确认项与失效引用；上一轮 docs-1.6 为 OpenSearch 部署 SOP + 资产 `deploy/opensearch/`，再上一轮 docs-1.5 为《AI模型调用与任务队列评估》）
 （数据库已切换崖山 YashanDB Oracle 模式）（详见 [`ITERATION.md`](ITERATION.md) 迭代总表与功能完成度）。

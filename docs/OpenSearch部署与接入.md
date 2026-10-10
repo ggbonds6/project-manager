@@ -41,7 +41,10 @@
 > [demo 配置与口令要求](https://docs.opensearch.org/latest/security/configuration/demo-configuration/)、
 > [安全设置](https://docs.opensearch.org/latest/install-and-configure/configuring-opensearch/security-settings/)。
 >
-> **本手册只写文档与部署资产**：`backend/**`、`ai-backend/**`、`frontend/**`、`scripts/**` 应用代码**一行未改**。
+> **本手册本身只写文档与部署资产**：`backend/**`、`frontend/**`、`scripts/**` 应用代码**一行未改**。
+> 但 **步骤 19（AI 侧接入）依赖的应用代码已随 `ai-1.2.0` 落地**（`ai-backend/**`：OpenSearch 原生 REST 接入、
+> 索引自建、`_bulk` 幂等、kNN 硬 filter、`/admin/reindex`、指标与比对工具；见 [`../ITERATION.md`](../ITERATION.md)）。
+> 本轮手册的改动只有一处实质内容：**把 步骤 19 从占位句写成可复制的真实步骤**。
 
 ---
 
@@ -960,40 +963,133 @@ sudo logrotate -d /etc/logrotate.d/opensearch | head -20      # -d 只演练，�
 
 ## 步骤 19：接入 AI 服务（切 `VEC_BACKEND=opensearch`）（约 5 分钟 + 重建索引视语料量）
 
-> 在 **AI 服务器**上改配置并重建索引。**绝不静默降级**：连接失败时服务会显式报错，不会悄悄退回 `local`。
+> 前置：**步骤 16 的索引已建**、**步骤 14 验收已过**。配置改在 **AI 服务器**上，一致性比对在**开发机**上跑。
+> 🔴 **顺序不能颠倒**：建索引 → 验连通 → 改 `.env` 并重启 AI → **先做 top-k 一致性验证** → 确认一致后再全量重建/切换 → 出问题回滚 `local`。
+> **绝不静默降级**：`VEC_BACKEND=opensearch` 而集群不可达时，检索与重建**立刻**返回 **503 + "向量后端不可用"**
+> （不是含糊的 500，更不是"没找到相关内容"）——**不会**悄悄退回 `local`，也**不会**退回关键词检索。
 ① 执行
 
 
+**①-1 建索引 + 验连通（在 OpenSearch 服务器上执行）**
+
 ```bash
-# ① 改 AI 侧配置（AI 服务器上的 /home/lhim/pm/ai/.env）
-#    VEC_BACKEND=opensearch
-#    OPENSEARCH_URL=http://10.254.212.110:9200
-#    OPENSEARCH_INDEX=pm-ai-chunks
-#    OPENSEARCH_USER=admin
-#    OPENSEARCH_PASSWORD=<步骤 11 的强口令>
+# a) 索引：没建过就先按 步骤 16 建 pm-ai-chunks，再核对三件事（这一条不过，后面全都白做）
+curl -sS -u admin:'<步骤 11 的强口令>' 'http://127.0.0.1:9200/pm-ai-chunks/_mapping?pretty' \
+  | grep -E '"dimension"|"space_type"|"engine"'
+curl -sS -u admin:'<步骤 11 的强口令>' 'http://127.0.0.1:9200/_cat/indices?v&expand_wildcards=all'
+
+# b) 连通：在【AI 服务器】上执行（要的是"连得上"——不是超时，也不是 401）
+curl -sS -u admin:'<步骤 11 的强口令>' http://10.254.212.110:9200/_cluster/health?pretty
+```
+
+> **建索引两种方式的取舍（★先看这一条，别踩）**：`步骤 16` 给的是**手工 `curl -XPUT`** 建索引；
+> AI 服务自己在**首次写入/首次检索**时也会建（`OpenSearchIndex.ensureIndexOnce`：先 `HEAD /<index>`，404 才 `PUT`，
+> 已存在则**原样不动**）。所以两种方式**只能选一种**，参数必须与代码一致：
+> `dimension` **4096**、`space_type` **cosinesimil（只写字段层）**、`engine` **lucene**、`m` **16**、
+> **`ef_construction` = 100**（代码用 HNSW 官方默认值；步骤 16 的示例写的是 128）、
+> **`refresh_interval` = 1s**（代码是 1s，为了"灌完即可查"；步骤 16 的离线灌库示例给的是 `-1`）。
+> **索引已存在时不会被改写**——若你已按 128/`-1` 手工建过，`DELETE /pm-ai-chunks` 后让服务自建（或按本节参数重建），再跑 ①-4。
+
+**①-2 AI 服务侧改配置（AI 服务器上的 `/home/lhim/pm/ai/.env`）**
+
+```bash
 cp /home/lhim/pm/ai/.env /home/lhim/pm/ai/.env.bak.$(date +%Y%m%d%H%M)
 vi /home/lhim/pm/ai/.env
 ```
-```bash
-# ② 全量重建索引（现有切片必须重新向量化；在 AI 服务器上执行）
-cd /home/lhim/pm && bash scripts/pm.sh restart ai        # 让新配置生效
-# 按项目内既有的重建入口把语料重新灌进 pm-ai-chunks（本手册不改应用代码，入口以仓库现状为准）
+
+要写进 `.env` 的就是这 5 个键（**口令只放 `.env`：不要写进仓库、工单、日志或聊天记录**）：
+
+```ini
+VEC_BACKEND=opensearch
+OPENSEARCH_URL=http://10.254.212.110:9200
+OPENSEARCH_INDEX=pm-ai-chunks
+OPENSEARCH_USER=admin
+OPENSEARCH_PASSWORD=<步骤 11 的强口令>
 ```
+
 ```bash
-# ③ 核对（本机侧看文档数）
-curl -sS -u admin:'<强口令>' 'http://127.0.0.1:9200/pm-ai-chunks/_count?pretty'
+# 让新配置生效（pm 根目录；AI 与主系统共用同一套 pm.sh）
+cd /home/lhim/pm && bash pm.sh restart ai
+
+# 核对：backend 已是 opensearch，vec.ok 反映【集群真实状态】，open_search 只报"口令配没配"（不回显明文）
+curl -sS 'http://127.0.0.1:8100/health?with_vec=true'
 ```
+
+**①-3 先做 top-k 一致性验证（在开发机上对真集群跑；这一步不过，就不许全量切换）**
+
+> **判据口径**：两条后端的**相似度数值不必逐位相等**（OpenSearch 的 `_score` 经过引擎内部换算），
+> 真正要求一致的是**排序与集合**——同一份语料、同一个 query，top-k 命中的切片（`docId:pageNo`）与顺序应当基本一致。
+> **重合率明显偏低时，按这个顺序查**：① `space_type`（是不是 `cosinesimil`，是不是只写在字段层）
+> → ② 字段名（`vector` / `text` / `doc_id`… 与索引 mapping 对得上）
+> → ③ 是否漏灌（`_count` 与切片总数对不上就是漏灌）。
+> 工具本身：`com.pmgt.ai.tools.TopKCompareTool`（在 `src/test/java`，**不进 `mvn test`**）。
+
+```powershell
+cd ai-backend
+mvn -o test-compile
+mvn -o dependency:build-classpath "-Dmdep.outputFile=target/cp.txt"
+$cp = (Get-Content target/cp.txt -Raw).Trim()
+$env:OPENSEARCH_PASSWORD = '<步骤 11 的强口令>'   # 口令只从环境变量读，不进命令行、不进日志
+$env:LLM_API_KEY = '<平台 sk>'
+java -cp "target/classes;target/test-classes;$cp" com.pmgt.ai.tools.TopKCompareTool `
+     --work ./work --url http://10.254.212.110:9200 --user admin `
+     --eval ../eval/smoke-30.json --top-k 5 --reindex
+```
+
+> `--reindex` 才会写索引（幂等、按 `chunk_key` 跳过已存在）；**不带它只读不写**。
+> 另外，**第一次拿真集群比对时，相似度那一列本来就不该期待逐位相等**——看的是"重合率"与"top-1 一致数"。
+
+**①-4 全量重建索引（在 AI 服务器上执行；真实端点）**
+
+```bash
+curl -XPOST 'http://127.0.0.1:8100/admin/reindex'                  # 全量，默认跳过已存在（断点续跑）
+curl -XPOST 'http://127.0.0.1:8100/admin/reindex?docIds=abc,def'   # 局部（只重建这几份，如补录元数据后）
+curl -XPOST 'http://127.0.0.1:8100/admin/reindex?force=true'       # 忽略已存在全重写（换模型/维度时）
+curl -s    'http://127.0.0.1:8100/admin/reindex/<job_id>'          # 进度 / 失败数 / ETA
+curl -XPOST 'http://127.0.0.1:8100/admin/reindex/<job_id>/cancel'  # 取消（协作式，在文档边界生效）
+```
+
+```bash
+# 核对（本机侧看文档数）
+curl -sS -u admin:'<步骤 11 的强口令>' 'http://127.0.0.1:9200/pm-ai-chunks/_count?pretty'
+```
+
+> 重建是**可中断、可续跑**的：写入按 `chunk_key` 幂等，取消/断线后**再跑一次会跳过已写入的切片**；
+> 已写入的切片不回滚（它们本身是正确的）。向量化在重建里是**批 32 + 并发 8**（共享 embed 信号量），
+> 写入按 `OPENSEARCH_BULK_SIZE=500` 分批。
+
+**①-5 回滚（切换后出问题：改一个开关 + 重启，秒级）**
+
+```bash
+# AI 服务器上的 /home/lhim/pm/ai/.env
+VEC_BACKEND=local
+cd /home/lhim/pm && bash pm.sh restart ai
+```
+
+> `local` 的行为**没有变**（仍是进程内余弦 + `work/vectors/` 缓存），所以回滚就是改一个开关再重启；
+> `work/docs/` 与 `work/vectors/` 保持原样即可直接用。**但 `local` 仍要求 AI 服务单实例**。
+
+> ⚠️ **只接一台**：`.110` 与 `.111` 是**彼此独立的单节点集群**（`discovery.type: single-node`，数据集不共享）。
+> 生产 = `.110`，`.111` 是冷备/演练机（收快照与归档）。**不要把两台同时接进业务**——
+> 同一个问题会在两台上召回不同、索引各自演化。
 
 **② 期望输出**
+- `_cluster/health` 是 `green`（单节点 0 副本）；`_mapping` 里能看到 `"dimension" : 4096`、`"space_type" : "cosinesimil"`、`"engine" : "lucene"`
+- `/health?with_vec=true`：`vec.backend=opensearch`、`vec.ok=true`、`vec.indexed_chunks` 与 `_count` 一致；`vec.open_search` 里的口令只显示"已配置"
+- `TopKCompareTool`：逐条打印两边 top-k 与重合率，末尾"平均 top-k 重合率"接近 1、`top-1 一致` 为 `<N>/<N>`
+- 重建：`GET /admin/reindex/<job_id>` 里 `failed_docs=0`，`processed_docs` 最终等于 `total_docs`
 - `_count` 的 `count` 与语料切片总数一致（且随重建增长）
-- AI 侧 `/health?with_vec=true` 的 vec 块为 ok
-- 提问一次，**top-k 顺序与 `local` 后端一致**（同一批问题逐条对比）
 
-**③ ✅ 完成判据**：`_count` 与预期切片数一致，且**检索顺序与 `local` 一致**（这一条不过就不算切换成功）。
+**③ ✅ 完成判据**：`_count` 与预期切片数一致 **且** top-k 顺序/集合与 `local` 一致（这两条都过才算切换成功），
+且 `/health?with_vec=true` 的 `vec.ok=true`。**任一不过就按 ①-5 回滚 `local`**。
+
 **④ ✗ 失败了怎么办**
-`count: 0` ⇒ 重建没跑或没灌进去；连不上 9200 ⇒ 回**步骤 8**（白名单）与 步骤 19 的 URL/口令；
-回答"没找到相关内容"而不是明确报错 ⇒ 降级被静默吞了（步骤 19）；
-顺序对不上 ⇒ 检查 `space_type` 与字段名（步骤 17）。
+`count: 0` 或进度里 `written_chunks=0` ⇒ 重建没跑或没灌进去：先看 `GET /admin/reindex/<job_id>` 的 `failed_docs` 与失败明细；
+连不上 9200 ⇒ 回**步骤 8**（防火墙白名单），并核对 `OPENSEARCH_URL`/`OPENSEARCH_USER`/`OPENSEARCH_PASSWORD`（口令错是 **401**，与"连不上"不是一件事）；
+启动或检索直接返回 **503 + "向量后端不可用"** ⇒ 这是**预期行为**（不静默降级）：按上一条查网络与口令，**不要指望它自己退回 `local`**；
+回答"没找到相关内容"而不是明确报错 ⇒ 说明实际走的还是 `local`（`.env` 没生效或没重启 AI）；
+相似度/顺序对不上 ⇒ 按 ①-3 的顺序查 `space_type` → 字段名 → 是否漏灌（附录 E · HNSW 与引擎的版本注记 / 索引设计 · 查询）；
+索引是我按 步骤 16 手工建的、怕和代码参数不一致 ⇒ 见 ①-1 的"建索引两种方式的取舍"（`ef_construction` 100/128 与 `refresh_interval` 1s/-1 这两处最容易踩）。
 
 ---
 
@@ -1226,10 +1322,10 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | **JVM 堆** | 堆使用率（`heap.percent`）、GC 统计 | 堆长期 >85% 或 GC 停顿变长 ⇒ 调 heap.options 或扩内存 | `_cat/nodes?v`、`_nodes/stats/jvm` |
 | **内存锁定** | `mlockall` | 必须 `true`（第 1 节 A4） | `_nodes?filter_path=nodes.*.process.mlockall` |
 | **线程池** | `search`/`write` 队列与 `rejected` | 有拒绝 ⇒ 检索/写入压力超容量 | `_cat/thread_pool/search,write?v&h=node_name,active,queue,rejected` |
-| **磁盘** | 使用率与水位 | 步骤 19 的水位判读；**单节点最容易死在这里**（快照也吃盘） | `_cat/allocation?v`、`df -h /home/opensearch` |
+| **磁盘** | 使用率与水位 | 磁盘满会让索引变只读（见 参考 B · 常见故障）；**单节点最容易死在这里**（快照也吃盘） | `_cat/allocation?v`、`df -h /home/opensearch` |
 | **段与合并** | 段数、merge 次数/耗时 | 段数暴涨（批量写入期）⇒ 用 `_forcemerge` 收口 | `_cat/segments/pm-ai-chunks?v` |
 | **kNN** | `_plugins/_knn/stats` | 图未被缓存 ⇒ 查询走磁盘 | `GET _plugins/_knn/stats?pretty` |
-| **集群状态** | `status`、`unassigned_shards`、`number_of_pending_tasks` | yellow/red 判读见 步骤 19 | `_cluster/health`、`_cat/pending_tasks?v` |
+| **集群状态** | `status`、`unassigned_shards`、`number_of_pending_tasks` | `yellow` = 有副本没分配（单节点应为 `green`，见 步骤 16）；`red` 见 参考 B · 常见故障 | `_cluster/health`、`_cat/pending_tasks?v` |
 | **快照** | 最近快照 `state` 与耗时 | 失败要在 24h 内发现（否则等于没有备份） | `bash /home/opensearch/config/snapshot-backup.sh status` |
 | **服务本身** | systemd 状态、重启次数 | `Restart=on-failure` 生效说明崩过 | `systemctl status opensearch`（看 `Main PID` 与 `Active`） |
 
@@ -1251,17 +1347,17 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | 启动报权限错误：`AccessDeniedException` / 读不到 `config/opensearch.yml` | 属主或权限不对 | 步骤 10：`chown -R opensearch:opensearch`；`config/opensearch.yml` 640；`opensearch.keystore` 600；`plugins/opensearch-security/tools/*.sh` 750 |
 | 日志报 keystore 相关错误 | `config/opensearch.keystore` 缺失或权限不对 | `sudo -u opensearch /home/opensearch/app/bin/opensearch-keystore list` 看是否可读；必要时重建并用 systemd 环境变量注入敏感值 |
 | 日志报"没有证书 / 集群形成失败（`Transport client authentication no longer supported` 之类）" | 我们替换 `opensearch.yml` 时**把 transport 证书那几行丢了** | 对照 步骤 12/步骤 12 与资产文件，把 `plugins.security.ssl.transport.*` 三行补回；证书文件在 `config/*.pem`，确认存在 |
-| 建索引报 `Unknown engine [nmslib]` / 引擎相关错误 | 3.x 上**不该再用 `nmslib`**（legacy/deprecated） | 步骤 17/步骤 8：`method.engine` 必须是 `lucene`（本方案取值）；已有 `nmslib` 旧索引要重建 |
-| kNN 查询报解析错误 / 命中为空 | 查询体结构与版本不匹配：3.x 是 **`"knn": { "<字段名>": {...} }`**（字段名是第一层键） | 对照 步骤 17 ①的 3.x 结构；用 `curl` 手工打一次最简查询（只要 `vector` + `k`）先确认能通，再加 `filter` |
-| 报 `k` 超出范围 / 要返回很多条 | 3.x 官方：`k` 合法区间 **[1, 10000]** | 步骤 17：本项目用 `k=50`（`RETRIEVAL_RECALL=50`），远在范围内；若有人手工调大，别超过 10000 |
+| 建索引报 `Unknown engine [nmslib]` / 引擎相关错误 | 3.x 上**不该再用 `nmslib`**（legacy/deprecated） | 步骤 16：`method.engine` 必须是 `lucene`（本方案取值）；已有 `nmslib` 旧索引要重建 |
+| kNN 查询报解析错误 / 命中为空 | 查询体结构与版本不匹配：3.x 是 **`"knn": { "<字段名>": {...} }`**（字段名是第一层键） | 对照 附录 E · 索引设计 · 查询 的 3.x 结构；用 `curl` 手工打一次最简查询（只要 `vector` + `k`）先确认能通，再加 `filter` |
+| 报 `k` 超出范围 / 要返回很多条 | 3.x 官方：`k` 合法区间 **[1, 10000]** | 附录 E · 索引设计 · 查询：本项目用 `k=50`（= 生效召回数 `RETRIEVAL_RECALL=50`），远在范围内；若有人手工调大，别超过 10000 |
 | 快照报"未知字段 / 400" | 请求体里混进了该 API 不支持的字段（例如早前版本误加的 `expand_wildcards`） | 步骤 20 + 脚本：请求体只允许 `indices`/`ignore_unavailable`/`include_global_state`/`partial` |
 | curl 报 SSL 错误（`wrong version number` / `certificate verify failed`） | REST 层 TLS 与请求协议不匹配：官方默认是 HTTPS，本方案走 HTTP | 确认运行时 `config/opensearch.yml` 里是 `plugins.security.ssl.http.enabled: false`（步骤 12），改完 `systemctl restart opensearch` |
 | curl 用 HTTP 时报 `Empty reply from server` | 仍是 HTTPS 端口在应答 | 同上；先用 `curl -k https://127.0.0.1:9200/` 确认服务本身活着 |
 | 认证失败 `401 Unauthorized` | 用户名/口令不对 | `curl -u admin:'<口令>'` 单独验证；口令含特殊字符时**用单引号包住**；确认用的是本轮设的强口令（不是 demo 默认值） |
 | **`yellow`** | 主分片就绪、**副本未分配** | **单节点上几乎总是"某个索引设了 replica ≥1"**：`PUT /<索引>/_settings {"index":{"number_of_replicas":0}}`；用 `_cat/indices?v&health=yellow` 找出来逐个改 |
 | **`red`** | 有**主分片**未分配 ⇒ 检索/写入报错 | `_cat/indices?v` 与 `_cluster/allocation/explain`；单节点上常见原因是**数据目录权限**（步骤 4）或**磁盘满** |
-| 磁盘满 / 索引变只读（flood stage） | 达 95% 水位 | ① 清旧快照（脚本保留期调小）；② **查日志是否在涨**：`du -sh /home/opensearch/logs`，没配轮转就照 步骤 4 的"日志轮转"配一份；③ 解锁：`PUT /<索引>/_settings {"index.blocks.read_only_allow_delete":null}`；④ 复核 步骤 19 的水位 |
-| 首次检索特别慢（几十秒~分钟级） | **惰性向量化在问答路径上**（步骤 19 现状） | 按 步骤 19 先灌满索引再切 `VEC_BACKEND`；临时手段是重复发几次同样的提问 |
+| 磁盘满 / 索引变只读（flood stage） | 达 95% 水位 | ① 清旧快照（脚本保留期调小）；② **查日志是否在涨**：`du -sh /home/opensearch/logs`，没配轮转就照 步骤 18 的"日志轮转"配一份；③ 解锁：`PUT /<索引>/_settings {"index.blocks.read_only_allow_delete":null}`；④ 复核磁盘水位（参考 B · 监控要看哪些指标） |
+| 首次检索特别慢（几十秒~分钟级） | 索引里没有向量：**旧版本是在问答路径上惰性补算**（`ai-1.2.0` 已把向量化**前移到解析入库**，正常不应再出现；仍在补算会记 `ai.vector.lazy_backfill`，**持续非 0 就是漏了前移**） | 按 步骤 19 ①-4 先灌满索引再切 `VEC_BACKEND`；核对 `ai.vector.lazy_backfill`（应为 0）与 `ai.vector.indexed` |
 | 快照失败 `repository_exception` / 报目录不可写 | 仓库目录属主不对或不在 `path.repo` 之下 | `sudo chown -R opensearch:opensearch /home/opensearch/backup`；核对 `path.repo` 与脚本 `REPO_LOCATION` 的父子关系 |
 | `snapshot-backup.sh` 报无法免密 ssh | `rsync` 到 `.111` 需要免密 | `ssh-copy-id lhim@10.254.212.111`；或临时 `SKIP_REMOTE=1`（但**别长期跳过**，否则没有异地副本） |
 | AI 日志"集群不可达（http://…）" | 网络/防火墙/`network.host` 三者之一 | 在 AI 那台跑 步骤 1.6 与 步骤 14 A6；核对 `network.host` 与 步骤 8 白名单 |
@@ -1277,20 +1373,22 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | 1 | **磁盘类型与容量**（当前给定 200GB；需确认 SSD/HDD、是否单盘） | HDD 上 kNN 检索延迟会明显变差；单盘则数据与快照抢 I/O | 你 / 平台方 |
 | 1 | **内网 NTP 时间源地址** | 时间不同步会让日志/快照时间戳不可比 | 平台方 |
 | 2 | **快照保留期与执行时间**（本文按每晚 02:30、留 7 天写） | 影响备份盘容量与 RPO | 你（改脚本 `KEEP_DAYS` 与 crontab） |
-| 3 | **现网真实文档数与切片总数**（步骤 19 规模表按 30 切片/份估算） | 决定"要不要现在就上"以及 步骤 19 的重建耗时 | 你（`/documents` 或自检页） |
-| 4 | **"切片带项目/密级元数据"的落地排期**（`project_id`/`security_level` 目前无人写入） | 不做这一步，"先过滤再检索"只是**能力就绪**、不是**功能可用** | 你 / 开发方 |
+| 3 | **现网真实文档数与切片总数**（容量表在 附录 E · 索引设计 · 容量与分片，按 30 切片/份估算） | 决定"要不要现在就上"以及 步骤 19 的重建耗时 | 你（`/documents` 或自检页） |
+| 4 | **主系统何时回填"切片带项目/密级元数据"**（字段与接口**已就绪**：`PUT /documents/{id}/meta` 补录 `attachment_id`/`project_id`/`phase_code`/`security_level`/`doc_type`/`source`，回填后 `POST /admin/reindex?docIds=<id>` 即写入索引、**不必重解析**；但**谁来填、什么时候填**未定） | 不填就只能按 `doc_id` 做硬作用域，"先过滤再检索"的**项目/密级**维度只是**能力就绪**、不是**功能可用** | 你 / 开发方 |
 | 5 | **平台是否真的不支持降维**（本仓库实测传 `dimensions` → HTTP 400） | 决定 `VEC_EMBED_DIMENSIONS` 永远为 0（本文按"不传"写） | 平台方 |
-| 6 | **AI 能力服务实际跑在哪台机器上**、其容器是否设 `-Xmx` | 决定 步骤 19 的 `OPENSEARCH_URL` 与 步骤 8 的防火墙白名单 | 你 |
-| 7 | **是否要上监控/告警栈**（Prometheus / Grafana / OpenSearch 告警插件） | 步骤 20 的指标目前只能手工巡检 | 你 |
+| 6 | **AI 能力服务实际跑在哪台机器上**、其容器是否设 `-Xmx` | `OPENSEARCH_URL` 已定（指向生产 `.110`）；本项只影响 步骤 8 的防火墙白名单与堆预算 | 你 |
+| 7 | **是否要上监控/告警栈**（Prometheus / Grafana / OpenSearch 告警插件） | 参考 B · 监控要看哪些指标 目前**只能手工巡检**（`ai-1.2.0` 已给出 micrometer/actuator 指标与 `/health?with_metrics=true`，但**没有告警**） | 你 |
 | 8 | **`.111` 演练机的 ssh 免密是否允许配置**（`snapshot-backup.sh` 的 rsync 需要） | 不配就只能 `SKIP_REMOTE=1`，等价于没有异地副本 | 你 |
 | 9 | **Dashboards 系统索引的实际名字**（脚本按 `.opensearch_dashboards*` 与 `.opendistro_security` 写，点号前缀未经真机确认） | 若实际名字不同，快照会"成功但没备到"，恢复后表现为界面空白/权限回默认 | 你（`_cat/indices?v` 看一眼，见 步骤 17） |
-| 10 | **仓库适配层的 kNN 查询体是否要按 3.x 语法改写**（现状按 2.x 固定结构拼、字段名恰好为 `vector` 故语义正确，但未实测） | 决定切换 `VEC_BACKEND=opensearch` 前是否要先做一次应用代码改动（不在本轮范围） | 你 / 开发方（先按 步骤 19 ⑧ 做顺序对照） |
+| 10 | **`local` 与 `opensearch` 的 top-k 是否真的一致**（查询体与索引 mapping 已按 3.x 结构落地并有离线断言，但**真集群从未实测**） | 决定 `VEC_BACKEND=opensearch` 能不能算"切换成功" | 你 / 开发方（**必须**先按 步骤 19 ①-3 跑一次顺序对照；这一步不在离线测试覆盖范围内） |
 
 > **已在本次部署中定死、因此不再列为未确认**：部署形态（**tar + systemd，不用 Docker**）、机器（**`pdmsosgh` / x86_64**）、
 > 版本（**OpenSearch 3.1.0 + Dashboards 3.1.0**）、节点数（**单节点**）、部署根（**`/home/opensearch/`**）、
 > 建账号方式（**有家目录 + `passwd -l`**）、权限模型（**权限共享**，步骤 4）、安全模式（**HTTP + basic auth**，步骤 17）、
 > Dashboards 账号（**用 `admin`**）、cron 归属（**root**）、logrotate（**本机自建**）、防火墙（**firewalld**）、
-> 副本数（**0**）、堆大小（**8g**）、是否需要 Dashboards（**需要**，参考 B）。
+> 副本数（**0**）、堆大小（**8g**）、是否需要 Dashboards（**需要**，参考 B）、
+> **向量后端选型（生产用 `VEC_BACKEND=opensearch`，`local` 只作回滚路径）**、
+> **两台机器的角色（`.110` = 生产；`.111` = 冷备 + 演练机，不接业务、只收快照）**。
 
 ---
 
@@ -1408,7 +1506,7 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 ### B.6 日志轮转交给平台方统一采集
 
 **什么时候考虑**：机房已有统一日志平台（集中采集 + 轮转）。
-**要改什么**：删掉本机自建的 `/etc/logrotate.d/opensearch`（步骤 19），改由平台方采集。
+**要改什么**：删掉本机自建的 `/etc/logrotate.d/opensearch`（步骤 18），改由平台方采集。
 **验收口径不变**：`du -sh /home/opensearch/logs` 不单调增长，`df -h /home` 有足够余量。
 
 ### B.7 加第 3 台 → 3 节点集群
@@ -1438,7 +1536,7 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 | 10 | **专用非 root 用户** | Tar 页：`sudo adduser --system --shell /bin/bash -U --no-create-home opensearch`；`sudo usermod -aG opensearch $USER`；`sudo chown -R opensearch /opt/opensearch/`；OpenSearch 不能以 root 运行 | 原方案靠容器内 uid 1000（宿主 `chown 1000:1000`） | 步骤 4/步骤 7 全部改为**系统用户 `opensearch` + `chown -R opensearch:opensearch`**，并给"权限不对"的排障行 |
 | 11 | **端口 9600** | 官方（Docker 与 tar）都提 `9200`（REST）与 `9600`（Performance Analyzer） | 原来只讨论 9200，9600 未表态 | **步骤 8** 明确：**9600 不放行**（本方案不用 Performance Analyzer） |
 | 12 | **数据/日志/备份路径与属主** | 官方 tar 路线不规定安装路径（"The tarball installation does not define a specific installation path, users, roles, or permissions"），但要自己保证权限正确；官方示例把 `data` 放在安装目录下 | 原来绑定宿主目录 `1000:1000`（容器语汇） | 附录 D · 0.2/步骤 4 定稿 `/home/opensearch/{app,config,data,logs,backup}`，**data/logs 放在安装目录之外**（升级不碰数据），属主 `opensearch:opensearch`、权限 750（文件 644 / keystore 600） |
-| 13 | **升级与"复制 config"** | 官方 tar 升级思路是"换程序目录、带上你自己的 `config/`"（安全配置与证书都要自己接管） | 原来是 `docker load` 换 tag；升级段只写了"把证书/`opensearch-security/`/keystore 也带过去"，**没有属主与权限** | 步骤 19 改为 stop → 解包新目录 → **复制 `config/opensearch.yml` + `jvm.options.d/` + demo 生成的证书与 `opensearch-security/`** → **⑥ 明确属主与权限（`*.pem`/`opensearch-security/*.yml` = `640`、`keystore` = `600`、`tools/*.sh` = `750`，一律 `opensearch:opensearch`）** → chown/chmod → 换目录 → start；旧目录留作回滚。**升级后最常见的 644/640 事故就发生在这里** |
+| 13 | **升级与"复制 config"** | 官方 tar 升级思路是"换程序目录、带上你自己的 `config/`"（安全配置与证书都要自己接管） | 原来是 `docker load` 换 tag；升级段只写了"把证书/`opensearch-security/`/keystore 也带过去"，**没有属主与权限** | 参考 B · 升级路径 改为 stop → 解包新目录 → **复制 `config/opensearch.yml` + `jvm.options.d/` + demo 生成的证书与 `opensearch-security/`** → **⑥ 明确属主与权限（`*.pem`/`opensearch-security/*.yml` = `640`、`keystore` = `600`、`tools/*.sh` = `750`，一律 `opensearch:opensearch`）** → chown/chmod → 换目录 → start；旧目录留作回滚。**升级后最常见的 644/640 事故就发生在这里** |
 | 14 | **`plugins.security.ssl.http.enabled` 的默认值** | 安全设置页：该设置 "Default is `false`"，但 demo 脚本会把它设成 **true**（所以 quickstart 用 HTTPS） | 原来只有"TLS 可选"一句，说不清默认到底是什么 | **步骤 12** 明确：字段默认 false，但 demo 配置会改成 true，因此我们**必须显式写 false** |
 | 15 | **禁用安全插件的代价** | 启停页：禁用后"exposes the configuration index… If the index contains sensitive information, make sure to protect it"；安全设置页：`plugins.security.disabled` 的警告是"can expose your configuration (including passwords) to the public"；且**禁用/启用需要整集群重启** | 原方案把"禁插件"只当作"简单"选项 | 步骤 8 方案 C 明确列为**不采用**，并原样引用官方的暴露警告与"需要重启"这一操作代价 |
 | 16 | **下载 URL（官方口径留档）** | 官方 Tar 页给的是 `wget https://artifacts.opensearch.org/releases/bundle/opensearch/<版本>/opensearch-<版本>-linux-x64.tar.gz`（**页面没有给 `.sha512` 的说明**） | 原文没有校验步骤 | 本机由运维在浏览器自行下载后放到 `/home/opensearch/`，**本次部署不做校验步骤**（包已在位，见 第 1 节）；此处仅留官方 URL 形式备查。**不改动任何主线步骤****同目录下有 `.sha512`（165 字节文本，`sha512sum -c` 可直接吃），给出 Windows/Linux 两种校验命令 + "校验不通过绝不安装" |
@@ -1453,8 +1551,8 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 | 25 | **Dashboards 的 Node 堆默认值** | 官方 `config/node.options` 里给的示例是 **`--max-old-space-size=4096`**（默认 4GB 老生代）；官方示例 yml 提到 `opensearch.memoryCircuitBreaker` 的阈值基于该值 | 上一版没有 | **步骤 17** 明确"默认 4GB、16GB 机器上必须封顶"，本方案在 unit 里压到 **1024MB**，并给出"官方支持两种设置方式（`config/node.options` 或 `NODE_OPTIONS`），我们选后者"的取舍 |
 | 26 | **快照默认不含系统索引（脚本级修正）** | 官方快照/恢复文档说明：恢复快照时不能包含全局状态、且**不恢复 `.opendistro_security`**（除非 admin 证书签名）⇒ 系统索引默认不在快照里 | 上一版脚本只备 `pm-ai-chunks` ⇒ 恢复后 Dashboards 空白、安全配置回默认 | 步骤 20 + 脚本：默认索引列表改为 `pm-ai-chunks,.opensearch_dashboards*,.opendistro_security`；给出三条验证命令（快照后看 `indices`、恢复后看 `_cat/indices`、浏览器里看仪表盘） |
 | 27 | **k-NN 引擎可用性（3.x）** | `docs/latest` 的 Methods and engines 页：引擎有 **Lucene / Faiss / NMSLIB（legacy，标注 "now deprecated"）/ JVector**；`engine` 省略时**默认 `faiss`**；Lucene 支持 `hnsw`（space：`l2`/`cosinesimil`/`innerproduct`），Faiss 支持 `hnsw`/`ivf`，其中 **`cosinesimil` 对 Faiss 是 2.19+**，且"Faiss 用 `cosinesimil` 时向量会被自动归一化 ⇒ 存储值与你输入的不同"；另有 **JVector（`disk_ann`，需单独插件 `opensearch-jvector`，不能与 opensearch-knn 同集群）** | 上一版把 `engine` 写成"可选 lucene/faiss"，并说"nmslib 需要额外参数"，没说清楚 3.x 的取舍 | 步骤 8 重写：**默认用 `lucene`**（与代码 `OpenSearchIndex` 一致、支持带过滤检索、官方定位"smaller deployments / <1000 万向量"）、`faiss` 作为可选并**明确写出归一化的副作用**、**3.x 新索引不要用 `nmslib`**、并登记 JVector 这条路（未采用，需额外插件） |
-| 28 | **k-NN mapping 的键名与默认值** | k-NN vector 页：`dimension` 合法区间 **[1, 16000]**；`data_type` 默认 `float`（可选 `binary`/`byte`/`float`/`half_float`）；`space_type` **既可写在字段层也可写在 `method` 内**（"This value can also be specified within the `method`"），默认 `l2`；`mode` 默认 **`in_memory`**（`on_disk` 为低成本路线，配合 `compression_level`，默认 `32x`、默认开启 rescore）；方法参数键名是 **`parameters`**（不是 `params`）；`m` 默认 **16**、`ef_construction` 默认 **100** | 上一版把 `space_type` 同时写在字段层与 `method` 内（两种写法混用），`ef_construction` 写 128 没说这是"偏离默认"，也没提 `dimension` 上限与 `mode` 默认值 | 步骤 17 改为：`space_type` **只写字段层**、`data_type: float` 显式写出、`method` 内只留 `name`/`engine`/`parameters`；步骤 8 补 `dimension` 上限 16000（我们的 4096 合规）、`mode` 默认 `in_memory`（故不写）、`m`/`ef_construction` 与官方默认值的对照 |
-| 29 | **k-NN 查询语法（3.x）** | k-NN query 页的请求体结构：**`"knn": { "<vector_field>": { "vector": [...], "k": n, "filter": {...}, "method_parameters": {...}, "rescore": {...} } }`** —— **字段名直接是 `knn` 下第一层**；`filter` **只能配合 `faiss`/`lucene`**；`k` 合法区间 [1, 10000]；`method_parameters.ef_search` 对 **lucene** 的行为是"与 `k` 取较大者传给引擎" | 上一版按 2.x 的固定键结构写（`knn.vector.vector`），没有区分"结构里的 `vector` 是键名还是字段名" | 步骤 17 ① 加了 3.x 语法说明（`knn` 下第一层是**字段名**；我们字段名恰好也叫 `vector`），② 明确 `filter` 的引擎前提；并在 步骤 17 末尾**如实登记一处不一致**：仓库适配层 `OpenSearchIndex.search()` 仍按 2.x 固定结构拼查询体，**因字段名巧合为 `vector` 而语义仍正确**，但上线前必须按"top-k 顺序与 local 一致"实测（改适配层属应用改动，登记在 参考 B） |
+| 28 | **k-NN mapping 的键名与默认值** | k-NN vector 页：`dimension` 合法区间 **[1, 16000]**；`data_type` 默认 `float`（可选 `binary`/`byte`/`float`/`half_float`）；`space_type` **既可写在字段层也可写在 `method` 内**（"This value can also be specified within the `method`"），默认 `l2`；`mode` 默认 **`in_memory`**（`on_disk` 为低成本路线，配合 `compression_level`，默认 `32x`、默认开启 rescore）；方法参数键名是 **`parameters`**（不是 `params`）；`m` 默认 **16**、`ef_construction` 默认 **100** | 上一版把 `space_type` 同时写在字段层与 `method` 内（两种写法混用），`ef_construction` 写 128 没说这是"偏离默认"，也没提 `dimension` 上限与 `mode` 默认值 | 步骤 16 改为：`space_type` **只写字段层**、`data_type: float` 显式写出、`method` 内只留 `name`/`engine`/`parameters`；附录 E 补 `dimension` 上限 16000（我们的 4096 合规）、`mode` 默认 `in_memory`（故不写）、`m`/`ef_construction` 与官方默认值的对照。**`ai-1.2.0` 的代码取 `ef_construction=100`（官方默认），与 步骤 16 示例的 128 不同——这是刻意偏差，已在 步骤 19 ①-1 写明两者不能混用** |
+| 29 | **k-NN 查询语法（3.x）** | k-NN query 页的请求体结构：**`"knn": { "<vector_field>": { "vector": [...], "k": n, "filter": {...}, "method_parameters": {...}, "rescore": {...} } }`** —— **字段名直接是 `knn` 下第一层**；`filter` **只能配合 `faiss`/`lucene`**；`k` 合法区间 [1, 10000]；`method_parameters.ef_search` 对 **lucene** 的行为是"与 `k` 取较大者传给引擎" | 上一版按 2.x 的固定键结构写（`knn.vector.vector`），没有区分"结构里的 `vector` 是键名还是字段名"；适配层代码也按 2.x 固定结构拼查询体 | **文档侧**：附录 E · 索引设计 · 查询 写明 3.x 语法（`knn` 下第一层是**字段名**）与 `filter` 的引擎前提（文档 步骤 16 是手工建索引的示例）。**代码侧（`ai-1.2.0`）**：`OpenSearchIndex.search()` 已改为 3.x 结构并带 `filter` 硬作用域，`OpenSearchIndexTest` 有离线断言；但**真集群未实测**，切换前必须按 步骤 19 ①-3 做"top-k 顺序与 local 一致"的对照（登记在 参考 C 第 10 条） |
 | 30 | **快照请求体字段（3.x）** | Create Snapshot API 页：请求体字段**只有** `indices`（支持 `,` 列表与 `*` 通配与 `-` 排除，**"Don't put spaces between items"**）、`ignore_unavailable`（默认 false）、`include_global_state`（默认 true）、`partial`（默认 false）；**没有 `expand_wildcards`**。官方示例本身就用了通配 + 系统索引：`{"indices": "opensearch_dashboards*,my-index*,-my-index-2016", ...}` | 上一版脚本在请求体里加了 **`"expand_wildcards": "all"`**，并声称"通配符必须显式展开"——**这是错的**（该参数不属于这个 API） | 脚本**移除 `expand_wildcards`**（注释留档说明为什么不能加回来）；`indices` 直接用逗号 + `*`（官方原生支持）；文档 步骤 20 同步改正 |
 | 31 | **安全插件键与 tar 安装脚本（3.x 是否仍存在）** | 3.x 的 Tar 页与 security-settings 页：`opensearch-tar-install.sh` **仍存在**（Step 3 Option 1 仍叫这个名字，且仍会"apply self-signed TLS certificates"并改 `config/opensearch.yml`）；`OPENSEARCH_INITIAL_ADMIN_PASSWORD` **仍是 2.12+ 的必需项**；口令四条要求（8~100 字符、四类字符各一、zxcvbn 达 strong 以上、不得与 admin 相似）在 3.x 文档里**未变**；`plugins.security.ssl.http.enabled`、transport 三个 `pem*_filepath`、`allow_unsafe_democertificates`、`allow_default_init_securityindex` 这些键**在 3.x 文档里都还在**（且 Tar 页的追加脚本仍然写 `plugins.security.allow_default_init_securityindex: true`） | 上一版已按 2.x 写对；但没说明"3.x 是否仍成立" | 步骤 5/步骤 8 内容**不变**，在附录 B 这里登记"已按 3.x 复核、四项键与口令要求均未变" |
 | 32 | **heap 覆盖目录 `jvm.options.d/` 与自带 JDK（3.x）** | 3.x Tar 页：**"The tarball is a self-contained directory with everything needed to run OpenSearch, including an integrated Java Development Kit (JDK)"**；Step 4 给的是 `export OPENSEARCH_JAVA_HOME=/path/to/opensearch-<版本>/jdk`；调整堆的官方写法是**改 `config/jvm.options`**（页面未提 `jvm.options.d`） | 上一版声称 `jvm.options.d/` 是"官方支持的覆盖目录" | 步骤 6 保留 `jvm.options.d/heap.options` 做法，但**改口径**：把它写成"**我们的做法**（借 JVM 官方启动脚本会读取 `jvm.options.d/*.options` 的机制）"，并注明**官方 Tar 页只写了改 `config/jvm.options`**；同时写入 **3.x 自带 JDK**（`app/jdk`）与 `OPENSEARCH_JAVA_HOME` 的设置方式，明确"宿主不需要预装 Java" |
@@ -1546,7 +1644,7 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 | --- | --- | --- |
 | **单点故障** | OpenSearch 挂 → kNN 检索不可用（**AI 问答的检索环节受影响**） | ① **快照/备份是强制项**（[`snapshot-backup.sh`](../deploy/opensearch/snapshot-backup.sh) + cron，步骤 18）；② **AI 侧降级口径定死**（步骤 19：**明确报错，不许静默返回无关结果**）；③ systemd `Restart=on-failure` + `enable`（开机自启） |
 | 无副本 | 数据盘损坏即丢索引 | 每晚快照 + `rsync` 到 `.111`（步骤 18 / 步骤 20），**RTO 分钟级** |
-| 无滚动升级 | 升级要停机（分钟级） | 升级步骤见 步骤 19（停服 → 解包新版本 → 复制 `config/` → 启动；旧目录保留即回滚） |
+| 无滚动升级 | 升级要停机（分钟级） | 升级步骤见 参考 B · 升级路径（停服 → 解包新版本 → 复制 `config/` → 启动；旧目录保留即回滚） |
 
 > **重要边界**：OpenSearch 里存的是**可重建物**（切片文本 + 向量 + 索引），与既有运维口径一致——
 > **业务数据仍在主系统崖山库**（V1~V14，16 张表）。索引即使全丢，也能从主系统附件重新解析重建（代价是时间，见 步骤 19）。
@@ -1701,11 +1799,14 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
 | `source` | `keyword` | **本次新增** | 来源标记（如 `pm-attachment`） |
 | `created_at` | `date` | **本次新增** | 入库时间（按时间收窄检索用） |
 
-> ⚠️ **必须说清楚的一件事**：`project_id`/`security_level` 这几个字段**不是代码自动写入的**——
-> 现有 `OpenSearchIndex.toDocument()` 只写 `doc_id`/`filename`/`page_no`/`text`/`chunk_key`/`vector` 六个字段，
-> 而**切片本身也没有项目/密级元数据**（这是《AI模型调用与任务队列评估》登记的"最硬的一条"）。
-> 所以本节的 filters 示例要真正生效，需要**先把元数据从主系统带进切片**（`attachment_id → project_id/密级` 的映射在主系统崖山库），
-> 这件事**属于应用代码改动，不在本轮范围内**（本轮只写文档与部署资产）。过滤器仍然可以先按 `doc_id` 用起来（见 步骤 17）。
+> ⚠️ **必须说清楚的一件事**：这几个元数据字段**代码会写，但值从哪来还没定**——
+> `OpenSearchIndex.toDocument()`（`ai-1.2.0`）已经把 `DocMeta` 里的
+> `attachment_id`/`project_id`/`phase_code`/`security_level`/`doc_type`/`source` **原样写进索引文档**
+> （**元数据为空就不写该字段**，查询侧按"不在作用域内"处理，缺失 ≠ 通配）；
+> 元数据的**来源**是 `work/meta/`（`DocMetaStore`），由主系统调 `PUT /documents/{id}/meta` 补录。
+> 所以本节的 filters 示例要真正生效，需要**主系统把元数据填进来**（`attachment_id → project_id/密级` 的映射在主系统崖山库），
+> **什么时候填、谁来填仍未定**（登记在 参考 C 第 4 条）。
+> 在那之前，过滤器可以先按 `doc_id` 用起来（见 步骤 19 ①-3 与 [`ai-backend/README.md`](../ai-backend/README.md) 的接口表）。
 
 ### 索引设计 · HNSW 与引擎的版本注记
 
@@ -1717,13 +1818,13 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
 | `name` | `hnsw` | 近似最近邻图索引（`ivf` 需要训练步骤，本方案不用） |
 | `m` | `16`（= 官方默认值） | 每个节点的双向连边数（官方要求保持 2~100）；越大召回越好、内存与建索引越慢 |
 | `ef_construction` | `128`（官方默认 **100**，我们略调高） | 建图时的候选队列长度；越大图质量越好、建索引越慢 |
-| `space_type` | `cosinesimil` | **与 `local` 后端的余弦同一口径**（这一条**未实测**：集群起来后必须做"top-k 顺序与 local 一致"的对照，见 步骤 17 验证口径）。官方对 `lucene` 支持的 space 列表是 `l2` / `cosinesimil` / `innerproduct`，`cosinesimil` 在列 |
+| `space_type` | `cosinesimil` | **与 `local` 后端的余弦同一口径**（这一条**未实测**：集群起来后必须做"top-k 顺序与 local 一致"的对照，见 步骤 19 ①-3）。官方对 `lucene` 支持的 space 列表是 `l2` / `cosinesimil` / `innerproduct`，`cosinesimil` 在列 |
 | `data_type` | `float` | 官方默认值；`on_disk` 模式只支持 `float` / `half_float` |
 | `mode` | **不写**（默认 `in_memory`） | 官方默认 `in_memory`（低延迟优先）。`on_disk` 是 2.17 引入的低成本路线，官方明确"配合 `compression_level`、默认 `32x`、并默认开启 rescore（用磁盘上的全精度向量重排）" |
 | `on_disk` / 量化（`sq`/`pq`、`compression_level`） | **本方案不用** | 百万级切片或磁盘受限时才考虑；本项目当前约 2 万切片。要用请先核对你的版本与官方 k-NN 文档，切了必须**重建索引** |
 | 维数上限 | **16,000** | 官方 `knn_vector.dimension` 的合法区间是 `[1, 16000]` ⇒ 我们的 **4096 在范围内**（这是选型时容易忽略的一条硬上限） |
 
-> **验证口径（做完 步骤 17 的对照才算数）**：对同一份语料、同一批问题，把 OpenSearch kNN 的 top-k 顺序与 `local` 的 top-k **逐条对比**；
+> **验证口径（做完 步骤 19 ①-3 的对照才算数）**：对同一份语料、同一批问题，把 OpenSearch kNN 的 top-k 顺序与 `local` 的 top-k **逐条对比**；
 > 顺序对不上通常意味着 `space_type` 或字段名写错（对照 [`OpenSearchIndex`](../ai-backend/src/main/java/com/pmgt/ai/module/retrieval/OpenSearchIndex.java) 的注释协议：
 > 建索引 → 幂等写入 → 查询页码一致 → 顺序与 local 一致）。
 
@@ -1824,12 +1925,12 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: applicat
 }'
 ```
 
-> **⚠️ 与仓库现有适配层的一处不一致（要认账，属应用改动、不在本轮范围）**：
-> 仓库里的 [`OpenSearchIndex.search()`](../ai-backend/src/main/java/com/pmgt/ai/module/retrieval/OpenSearchIndex.java)
-> 按 **2.x 的固定结构**拼查询体（`{"knn":{"vector":{"vector":[...],"k":k}}}`，那个 `vector` 是**固定键名**）。
-> 3.x 的官方结构是"`knn` 下第一层写**字段名**"。由于我们的字段名恰好也叫 `vector`，**语义正确**；
-> 但**这个巧合不能当保障**——真要上线前必须按 步骤 19 ⑧ 做一次"top-k 顺序与 local 一致"的实测，
-> 并在需要时把适配层改成显式字段名（那是一次应用代码改动，需另行排期，见 参考 B 未确认项）。
+> **⚠️ 这处"巧合"已经消除（`ai-1.2.0`）**：
+> [`OpenSearchIndex.search()`](../ai-backend/src/main/java/com/pmgt/ai/module/retrieval/OpenSearchIndex.java)
+> 本轮已按 **3.x 结构**拼查询体（`knn` 下第一层是**字段名**），并带 `filter` 硬作用域；
+> 结构有**离线断言**（`OpenSearchIndexTest` 直接断言请求体）。
+> 但**离线断言不等于真机验证**：真集群上"top-k 顺序与 `local` 一致"**仍未实测**，
+> 切换前必须按 步骤 19 ①-3 跑一次对照（登记在 参考 C 第 10 条）。
 
 | 融合方式 | 做法 | 评价 |
 | --- | --- | --- |
@@ -1868,6 +1969,7 @@ curl -sS -u "$AUTH" "$OS/pm-ai-chunks/_count"      # 期望 {"count":<N>,"_shard
 | docs-1.6（修订八） | 2026-09-23 | **修一条范围写错的命令（真故障）**：上机时 `systemctl start opensearch` 连续失败，`journalctl` 报 `Control process exited, code=exited, **status=203/EXEC**`。**根因是文档的错**：步骤 4 原文 `sudo find /home/opensearch -type f -exec chmod 664 {} +` **递归抹掉了程序目录的执行位**（`app/bin/opensearch`、`app/jdk/bin/*`、`app/jdk/lib/jspawnhelper`、`app/plugins/**/tools/*.sh`），JVM 与启动脚本无法执行。① **步骤 4 改为"只作用于运行期目录"**（`config`/`data`/`logs`/`backup`），并**明确禁止**对 `app/` 或 `dashboards/app/` 套用 `chmod 664`；② **新增 §4.5「程序目录可执行位恢复」**（三条 `chmod 750` + `daemon-reload` + `restart` + 四条复核，含"从 tar 包重新解压程序目录"的更稳替代）；③ **步骤 19 新增 `status=203/EXEC` 排障条目**（含义：systemd 在 exec 阶段就失败 ⇒ 应用日志为空，别在 `logs/` 里找；四处日志 + 四类原因与判据）；④ **步骤 10 ⑤ 核对新增"`app/bin/opensearch` 与 `jdk/bin/java` 必须带 `x`"**；⑤ **参考 A · 容量与分片 加同款红线**（不要对 `dashboards/app/` 套 `chmod 664`）；⑥ **附录 B.1 的递归 `find` 限定到运行期目录**；⑦ 资产 `opensearch.yml.example` 顶部加"权限红线"注释、`opensearch.service` 去掉已废弃的 `chmod 711 /home/lhim` 历史注释、`opensearch_dashboards.yml.example` 的示例权限由 `644` 改 `640` |
 | docs-1.6（修订九） | 2026-09-23 | **由"部署记录"改写为傻瓜式部署手册**（用户意见：这是部署文档，不是部署记录，要能照着从零部署成功）。① **删除全部状态标注与既成事实**（`（已完成）`/`（待执行）`/`（当前状态）`/"已解压完成"等）；② **新增 §1 前置条件（开始前必须具备）**：机器/架构/内存/磁盘/Docker 检查、**专用账号 `opensearch` 的从零建立命令**（`useradd -m -d /home/opensearch -s /bin/bash` + `passwd -l` + `chown` + `usermod -aG`）、目录结构建立、两个安装包位置、资产位置、端口与网络前置，**每条都有"怎么达成"的命令**；③ **"解压 tarball 到 `app/`"恢复为正式步骤**（步骤 3：`sudo -u opensearch tar -zxf … ` + `mv … app` + `chown -R` + 期望输出）；④ **主线 20 步全部改为四件套**：① 执行（可直接复制的命令块）② 期望输出（逐字给出 `"status":"green"`、`-rwxr-x---` 等）③ ✅ 完成判据 ④ ✗ 失败了怎么办（指向 §4.5 或参考 B · 常见故障的具体条目），并给出**耗时估计**；⑤ 顶部新增 **"怎么用这份文档"（3 条）+ 总步骤清单（可勾选，20 步 + 耗时）**；⑥ 危险动作（递归 `chmod`、防火墙、停机演练）在命令块紧邻处加 🔴 警告；⑦ 删除主线回溯性文字（"本项目已实际踩过这个坑"、"用户真机现状"、"本次部署不做校验"等），仅保留在附录/变更记录里；⑧ 参考章节去编号改为 **参考 B · 运维与排障 / 参考 C · 未确认项 / 附录 D · 结论与前提 / 附录 E · 索引与检索设计**，`附录 A`（3 节点）`附录 B`（变更项）`附录 C`（官方 35 条）与**变更记录**保留不动。**每步只依赖它前面的步骤**，新机器可从零照做 |
 | docs-1.6（修订十） | 2026-09-23 | **补 Dashboards 侧的同源漏洞**：上机时 `opensearch-dashboards.service` 启动失败，journald 报 `bin/use_node: cannot execute: Permission denied` → `Main process exited, code=exited, status=126/n/a`（重启计数 22）。根因与修订八同源：**之前那次全量 `chmod 664` 也波及了 `dashboards/` 树**，而手册只给了 OpenSearch `app/` 的执行位恢复。① **步骤 17 新增「恢复块 A · Dashboards 程序树执行位恢复」**（`dashboards/app/bin` + `node/bin` 与 `*.sh` 三条 `chmod 750` → 核对 `use_node`/`node` 为 `-rwxr-x---` → **`systemctl reset-failed` + `restart`**），并在失败指引里加 `126`；② **排障表新增 `status=126/n/a` 与 `status=203/EXEC` 两行**，写明 **exec 阶段失败 ⇒ 应用日志为空**、四处取证与**四类原因**，并注明"**`126` 与 `203` 都是权限位问题、修法一致**"；③ **步骤 4 权限红线扩写**：`chmod 664` 只作用于 `config`/`data`/`logs`/`backup`；**`app/` 与 `dashboards/app/` 两棵程序树都不得递归**，并给出**一次核对两棵树的四文件判据**（`app/bin/opensearch`、`app/jdk/bin/java`、`dashboards/app/bin/use_node`、`dashboards/app/node/bin/node` 必须都带 `x`） |
+| docs-1.7 | 2026-09-23 | **把 步骤 19 从占位句写成可复制的真实步骤（本轮唯一的实质内容改动）**，因为 AI 侧接入代码已随 `ai-1.2.0` 落地（`ai-backend/**`）。① **步骤 19 重写为 5 步固定顺序**：①-1 建索引 + 验连通（`_mapping`/`_cat/indices`/`_cluster/health`）→ ①-2 改 `.env`（`VEC_BACKEND`/`OPENSEARCH_URL`/`OPENSEARCH_INDEX`/`OPENSEARCH_USER`/`OPENSEARCH_PASSWORD`，口令只放 `.env`）+ `bash pm.sh restart ai` → **①-3 先做 top-k 一致性验证再做全量切换**（`TopKCompareTool` 的完整可复制命令 + 判据：**相似度数值不必逐位相等，要求一致的是排序/集合**；重合率偏低先查 `space_type` → 字段名 → 是否漏灌）→ ①-4 全量重建（真实端点 `/admin/reindex` 全量/局部/强制/进度/取消 5 条 `curl`）→ ①-5 回滚 `local`；② **写明不静默降级**：集群不可达时检索与重建**立刻 503 + "向量后端不可用"**，`/health?with_vec=true` 的 `vec.ok` 取**集群真实状态**，**不会**悄悄退回 `local`；③ **写明建索引两种方式的取舍**：手工 `步骤 16` 与代码自建只能选一种，`ef_construction` **100（代码）vs 128（步骤 16 示例）**、`refresh_interval` **1s（代码）vs -1（步骤 16 灌库示例）**，**索引已存在不会被改写**；④ **写明只接一台**：`.110` 与 `.111` 是彼此独立的单节点集群，生产 = `.110`；⑤ **参考 C 同步落定**：向量后端选型（生产 `opensearch`、`local` 仅回滚）与两台机器角色（`.110` 生产 / `.111` 冷备演练）移入"已定死"清单；第 3/4/6/7/10 条按 `ai-1.2.0` 的实际状态改写（元数据接口与硬作用域已就绪、待定的是"谁在什么时候填"；top-k 真机验证**仍未做**）；⑥ **顺带修掉 8 处失效的步骤引用**（`步骤 17`/`步骤 19`/`步骤 20` 误指：kNN 语法与 mapping → 步骤 16 与 附录 E、升级 → 参考 B · 升级路径、logrotate → 步骤 18、磁盘水位与 yellow/red → 参考 B · 常见故障）与 2 处已过期的表述（**向量化已前移**，不再是"惰性在问答路径上"；**元数据字段代码已写入**，不再是"不是代码自动写入的"）；⑦ 文档头部原"`ai-backend/**` 应用代码一行未改"改为如实说明"手册改的是 步骤 19，AI 侧代码随 `ai-1.2.0` 落地" |
 
 
 

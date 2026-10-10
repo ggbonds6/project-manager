@@ -15,7 +15,7 @@
 | 需求基线 | `docs/政府信息化项目管理系统-设计方案.md`（设计与实现同步稿，Q1–Q15 处置状态见 §11） |
 | 脚本清单 | `scripts/README.md`（发版打包 / 演示数据 / 开发机数据库工具） |
 | 当前版本 | **v3.7.0**（2026-09-23） |
-| ai-backend | **`ai-1.1.0`**（2026-09-20）：Java 版 AI 能力服务（Spring Boot 3.3.5 / Java 17，**与主系统同栈**），**独立构建与部署**（默认 8100、独立镜像与发版，不动主系统）；附件解析 + 平台 OCR + 文档库/问答 + **检索链路（Embedding 召回 + Reranker 精排）** + **结构化引用 `citations`**（答案按 `[n]` 标注、可跳附件第 N 页）；接口 `/analyze`、`/documents`、`/upload-tasks`、`/chat`；**发版链路与主系统对齐**（`make-release.ps1 -Project ai`，见 v3.6.2）；见 `ai-backend/README.md`。原 Python 版 `ai-service/` **已删除**（知识资产迁入 `ai-backend/docs/`） |
+| ai-backend | **`ai-1.2.0`**（2026-09-23）：Java 版 AI 能力服务（Spring Boot 3.3.5 / Java 17，**与主系统同栈**），**独立构建与部署**（默认 8100、独立镜像与发版，不动主系统）；附件解析 + 平台 OCR + 文档库/问答 + **检索链路（Embedding 召回 + Reranker 精排，向量后端可切 `local`/`opensearch`）** + **结构化引用 `citations`**（答案按 `[n]` 标注、可跳附件第 N 页）；接口 `/analyze`、`/documents`、`/upload-tasks`、`/chat`、`/admin/reindex`（全量重建索引，可中断续跑）；**发版链路与主系统对齐**（`make-release.ps1 -Project ai`，见 v3.6.2）；见 `ai-backend/README.md`。原 Python 版 `ai-service/` **已删除**（知识资产迁入 `ai-backend/docs/`） |
 | 仓库 | GitHub `ggbonds6/project-manager`（main 分支，全程 git 管理） |
 
 ---
@@ -74,7 +74,8 @@
 | v3.6.6 | 2026-09-23 | **修生产 500（运行期缺 `reactive-streams`）+ 深度自检 + OBS 缺对象日志** | 生产反馈：手动点附件解析报 **500「系统繁忙」**、自动解析从不产生任务。真机日志根因：`NoClassDefFoundError: org/reactivestreams/Publisher` —— 后端 AI 代理用 Spring 6.1 `RestClient` 走 multipart，而 `MultipartBodyBuilder` 的常量池本身就引用 `Publisher`，项目只依赖 `spring-boot-starter-web`（无 webflux/reactor）→ 该类在运行期链接失败（**问答 `/chat` 同一条路径也会 500**）。**教训**：66 个单测全绿却线上炸，真因不是"mock 掩盖"，而是 **`AiServiceClientTest` 从未覆盖 `submitParse`（multipart）这条路径**；故修法 = `backend/pom.xml` 补 `org.reactivestreams:reactive-streams`（版本由 BOM 管 → 1.0.4）**＋ 新增真 socket 回归测试**（JDK `HttpServer` + 真 `RestClient`，5 例；实测"修依赖前 3 条红、修后全绿"）。另修：① 服务自检三个模型从「未知」改为**三态（可用/不可用/未探测）+「深度自检」按钮**（`GET /api/ai/health?deep=true` → `with_llm&with_vec`，深探走长超时）；② OBS 缺对象时 WARN 打出 **bucket + 完整 object key + file_path + 核对提示**（用户可见 404 不变）。验证：`mvn -o test` **75 例全绿**、前端 build 0 错、镜像内运行期自检 `Publisher` 加载成功（旧镜像 `ClassNotFoundException`）、两个镜像均 arm64。 | `5c0bcc4` |
 | v3.7.0 | 2026-09-23 | **P2 受控查询：结构化事实走主系统受控查询 RPC + 口径同源 + 评测集** | 需求来自用户实测：问"某项目某阶段有几个附件"，**模型只数出已入库的 1 个**——AI 侧只有 `search_documents / read_page / calculate`，**看不到任何业务数据**。定案走 **B 方案（受控查询 + 口径 + 评测集）**：AI 不直连库、不生成 SQL，结构化事实一律反向回调主系统的受控查询接口，并把"口径"与"验收量尺"一并做出来。**为什么不做 A 方案（把"项目事实块"注入提示词）**：注入的是**一次性快照**，用户一改数据答案就错，且模型无法回答"具体某一阶段/某一笔付款"这类需要收窄的追问；快照还会随会话膨胀、把事实源搬到 AI 侧，与"主系统是唯一事实源"的既定边界相反。① **主系统**：4 个 RPC（`projects`/`contracts`/`payments`/`stats`）+ `scope_token`（同 `JWT_SECRET`、`typ=ai_scope`、`jti`、上限 **300s**，越权**在 mapper 之前**拒绝且对库查询 **0 次**）；口径抽 `ProjectMetricsService` 复用（与详情页**逐位一致由构造保证**，不是靠约定）；`AiQueryEntity` 字段白名单**即 400 提示原文**；`operate_log` 逐次留痕 + `ai_ask_log` 记查询次数/entity（**迁移 V14**）；附件预览加 `Cache-Control: private` + `ETag` + 304（并修掉 `file_size` 为空时发字面量 `"null"` 的 Content-Length 缺陷）；`stats` 支持 `projectIds` 收窄。② **AI 侧**：条件注册的**第 4 个工具** `query_business_data`（**不传 `biz_query` 时行为与本版本前逐字节一致**）+ 四条路由铁律（A 系统事实必须查系统／B 文档内容仍走文档并给 `[cite]`／C 引用系统数字必须带口径与数据时间、混用分开陈述／D 不许用 `calculate` 反推系统已有数字）+ 错误映射（403/4xx/空结果/5xx 四类话术，明确"**空结果 ≠ 调用失败**"），工具超时 **20s**。③ **前端**：系统数据区块（值 + 口径 + 数据时间，与文档引用**视觉区分**）、问答超时 **180s**、全屏预览**不再重建 iframe**（不再重复下载）。④ **评测集**：`eval/smoke-30.json` 35 题 + `scripts/eval-ai.mjs`（真值取自**页面接口**、`--scope-token` 交叉校验、`--dry` 数据集体检、漂移快照）。**验证**：backend **147 例**、ai-backend **129 例**、前端 build **0 错**、`check-docs` **0 问题**、三镜像 **arm64**、两个包 **`docker load` 成功**、`--list-truth` **20/20**。**未验证**（照实登记）：真机 nginx 反代下回调连通性、崖山 `FETCH FIRST n ROWS ONLY` 实际执行、`operate_log/ai_ask_log` 真实落库、V14 在真库的 ALTER、OBS `getObjectMetadata` 的 ETag 取值、180s 长问答后段仍能查（目前只有单测推理）、`/api/ai/chat` 全链路未打真实系统（评测用 mock 跑通判定链）、§11 交叉校验因拿不到 `scope_token` 恒 `n/a`。 | `0b49917` |
 | docs-1.5 | 2026-09-23 | **AI 模型调用配置评估 + 并发上限推导 + 「统一管理 + 任务环境隔离」队列方案（只评估，不改源码）** | 需求来自用户三问：① 调用配置是否合理 ② 能否提高并发 ③ 要不要加统一管理 + 环境隔离的任务队列。新增 [`docs/AI模型调用与任务队列评估.md`](docs/AI模型调用与任务队列评估.md)，逐调用点给出**真实配置值 + 代码位置**（超时/重试/并发/批量/上限），并做量化推导。**结论**：① 配置"能用但不合理"——四类模型共用一个网关与**一个 300s 超时**、`LlmClient` 的 `timeoutSeconds` 参数**未生效**（`ping(15s)` 实际按 300s 发）、除 OCR 外**无任何并发上限**、rerank 一次打 **75 对**不分批、**全链路重试 0 次**；② 并发**能提，且不用加机器**：问答上限今天 **≈0.16 QPS（≈10/分钟）且由重排单点决定**（75 对 × 2 次检索 ÷ 实测 24 对/s），**recall 50→20 即到 ≈0.4 QPS（约 2.5×）**；向量化今天只跑出平台能力的 **~12%**（串行批 32 ≈18.5 条/s），改并发 8 为 **147.9 条/s（≈8×）**，3,000 切片补算 **162s→20s**；`OCR_CONCURRENCY=12` 对典型文档**根本不生效**（`workers = min(12, 批数)`，8 页文档只有 1 批在飞）；③ **队列值得做，但要做薄**：隔离与背压是真缺口，但**不要在 AI 侧再建持久化队列**（会与 `attachment_ai_task` 形成两个事实源——今天的 `work/tasks.json` 就是教训），改为"**主系统 DB 唯一事实源 + 抢占式领取 + 公平调度**，AI 侧只留**每模型信号量 + 交互/批量两条通道**"。**量化触发点**：本地"进程内向量"在 **≈4,000 切片**时给每次提问加 **+1s**、15,000 切片 **+3.8s**（实测单切片向量 JSON **38,333 字节**，本轮真机读数），4 并发问答常驻 980MB，且 `local` 是**进程内状态 → AI 必须单实例**（需要 2 实例时 local 立刻不成立）⇒ 建议 OpenSearch 从 P2 **上提为 P1**。**P0 五项**：超时对齐（chat 150s/embed 30s/rerank 20s，且 < 调用方 180s）、重排降配、向量化并发化或前移、队列满**诚实失败**（今天队列满 → 500 + 任务**永久 QUEUED** + `work/tmp` 残留）、每模型信号量。**未确认项 11 条照实登记**（含"支持降维"前提与本仓库实测 HTTP 400 的冲突、OCR 并发曲线自相矛盾、rerank 34ms 语义）。**无源码变更** | `81ff293` |
-| docs-1.6 | 2026-09-23 | **为两台新服务器出 OpenSearch 部署与接入文档 + 部署资产（含 2 节点 quorum 明账与升级路径）；架构 x86_64 + 按官方 Docker 文档对齐（含 REST TLS 取舍）；最终路线：tar.gz + systemd（无 Docker）；部署根 /home/opensearch/（D 方案＝专用账号家目录，程序/配置/数据/日志/备份分离）；并新增 OpenSearch Dashboards（同机 5601 + systemd unit + "快照必须含系统索引"的修正）；版本 3.1.0（按 3.x 官方重核：k-NN 引擎/查询语法变更）+ 安装包目录统一 /home/opensearch/ + 仓库资产落位对照表（属主/权限/install 命令）+ 两条省事路径 + 落位/权限 7 项补齐 + 收口 4 条 + **修订六：主线去分支（删校验与搬运叙述）、按真机现状写成唯一路径，章节重排（§0~§11 + 附录 A/B/C）** + **修订七：防火墙提前到宿主准备（先收暴露面再起服务）、去强调词、附录 B 增 B.2** + **修订八：修 `chmod 664` 范围错误（导致 `status=203/EXEC`）+ 新增 §4.5 可执行位恢复与 §8.5 排障条目** + **修订九：由部署记录改写为傻瓜式部署手册（前置条件 + 20 步四件套 + 总清单）** + **修订十：补 Dashboards 侧同源漏洞（`status=126` + 恢复块 A + 两棵树判据）** | 新增 [`docs/OpenSearch部署与接入.md`](docs/OpenSearch部署与接入.md)（照《部署与发布全流程手册》§0 的"照抄即可"线性清单写）+ 三个配套资产（Docker 路线：`docker-compose.yml` / `.env.example` / `os.sh`，**已在【修订二】中删除**）。**关键决策**：① **定稿单节点**（`10.254.212.110`，8 核/16GB/200GB；`discovery.type: single-node`、`-Xms8g -Xmx8g`、`bootstrap.memory_lock: true`、索引 **1 主分片 + 0 副本**、健康检查期望 **green**）；② **2 节点 quorum 明账**——选举需多数派，`N=2` 时 quorum = **2 票** ⇒ 挂一台即**失去 master、集群不可写**（副本=1 只保证不丢数据、不保证可用），故 **2 节点相比单节点几乎换不到可用性却多一倍运维复杂度，明确不推荐**；真 HA 必须第 3 台（dedicated cluster-manager，届时只改 `discovery.seed_hosts` 与 `cluster.initial_master_nodes` 两个参数，见附录 A）；③ 第二台 `10.254.212.111` 定为**冷备 + 演练机**（同一套编排默认停着 + 每晚快照 `rsync` + 七步恢复演练、RTO 分钟级）；④ 安全取**内网 HTTP + basic auth 强口令**（`DISABLE_INSTALL_DEMO_CONFIG: true`，TLS 为可选并列明两种选择的代价）；⑤ 容量口径——4096 维 float32 ≈16KB/条，**2 万切片 ≈350~400MB、10 万 ≈1.8GB、100 万 ≈18GB**（估算），对比现有 `local` 实测 **38,333 字节/切片（9.36 字节/维）**，故**不需要量化/on_disk**；⑥ mapping 把 `project_id`/`phase_code`/`attachment_id`/`security_level` 等 `keyword` 设计进去（"先过滤再检索"），并**如实写明这些字段当前无人写入、切片也没有元数据**（属应用改动，不在本轮）；⑦ 接入侧落地 `VEC_BACKEND=opensearch` + `OPENSEARCH_URL/INDEX/USER/PASSWORD`、**全量重建索引**（含 147.9 条/s 口径的耗时估算与"以 `chunk_key` 为断点续跑"）、灰度与**秒级回滚到 `local`**、以及**降级口径定死为"明确报错、不许静默换检索方式"**。**本轮只写文档与部署资产**：`scripts/**`、`deploy/**`（仅新增 opensearch 目录）、`ai-backend/**`、`frontend/**`、`backend/**` 应用代码一行未改 | `58ef5cb`、`814f2e7`、`f0b410a`、`018c3bf`、`c875660`、`fa8975b`、`69c074c`、`81ec178`、`2c3fbca`、`b4de707`、`403662b`、`85a8ff8` |
+| docs-1.6 | 2026-09-23 | **为两台新服务器出 OpenSearch 部署与接入文档 + 部署资产（含 2 节点 quorum 明账与升级路径）；架构 x86_64 + 按官方 Docker 文档对齐（含 REST TLS 取舍）；最终路线：tar.gz + systemd（无 Docker）；部署根 /home/opensearch/（D 方案＝专用账号家目录，程序/配置/数据/日志/备份分离）；并新增 OpenSearch Dashboards（同机 5601 + systemd unit + "快照必须含系统索引"的修正）；版本 3.1.0（按 3.x 官方重核：k-NN 引擎/查询语法变更）+ 安装包目录统一 /home/opensearch/ + 仓库资产落位对照表（属主/权限/install 命令）+ 两条省事路径 + 落位/权限 7 项补齐 + 收口 4 条 + **修订六：主线去分支（删校验与搬运叙述）、按真机现状写成唯一路径，章节重排（§0~§11 + 附录 A/B/C）** + **修订七：防火墙提前到宿主准备（先收暴露面再起服务）、去强调词、附录 B 增 B.2** + **修订八：修 `chmod 664` 范围错误（导致 `status=203/EXEC`）+ 新增 §4.5 可执行位恢复与 §8.5 排障条目** + **修订九：由部署记录改写为傻瓜式部署手册（前置条件 + 20 步四件套 + 总清单）** + **修订十：补 Dashboards 侧同源漏洞（`status=126` + 恢复块 A + 两棵树判据）** + **修订十一（docs-1.7）：把 步骤 19 从占位句写成可复制的真实步骤（5 步固定顺序 + 不静默降级 503 + 建索引两种方式的取舍 + 参考 C 同步落定）** | 新增 [`docs/OpenSearch部署与接入.md`](docs/OpenSearch部署与接入.md)（照《部署与发布全流程手册》§0 的"照抄即可"线性清单写）+ 三个配套资产（Docker 路线：`docker-compose.yml` / `.env.example` / `os.sh`，**已在【修订二】中删除**）。**关键决策**：① **定稿单节点**（`10.254.212.110`，8 核/16GB/200GB；`discovery.type: single-node`、`-Xms8g -Xmx8g`、`bootstrap.memory_lock: true`、索引 **1 主分片 + 0 副本**、健康检查期望 **green**）；② **2 节点 quorum 明账**——选举需多数派，`N=2` 时 quorum = **2 票** ⇒ 挂一台即**失去 master、集群不可写**（副本=1 只保证不丢数据、不保证可用），故 **2 节点相比单节点几乎换不到可用性却多一倍运维复杂度，明确不推荐**；真 HA 必须第 3 台（dedicated cluster-manager，届时只改 `discovery.seed_hosts` 与 `cluster.initial_master_nodes` 两个参数，见附录 A）；③ 第二台 `10.254.212.111` 定为**冷备 + 演练机**（同一套编排默认停着 + 每晚快照 `rsync` + 七步恢复演练、RTO 分钟级）；④ 安全取**内网 HTTP + basic auth 强口令**（`DISABLE_INSTALL_DEMO_CONFIG: true`，TLS 为可选并列明两种选择的代价）；⑤ 容量口径——4096 维 float32 ≈16KB/条，**2 万切片 ≈350~400MB、10 万 ≈1.8GB、100 万 ≈18GB**（估算），对比现有 `local` 实测 **38,333 字节/切片（9.36 字节/维）**，故**不需要量化/on_disk**；⑥ mapping 把 `project_id`/`phase_code`/`attachment_id`/`security_level` 等 `keyword` 设计进去（"先过滤再检索"），并**如实写明这些字段当前无人写入、切片也没有元数据**（属应用改动，不在本轮）；⑦ 接入侧落地 `VEC_BACKEND=opensearch` + `OPENSEARCH_URL/INDEX/USER/PASSWORD`、**全量重建索引**（含 147.9 条/s 口径的耗时估算与"以 `chunk_key` 为断点续跑"）、灰度与**秒级回滚到 `local`**、以及**降级口径定死为"明确报错、不许静默换检索方式"**。**本轮只写文档与部署资产**：`scripts/**`、`deploy/**`（仅新增 opensearch 目录）、`ai-backend/**`、`frontend/**`、`backend/**` 应用代码一行未改 | `58ef5cb`、`814f2e7`、`f0b410a`、`018c3bf`、`c875660`、`fa8975b`、`69c074c`、`81ec178`、`2c3fbca`、`b4de707`、`403662b`、`85a8ff8` |
+| ai-1.2.0 | 2026-09-23 | **AI 能力服务接入 OpenSearch 向量后端 + P0 模型调用参数与效率优化** | 需求来源两条：① **接 OpenSearch 提高检索规模/HA**（《AI模型调用与任务队列评估》量化触发点：进程内 `local` 在 ≈4,000 切片即给每次提问 +1s、15,000 切片 +3.8s，且 `local` 是**进程内状态 ⇒ AI 必须单实例**，需要第 2 个实例时立刻不成立）；② 同文档的 **P0 五项**（超时对齐 / 重排降配 / 向量化并发化或前移 / 队列满诚实失败 / 每模型信号量）。**改动四块**：① **OpenSearch 接入**（**原生 REST，不加 OpenSearch Java Client**；索引自建 3.x 写法 4096/cosinesimil/`engine: lucene`/HNSW m16·ef100/1 分片 0 副本 + 6 个 keyword 元数据字段 + `created_at`；`_bulk` 幂等 `_id=chunk_key`；kNN 带**作用域硬 filter**；`/admin/reindex` 全量重建含进度/断点续跑/取消；集群不可达**不回退**（503 + 明说）；`/health?with_vec=true` 的 `vec.ok` 取集群真实状态）；② **P0 七条**（分级超时 chat150/embed30/rerank20/ocr600 + 调用方预算 180 + 启动校验超时链；修 `LlmClient` 忽略入参；每模型信号量 4/12/8/2；幂等重试退避；**向量化前移**（`DocIndexer`，批 32/并发 8）；OCR 并发语义修正（共享池 + 动态批页）；队列满诚实失败（429 + FAILED + 清临时文件，无永久 QUEUED））；③ **指标**（micrometer/actuator：`ai.model.*` / `ai.upload.*` / `ai.vector.*` / `ai.retrieval.*` + `/health?with_metrics=true` 聚合）；④ **召回档位与比对工具**（`RETRIEVAL_RECALL_MODE=baseline\|low\|custom`，**默认仍 50**、`low`=25 带 WARN；`TopKCompareTool` top-k 一致性比对，**不进 `mvn test`**）。**三处刻意偏差（如实登记）**：`k` 用**生效召回数**（50/25）而**不是** `TOP_K`（否则废掉精排）；`ef_construction=100`（与手册 步骤 16 的 128 不同）；`refresh_interval=1s`（手册离线灌库示例为 `-1`）。**未验证清单（如实登记）**：未对真集群（`10.254.212.110:9200`）跑过建索引/`_bulk`/kNN；top-k 比对工具未真跑；**P1-3（`/chat` 请求级 `doc_ids` 一路接到 Tools/QaService）未做**（当前只把"模型给的 `doc_id`"下推成硬 filter）；召回降配未改默认、未跑评测；hybrid 未启用；OCR 超出 180s 是有意例外；队列满只做了服务层验证。`mvn -o test` **180 例全绿**；发布包 `pm-ai-release-v1.2.0`，镜像 **aarch64**（**若应用服务器 `uname -m` 是 x86_64 需按 amd64 重出一次**） | 本轮待提交 |
 
 > 各迭代的完整交付说明见下方「各迭代明细」。
 
@@ -1400,6 +1401,73 @@
   ④ 文档 ↔ 6 个资产逐项一致（含落位表 6 条目标路径、版本 3.1.0、包字节数、`cluster.name`/`node.name`/`http.port`、REST TLS 关、heap 8g、索引参数、系统索引、cron 装 root、chmod 范围、§4.5、203/EXEC、解压步骤、账号建立命令）；
   ⑤ `bash -n` **exit 0**；⑥ `check-docs` **0 问题**；⑦ 主线零 Docker、零 `sha512`/校验和、零 `scp`（主线 `/tmp` 仅出现在解压做法里）；
   ⑧ **§ 引用零悬空**。**本轮仍无任何应用代码变更**。
+
+---
+
+### ai-1.2.0 — 接入 OpenSearch 向量后端 + P0 模型调用参数与效率优化（AI 服务，2026-09-23）
+
+- **需求来源（两条，都不是"想做就做"）**：
+  ① **接入 OpenSearch，提高检索规模与 HA 前提**——《AI模型调用与任务队列评估》给出的量化触发点：进程内 `local`
+  在 **≈4,000 切片**时给每次提问 **+1s**、15,000 切片 **+3.8s**，且 `local` 是**进程内状态 ⇒ AI 服务必须单实例**；
+  "需要第 2 个 AI 实例做无中断检索"这一刻，`local` 立刻不成立。部署侧的落地文档见
+  [`docs/OpenSearch部署与接入.md`](docs/OpenSearch部署与接入.md)（单节点 `.110` 生产 / `.111` 冷备演练，`docs-1.6`）。
+  ② **P0 五项**（同一份评估文档）：超时对齐、重排降配、向量化并发化或前移、队列满**诚实失败**、每模型信号量。
+- **改动四块**：
+  - **① OpenSearch 接入（`VEC_BACKEND=local|opensearch` 可切换）**：传输层用**原生 REST**（HttpClient + Jackson），
+    **不引入 OpenSearch Java Client**（本轮 `pom.xml` 唯一新增依赖是 `spring-boot-starter-actuator`，用途见第 ③ 块）；
+    索引**自建**（3.x 写法：`knn_vector` **4096** 维 / `space_type: cosinesimil`（只写字段层）/ `engine: lucene` /
+    HNSW `m=16`·`ef_construction=100` / **1 主分片 0 副本** / `refresh_interval: 1s`），
+    另有 **6 个 keyword 元数据字段**（`attachment_id`/`project_id`/`phase_code`/`security_level`/`doc_type`/`source`）
+    与 `created_at`(date)；`_bulk` **幂等**（`_id = chunk_key`，重写不翻倍 ⇒ 可中断续跑）；kNN 带**作用域硬 filter**
+    （`doc_ids`/`attachmentIds`/`projectIds` **在召回前**收窄，元数据缺失 = 越界，不做通配）；
+    `POST /admin/reindex` **全量重建**（`?docIds=` 局部 / `?force=` 全重写，`GET /admin/reindex/{jobId}` 给
+    `processed_docs`/`total_docs`/`failed_docs`/`skipped_docs`/`written_chunks`/`eta_seconds`/`percent`，
+    `POST …/{jobId}/cancel` 协作式取消）；集群不可达**不回退**（HTTP **503 + "向量后端不可用"**，不退回 `local`、
+    不退回关键词检索）；`/health?with_vec=true` 的 `vec.ok` 取**集群真实探活**并另给 `upstream_ok`。
+  - **② P0 七条**：分级超时（chat **150** / embed **30** / rerank **20** / ocr **600**，调用方预算 `AI_CALLER_TIMEOUT=180`，
+    `StartupDiagnostics` **启动校验超时链**并逐条打印结论）+ 修 `LlmClient` **忽略入参**（原先无论传什么都用同一个超时）
+    + **每模型信号量**（chat 4 / OCR 12 / embed 8 / rerank 2；交互式等 permit **1.5s**，批量 **60s**）+ **幂等重试退避**
+    （只重试 OCR/embedding/检索；1s → 4s + 抖动 0~250ms；chat 永不重试）+ **向量化前移**（新增 `DocIndexer`：
+    从"问答请求线程里按 32 条**串行**惰性补算"改为**解析入库时就完成**，批 **32** / 并发 **8** / 共享 embed 信号量；
+    查询侧仍在补算会记 `ai.vector.lazy_backfill`，正常应为 0）+ **OCR 并发语义修正**（原 `min(12, ceil(页数/8))`
+    对 8 页文档恒为 1 ⇒ 等于没并发；改为**共享 12 的池 + 动态批页** `min(页数, ceil(页数/在飞上限))`）+
+    **队列满诚实失败**（429 + 任务标 `FAILED` + 清 `work/tmp`，**不再出现"永久 QUEUED"与残留半成品**）。
+  - **③ 指标（P0-6）**：`spring-boot-starter-actuator` + micrometer（**只用进程内 `SimpleMeterRegistry`**，不加端口、
+    不接外部中间件）——`ai.model.requests`/`latency`(P50/P95/P99)/`inflight`/`queue.depth`/`rejected`/`retries`、
+    `ai.upload.queue.depth`/`rejected`、`ai.retrieval.rerank.pairs`、`ai.vector.embedded`/`indexed`/`lazy_backfill`、
+    `ai.retrieval.scope.filtered`、`ai.opensearch.retries`；`/health?with_metrics=true` 给"四模型 × 5 项 + 队列 +
+    重建状态"的聚合视图。**如实登记一处取舍**：评估文档 §7 曾把 actuator/micrometer 列为"⏸ 推迟（零新增依赖取向优先）"，
+    本轮按 P0-6 的明确要求**推翻该推迟**（代价：多 2 个 jar）。
+  - **④ 召回档位 + top-k 一致性比对工具**：`RETRIEVAL_RECALL_MODE=baseline`(默认 **50**) / `low`(**25**，启动打 WARN
+    说明已降配) / `custom`——**默认未改**，改默认前必须用 `eval/smoke-30.json` 跑降配前后对比；
+    新增 `com.pmgt.ai.tools.TopKCompareTool`（在 `src/test/java`、**不带 `@Test` ⇒ 不进 `mvn test`**）：
+    同一批切片 + 同一组 query 分别跑 `local` 与 `opensearch`，打印两边 top-k 的 **重合率**、top-1 一致数与耗时
+    （口径：**相似度数值不必逐位相等，要求一致的是排序/集合**）。
+- **三处刻意偏差（如实登记，不是笔误）**：
+  ① kNN 的 **`k` 用"生效召回数"**（baseline 50 / `low` 模式 25）而**不是** `RETRIEVAL_TOP_K`——若拿 `TOP_K=5`
+  去做 kNN 候选数，精排就只剩 5 个候选、**等于废掉精排**；
+  ② **`ef_construction = 100`**（HNSW 官方默认，够用且建索引更快），与手册 **步骤 16** 示例写的 **128** 不同；
+  ③ **`refresh_interval = 1s`**，手册 步骤 16/附录 E 的**离线灌库**示例给的是 **-1**——取 1s 是为了"灌完即可查"。
+  ⇒ 因此 步骤 19 明确写了"手工建索引与代码自建**只能选一种**，索引已存在**不会被改写**"这一条运维红线。
+- **未验证清单（如实登记）**：① **未对真集群（`10.254.212.110:9200`）跑过建索引 / `_bulk` / kNN 查询**
+  （开发机无法访问内网）⇒ 步骤 19 ①-1/①-3/①-4 必须在真机上执行一次；② **top-k 一致性比对工具未真跑**；
+  ③ **P1-3（`/chat` 请求级 `doc_ids` 一路接到 `Tools`/`QaService`）未做**：本轮只把"模型给的 `doc_id`"下推成硬 filter，
+  请求级 `doc_ids` 的端到端串联需要动 `ToolAgent`/`QaService` 签名，不在 P0 范围；④ 召回降配**只提供档位、未改默认、未跑评测**；
+  ⑤ **hybrid（BM25 + kNN 融合）未启用**（默认 false：两路量纲不同，且没有评测基线）；⑥ **OCR 600s 超出调用方 180s
+  预算是有意例外**（批量链路、不占问答槽位）；⑦ 队列满的诚实失败**只做了服务层验证**（单测覆盖 429 + FAILED +
+  临时文件清理），未在真机压测下验证端到端表现。
+- **验证**：`mvn -o test` ⇒ **Tests run: 180, Failures: 0, Errors: 0, Skipped: 0 / BUILD SUCCESS**
+  （新增 `OpenSearchIndexTest`、`DocIndexerReindexTest`、`EmbedBatcherTest`、`RetrievalBackendParityTest`、
+  `ModelRegistryTest`、`LlmClientTimeoutTest`、`OcrQueueConcurrencyTest`、`UploadTaskQueueFullTest` 等）；
+  `ai-backend/README.md` 同步更新（接口表、指标读法、重建索引、比对工具、运维边界）；
+  `ai-backend/.env.example` 同步新增 `VEC_BACKEND`/`OPENSEARCH_*` 与并发/超时/重试键（口令留空）。
+- **发布包与镜像**：`dist/pm-ai-release-v1.2.0/`（`pm.sh` + `ai/{docker-compose.yml,.env.example,服务器部署步骤-ai.txt,
+  releases/pm-ai-images-aarch64-v1.2.0.tar.gz}`）；镜像 **aarch64**（沿用既有 AI 发布线）。
+  ⚠️ **架构待确认**：若应用服务器 `10.254.208.86/87` 的 `uname -m` 是 `x86_64`，需按 **amd64** 重出一次
+  （`scripts/make-release.ps1 v1.2.0 -Project ai` 加对应平台参数即可，一条命令）。
+- **文档同步**：`docs/OpenSearch部署与接入.md`（**步骤 19 写实**：5 步固定顺序 + 不静默降级 503 + 建索引两种方式的取舍 +
+  只接一台的风险提示；**参考 C** 把向量后端选型与 `.110` 生产/`.111` 冷备落到"已定死"，第 3/4/6/7/10 条按现状改写；
+  顺带修掉 8 处失效的步骤引用与 2 处过期表述，见该文档 `变更记录` 的 `docs-1.7` 行）。
 
 ---
 
