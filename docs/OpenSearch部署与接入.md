@@ -180,22 +180,44 @@ sudo passwd -S opensearch | awk '{print "口令状态:", $2}'   # 期望：L（l
 
 ### 2.1 一次性设置权限（**待执行；5 条命令**）
 
+> ⚠️ **范围只限"运行期目录"：`config` / `data` / `logs` / `backup`。**
+> **绝对不要**对 `/home/opensearch` 整个递归，更**不要对 `app/`（程序目录）或 `dashboards/app/` 套用 `chmod 664`** ——
+> 那会**抹掉程序与自带 JDK 的执行位**（`app/bin/opensearch`、`app/jdk/bin/*`、`app/jdk/lib/jspawnhelper`、`app/plugins/**/tools/*.sh`），
+> 结果是 **systemd 报 `status=203/EXEC` 且应用日志为空**（应用根本没被启动）。
+> 本项目**已实际踩过这个坑**（详见 §8.5 与 §4.5 的恢复命令）。`app/` 的属主只需 `chown`（§2.3 ④），**权限保持解压原样**。
+
 ```bash
 # ① lhim 属于 opensearch 组（当前状态：已满足；本条幂等）
 sudo usermod -aG opensearch lhim
 
 # ② 目录：组可写 + setgid（新文件自动继承 opensearch 组）
-sudo find /home/opensearch -type d -exec chmod 2775 {} +
+#    ★范围：只列运行期目录；app/ 与 dashboards/ 【不在其中】
+sudo find /home/opensearch/config /home/opensearch/data /home/opensearch/logs /home/opensearch/backup \
+     -type d -exec chmod 2775 {} +
 
 # ③ 文件：组可读写（终端工具覆盖已有文件需要"文件本身可写"）
-sudo find /home/opensearch -type f -exec chmod 664 {} +
+#    ★同样只列运行期目录
+sudo find /home/opensearch/config /home/opensearch/data /home/opensearch/logs /home/opensearch/backup \
+     -type f -exec chmod 664 {} +
 
 # ④ 私钥例外：不给组写（安全插件对私钥最敏感）
-sudo find /home/opensearch -name '*.pem' -exec chmod 640 {} +
+sudo find /home/opensearch/config -name '*.pem' -exec chmod 640 {} +
 
 # ⑤ 之后 lhim 新建的文件默认就是 664（组可写）
 echo 'umask 002' | sudo tee /etc/profile.d/lhim-umask.sh >/dev/null
 ```
+
+> **程序目录 `app/` 的正确权限（不要动，只核对）**：解压出来的可执行位就是对的。若发现异常按下表核对：
+>
+> ```bash
+> ls -l /home/opensearch/app/bin/opensearch          # 期望 -rwxr-x---
+> ls -l /home/opensearch/app/jdk/bin/java            # 期望 -rwxr-x---
+> ls -l /home/opensearch/app/jdk/lib/jspawnhelper    # 期望 -rwxr-x---
+> ls -l /home/opensearch/app/plugins/opensearch-security/tools/*.sh   # 期望 -rwxr-x---
+> ```
+> 任何一条**不带 `x`** ⇒ 按 **§4.5** 的三条命令恢复后重启。
+> **自查小技巧**：跑完 §2.1 后执行 `find /home/opensearch/app -maxdepth 2 -name opensearch -o -maxdepth 2 -name java | xargs ls -l`，
+> 只要 `bin/opensearch` 与 `jdk/bin/java` 仍是 `-rwxr-x---`，就说明你的 `find` 范围没有波及 `app/`。
 
 ```bash
 # ★执行完必须【断开终端工具并重连】（组身份要新会话才生效），重连后验证：
@@ -291,13 +313,15 @@ sudo chown -R opensearch:opensearch /home/opensearch/data /home/opensearch/logs 
 > sudo chmod 750 /home/opensearch/app/plugins/opensearch-security/tools/*.sh 2>/dev/null || true
 > ```
 
-### 2.5 落位核对（**待执行；7 条命令，逐条看输出**）
+### 2.5 落位核对（**待执行；8 条命令，逐条看输出**）
 
 ```bash
 # ① 我们维护的配置
 ls -l /home/opensearch/config/                 # opensearch.yml(640) / jvm.options.d / snapshot-backup.sh(750)
 # ② 运行时生效的配置
 ls -l /home/opensearch/app/config/opensearch.yml
+# ★程序可执行位（缺 x 会导致 status=203/EXEC，见 §4.5）
+ls -l /home/opensearch/app/bin/opensearch /home/opensearch/app/jdk/bin/java
 # ③ 两个 unit
 ls -l /etc/systemd/system/opensearch.service /etc/systemd/system/opensearch-dashboards.service   # root root 644
 sudo systemd-analyze verify /etc/systemd/system/opensearch.service
@@ -306,9 +330,9 @@ sudo systemd-analyze verify /etc/systemd/system/opensearch-dashboards.service   
 ls -l /home/opensearch/app/plugins/opensearch-security/tools/*.sh                               # 期望 -rwxr-x---
 # ⑤ 快照仓库目录
 ls -ld /home/opensearch/backup /home/opensearch/backup/fs-repo
-# ⑥ 口令文件（§9 会建）与 keystore
-ls -l /etc/opensearch-backup.pass 2>/dev/null || echo "(还没建：见 §9.1)"
-ls -l /home/opensearch/app/config/opensearch.keystore 2>/dev/null || echo "(还没生成：见 §6)"
+# ⑥ 口令文件（§8.2 会建）与 keystore
+ls -l /etc/opensearch-backup.pass 2>/dev/null || echo "(还没建：见 §8.2 第 ① 条)"
+ls -l /home/opensearch/app/config/opensearch.keystore 2>/dev/null || echo "(还没生成：见 §4.2)"
 # ⑦ 以服务账号身份确认它读得到程序与配置
 sudo -u opensearch ls /home/opensearch/app/bin/opensearch
 sudo -u opensearch cat /home/opensearch/app/config/jvm.options.d/heap.options
@@ -546,12 +570,47 @@ sudo -u opensearch cat /home/opensearch/app/config/jvm.options.d/heap.options   
 ### 4.4 安全模式（HTTP + basic auth）
 
 - `plugins.security.ssl.http.enabled: false` —— 9200 走明文 HTTP（§2.2 的 `config/opensearch.yml` 里已写好）；
-- **basic auth 仍然生效**（安全插件照旧要求 `admin` + §6.2 那个强口令）；
-- **transport 层 TLS 保持开启**（节点间通信加密，证书就是 §6.2 生成的那套）；
+- **basic auth 仍然生效**（安全插件照旧要求 `admin` + §4.2 设的那个强口令）；
+- **transport 层 TLS 保持开启**（节点间通信加密，证书就是 §4.2 生成的那套）；
 - 补偿措施：§3.5 的防火墙只放行应用/AI 服务器。
 - **不要删掉 `config/opensearch.yml` 里的 transport 证书三行** —— 删了节点会因缺证书起不来。
-- 若要改走自签 TLS（等保要求），见 **附录 C**（不属于本次部署步骤）。
+- 若要改走自签 TLS（等保要求），见 **附录 B.5**（不属于本次部署步骤）。
 
+### 4.5 程序目录可执行位恢复（**若你误跑过全量 `chmod 664`，先做这一步**）
+
+> **什么时候需要**：`systemctl start opensearch` 失败、`journalctl -u opensearch` 报
+> `Control process exited, code=exited, status=203/EXEC`，且 `logs/` 里**什么都没有**。
+> 原因：**`app/` 下文件被抹掉了执行位**（例如对 `/home/opensearch` 整个跑过 `chmod 664`）。
+> `203/EXEC` 属于 systemd 的 **exec 阶段**失败 —— **应用根本没被启动**，所以应用日志必然是空的。
+
+```bash
+# ① 先把执行位还给"程序 + 自带 JDK"
+sudo find /home/opensearch/app/bin /home/opensearch/app/jdk/bin -type f -exec chmod 750 {} +
+sudo chmod 750 /home/opensearch/app/jdk/lib/jspawnhelper
+
+# ② 插件里的脚本（hash.sh / securityadmin.sh 等）也要有 x
+sudo find /home/opensearch/app/plugins -name '*.sh' -exec chmod 750 {} +
+
+# ③ 重启（unit 本身没变，但 daemon-reload 后重试更稳）
+sudo systemctl daemon-reload && sudo systemctl restart opensearch
+
+# ④ 复核（四条都必须带 x）
+ls -l /home/opensearch/app/bin/opensearch          # 期望 -rwxr-x---
+ls -l /home/opensearch/app/jdk/bin/java            # 期望 -rwxr-x---
+ls -l /home/opensearch/app/jdk/lib/jspawnhelper    # 期望 -rwxr-x---
+ls -l /home/opensearch/app/plugins/opensearch-security/tools/*.sh   # 期望 -rwxr-x---
+sudo systemctl status opensearch --no-pager | head -12
+```
+
+> **更稳的替代做法（拿不准该给哪些文件加 `x` 时）**：直接**从 tar 包重新解压一份程序目录**，
+> 让可执行位回到官方原始状态（属主用 `chown -R opensearch:opensearch` 归位；只覆盖 `app/`，不碰 `config/data/logs/backup`）：
+> ```bash
+> cd /tmp && tar -xvf /home/opensearch/opensearch-3.1.0-linux-x64.tar.gz     # 若包已删，先按附录 C 第 16 条取回
+> sudo rsync -a --delete /tmp/opensearch-3.1.0/ /home/opensearch/app/        # 仅同步程序目录
+> sudo chown -R opensearch:opensearch /home/opensearch/app
+> sudo systemctl daemon-reload && sudo systemctl restart opensearch
+> ```
+> ⚠️ 这条会把 `app/config/` 恢复成官方模板 —— **做完必须按 §4.3 把我们那份配置再拷回去**。
 
 ## 5. systemd 启动与验收　（待执行）
 
@@ -926,9 +985,11 @@ curl -sS -u "$AUTH" "$OS/pm-ai-chunks/_count"      # 期望 {"count":<N>,"_shard
 
 ### 7.1 安装（解包 + 配置）　（待执行）
 
-> **落位规则与 §2 完全一致，本节不再另立一套说法**：目录 `750` / 配置文件 `640` / 属主 `opensearch:opensearch`；
-> 命令用 `sudo install -D`：**`-D` 会自动建出 `dashboards/app/config`**，所以不需要先 `mkdir`。
-> 若你走 本节的所有落位命令都按 §2 的表执行。
+> **落位规则与 §2 完全一致**：属主 `opensearch:opensearch`，配置文件 `640`，目录权限按 §2.1（共享模型）；
+> 命令用 `sudo install -D`（`-D` 会自动建出 `dashboards/app/config`，不需要先 `mkdir`）。
+> ⚠️ **不要对 `dashboards/app/` 套用 `chmod 664`**（同 §2.1 的红线：会抹掉 `bin/opensearch-dashboards`、`node/bin/node`
+> 以及 `jdk`/`node` 下工具的执行位 ⇒ `systemd` 报 `status=203/EXEC`）。这里只需要：
+> `sudo chown -R opensearch:opensearch /home/opensearch/dashboards`（改属主）+ `install -m 640`（改配置）。
 
 ```bash
 # ① 解包到 dashboards/app —— ★"以谁解压就归谁"，所以解压后必须统一改属主
@@ -1305,7 +1366,7 @@ sudo mv /home/opensearch/app           /home/opensearch/app-<旧版本>
 sudo mv /home/opensearch/app-<新版本>   /home/opensearch/app
 
 # ⑧ 权限归位（换目录后必须重做，属主会跟着改名的目录走，但确认一次更稳）
-sudo chown -R opensearch:opensearch /home/opensearch
+sudo chown -R opensearch:opensearch /home/opensearch   # 只改属主；★不要顺手加 chmod -R（见 §2.1 红线）
 sudo chmod 640 /home/opensearch/app/config/opensearch.yml \
                /home/opensearch/app/config/jvm.options.d/heap.options
 sudo -u opensearch ls /home/opensearch/app/bin/opensearch     # 最终确认能读到
@@ -1354,6 +1415,7 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | --- | --- | --- |
 | 启动即退出，日志 `max virtual memory areas vm.max_map_count [65530] is too low` | 内核参数没设或没持久化（重启后丢了） | §2.1 全做一遍；**进程内改不了**，必须在宿主设 |
 | 直接拒绝启动并提示不能以 root 运行 | 用 root（或 root 的 unit）拉起来了 | unit 里 `User=opensearch` / `Group=opensearch`（资产已设）；手工调试也要 `sudo -u opensearch …` |
+| **`status=203/EXEC`**（`Control process exited, code=exited, status=203/EXEC`，且 `logs/` 里**什么都没有**） | **systemd 在 exec 阶段就没能启动程序** ⇒ 应用根本没跑起来，所以应用日志为空，**别在 `logs/` 里找原因**。四类原因：① **`app/` 下文件被执行位被抹掉**（例如对整个 `/home/opensearch` 跑过 `chmod 664`，本项目**实际发生过**）；② `/home` 挂载带 **`noexec`**；③ 路径/属主问题导致服务账号 `opensearch` **穿不过某一级目录**；④ **SELinux / 麒麟 kysec 拒绝 exec** | ① 先看 `systemctl status opensearch -l` 与 `systemctl cat opensearch`（核对 `ExecStart` 路径）；② **手工以服务账号执行**，这一步能看到真实原因：`sudo -u opensearch /home/opensearch/app/bin/opensearch`；③ 按原因处置：**执行位** ⇒ §4.5 三条命令恢复后重启；**noexec** ⇒ `findmnt -no OPTIONS /home` 确认后把部署根挪到非 noexec 的盘；**属主/路径** ⇒ §2.1/§2.3 复核（`sudo -u opensearch ls /home/opensearch/app/bin/opensearch`）；**SELinux/kysec** ⇒ `getenforce`、`ls -Z /home/opensearch/app/bin/opensearch`、`sudo ausearch -m avc -ts recent` / `journalctl -k` |
 | **systemd 启动失败，日志报权限不足 / `status=200/CHDIR` / 找不到 `/home/opensearch/app/bin/opensearch`** | 属主或权限不对（D 方案下**不再**是家目录穿透问题：部署根就是 `opensearch` 自己的家目录） | **§2.1 / §2.3**：`sudo -u opensearch ls -d /home/opensearch` 与 `sudo -u opensearch ls /home/opensearch/app/bin/opensearch`；不对就 `sudo chown -R opensearch:opensearch /home/opensearch`。若仍报错且系统开了 SELinux，看 `ls -Z /home/opensearch` 与 `sudo ausearch -m avc -ts recent` |
 | 启动失败：`/home/opensearch` 所在盘不可写 / 数据目录报错 | `/home` 是 NFS/autofs，或空间不足 | §3.4：`df -h /home`、`findmnt -no SOURCE,FSTYPE,OPTIONS /home`；按"退路"把 `path.data` 指到本地盘 |
 | 启动失败：`Permission denied` 且 `/home` 挂载选项里有 **`noexec`** | `noexec` 会导致 JVM/`bin/opensearch` 无法执行 | 把部署根挪到非 `noexec` 的盘（或让平台方去掉 `noexec`；**`nosuid`/`nodev` 无需处理**，见 §3.4） |
@@ -1640,7 +1702,9 @@ curl -sS -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health?pretty    # �
 ```bash
 # 目录回到只有服务账号可写（部署根本身仍留可穿过）
 sudo chmod 2750 /home/opensearch/{config,data,logs,backup} /home/opensearch/backup/fs-repo
-sudo find /home/opensearch -type f -exec chmod 640 {} +      # 文件：组只读
+# ★文件权限同样【只限运行期目录】——绝不要对 app/ 递归 chmod（会抹掉执行位 ⇒ status=203/EXEC，见 §4.5）
+sudo find /home/opensearch/config /home/opensearch/data /home/opensearch/logs /home/opensearch/backup \
+     -type f -exec chmod 640 {} +
 sudo rm -f /etc/profile.d/lhim-umask.sh                      # 不再需要 umask 002
 # 之后传文件改走"以服务账号身份"：
 sudo -u opensearch -s      # 进去后用普通 cp 落位，属主天然是 opensearch
@@ -1764,5 +1828,6 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 | docs-1.6（修订五·收口） | 2026-09-23 | 收口 4 条：**cron 落位与口令自洽**（新增 cron 子节：三者必须对齐，否则备份每天静默失败）、`opensearch.keystore`（`600`）与 `opensearch-security/` 目录（`750`）进表、**日志轮转（logrotate）**建议与"磁盘满"排障交叉引用、`backup/dist/` 一行 |
 | docs-1.6（修订六） | 2026-09-23 | **主线去分支，按真机现状写成一条路**（本次）。① **删除"校验"整块**：`sha512sum -c`、`.sha512`、Windows `Get-FileHash` 那套全部移出主线（官方 URL 口径只在附录 C 留档，且不指向主线步骤）。② **删除"过程性/搬运"叙述**：浏览器下载 → `/home/lhim/software` → 复制到 `/home/opensearch` 的链路、`scp`、跨用户拷贝、`/tmp` 中转、`install -D`/`chown` 的"怎么搬进去"全部删除；**主线直接从现状开始**（"两个安装包已在 `/home/opensearch/`，`app/` 已解压完成"）。③ **每步状态标注**：（当前状态：已完成）/（待执行）/（将来执行）。④ **权限改为写法**：本机采用**权限共享**（`find -type d 2775` / `-type f 664` / `*.pem 640` / `umask 002` / 断连重连），删掉"路线一/二"与"data/ 建议收紧"等并列说法（收紧移到附录 B）。⑤ **安全模式唯一**：HTTP + basic auth（自签 TLS 移到附录 B）。⑥ **Dashboards 账号用 `admin`**（只读账号移到附录 B）。⑦ **备份 cron 口径**：`root` 的 crontab + `/etc/opensearch-backup.pass`（`root:root 600`）。⑧ **logrotate 本机自建**（平台方统一采集移到附录 B）。⑨ **防火墙以 firewalld 为主线**，iptables 仅作为同一代码块内的注释。⑩ **章节重排**：现状 → 权限 → 宿主准备 → 落位 → 安装 → systemd 验收 → 索引与检索 → Dashboards → 运维（含快照/cron/防火墙）→ AI 接入 → 未确认项；**附录 A（3 节点）/ 附录 B（变更项，原"将来加固"内容）/ 附录 C（官方逐条核对 35 条）**。全文 2261 → 约 1720 行 |
 | docs-1.6（修订七） | 2026-09-23 | **按"先收暴露面、再起服务"调顺序 + 去强调词**：① **防火墙从运维章末提前到宿主准备章**（现为 §3.5），§3.7 跨机可达与 §3.8 自检都引用它，并加"顺序原则"说明；② §4.4 标题去掉"唯一"字样，正文里"唯一写法/唯一口径/唯一路径"等**强调词全部去除**（靠内容表达）；③ §2.1 的衔接说明写明确：**要覆盖已存在的配置文件时，在终端工具里先删除再上传**（目录组可写 ⇒ 能删），然后重跑 §2.3 收回 `640`，并指路 **附录 B.2「以服务账号干活」**；④ **附录 B 新增 B.2「以服务账号干活」**（原 B.2~B.6 顺延为 B.3~B.7）；⑤ §5.4 单节点故障演练**保留在主线、按必做**（新装无数据，停机成本为零，是验证"重启能自愈"的唯一手段）；⑥ `snapshot-backup.env` 保留（"用不到就别建"是事实陈述） |
+| docs-1.6（修订八） | 2026-09-23 | **修一条范围写错的命令（真故障）**：上机时 `systemctl start opensearch` 连续失败，`journalctl` 报 `Control process exited, code=exited, **status=203/EXEC**`。**根因是文档的错**：§2.1 原文 `sudo find /home/opensearch -type f -exec chmod 664 {} +` **递归抹掉了程序目录的执行位**（`app/bin/opensearch`、`app/jdk/bin/*`、`app/jdk/lib/jspawnhelper`、`app/plugins/**/tools/*.sh`），JVM 与启动脚本无法执行。① **§2.1 改为"只作用于运行期目录"**（`config`/`data`/`logs`/`backup`），并**明确禁止**对 `app/` 或 `dashboards/app/` 套用 `chmod 664`；② **新增 §4.5「程序目录可执行位恢复」**（三条 `chmod 750` + `daemon-reload` + `restart` + 四条复核，含"从 tar 包重新解压程序目录"的更稳替代）；③ **§8.5 新增 `status=203/EXEC` 排障条目**（含义：systemd 在 exec 阶段就失败 ⇒ 应用日志为空，别在 `logs/` 里找；四处日志 + 四类原因与判据）；④ **§2.5 核对新增"`app/bin/opensearch` 与 `jdk/bin/java` 必须带 `x`"**；⑤ **§7.1 加同款红线**（不要对 `dashboards/app/` 套 `chmod 664`）；⑥ **附录 B.1 的递归 `find` 限定到运行期目录**；⑦ 资产 `opensearch.yml.example` 顶部加"权限红线"注释、`opensearch.service` 去掉已废弃的 `chmod 711 /home/lhim` 历史注释、`opensearch_dashboards.yml.example` 的示例权限由 `644` 改 `640` |
 
 

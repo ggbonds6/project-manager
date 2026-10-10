@@ -23,6 +23,10 @@
 # ⚠️ 替换时机很重要：必须【在跑完官方 opensearch-tar-install.sh 之后】再覆盖，
 #    否则 demo 安全脚本会把它的 TLS 设置写回来。顺序见文档 §3。
 #
+# ⚠️ 【权限红线】不要对 /home/opensearch 或 app/ 递归 chmod 664 —— 会抹掉 app/bin、app/jdk/bin、
+#    app/jdk/lib/jspawnhelper、app/plugins/**/*.sh 的执行位，systemd 会报 status=203/EXEC。
+#    只对 config/ data/ logs/ backup/ 做权限设置；恢复到位的命令见文档 §4.5。
+#
 # ⚠️ 本文件是【静态配置】：改完必须 systemctl restart opensearch，不能热更新。
 #
 # ⚠️ 为什么本文件里有"transport 层"的证书路径：

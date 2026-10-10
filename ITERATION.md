@@ -1318,6 +1318,38 @@
   ⑤ 主线零 Docker / 零 `sha512`+校验和 / 零 `scp`+`/tmp`；全仓上一代版本号与两种旧路径 **0 命中**；
   ⑥ 全篇 **§N.M 与 §N 引用零悬空**。**本轮仍无任何应用代码变更**。
 
+**★ docs-1.6 修订八（同日，不新开版本号）：修一条范围写错的命令（上机真故障）。**
+
+- **现象**：`systemctl start opensearch` 连续失败，`journalctl -u opensearch` 报
+  `Control process exited, code=exited, status=203/EXEC`，**重启计数已到 15**，且 `logs/` 里什么都没有。
+- **根因（文档的错，不是用户操作错）**：`status=203/EXEC` 是 systemd **exec 阶段**失败 ⇒ 应用根本没被启动，所以应用日志必然为空。
+  触发点是 §2.1 原文那条 **无范围限制** 的 `sudo find /home/opensearch -type f -exec chmod 664 {} +`：
+  它**递归抹掉了程序目录的执行位** —— `app/bin/opensearch`、`app/jdk/bin/*`（自带 JDK）、
+  `app/jdk/lib/jspawnhelper`、`app/plugins/**/tools/*.sh` 全部失去 `x`，JVM 与启动脚本无法执行。
+- **改动（三处 + 四处顺带）**：
+  1. **§2.1 权限命令改为"只作用于运行期目录"**（`config`/`data`/`logs`/`backup`），
+     并在节首用醒目块**明确禁止**："**不要对 `app/`（程序目录）或 `dashboards/app/` 套用 `chmod 664`** ——
+     会抹掉 `bin/`、`jdk/bin/`、`jspawnhelper`、`tools/*.sh` 的执行位，导致 systemd 报 `status=203/EXEC`"；
+     并给出 `app/` 的正确权限对照与"自查小技巧"（跑完 §2.1 后确认 `bin/opensearch`、`jdk/bin/java` 仍是 `-rwxr-x---`）。
+  2. **新增 §4.5「程序目录可执行位恢复」**：三条 `chmod 750`（`app/bin`+`app/jdk/bin`、`jspawnhelper`、`app/plugins` 下的 `*.sh`）
+     → `daemon-reload` + `restart` → 四条 `ls -l` 复核；并给"拿不准时从 tar 包重新解压程序目录"的更稳替代（含"必须把我们的配置再拷回去"的提醒）。
+  3. **§8.5 新增 `status=203/EXEC` 排障条目**：写明含义（**exec 阶段失败 ⇒ 应用日志为空，别在 `logs/` 里找**）、
+     四处日志（`systemctl status -l`、`systemctl cat`、**`sudo -u opensearch /home/opensearch/app/bin/opensearch` 手工执行看真实原因**、
+     `journalctl -k`/`ausearch`/`getenforce`）、四类原因与判据（① 执行位被抹掉（**本项目曾发生**）② `/home` 带 `noexec`
+     ③ 路径/属主导致服务账号穿不过去 ④ SELinux/kysec 拒绝 exec）。
+  4. 顺带：**§2.5 核对新增** `ls -l /home/opensearch/app/bin/opensearch`（期望带 `x`）；
+     **§7.1 加同款红线**（不要对 `dashboards/app/` 套 `chmod 664`）；
+     **附录 B.1 的递归 `find` 限定到运行期目录**并加"不要对 app/ 递归 chmod"的注释；
+     资产侧：`opensearch.yml.example` 顶部加"权限红线"注释、`opensearch.service` 删掉已废弃的 `chmod 711 /home/lhim` 历史注释、
+     `opensearch_dashboards.yml.example` 示例权限 `644` → `640`。
+- **全篇"递归 chmod"范围核对**：文档里仅剩 6 处带范围限制的 `find … chmod`，全部限定在
+  `config/data/logs/backup`、`app/bin`+`app/jdk/bin`（恢复用）、`app/plugins` 下的 `*.sh`（恢复用）、
+  `app-<新版本>/config`（升级用）；唯一的 `chmod -R` 是附录 B.3 的 `chmod -R 2750 /home/opensearch/data`（只此一个目录，已注明）。
+- **验证（六项自查，真实输出）**：① 主线分叉关键词 26 词 **0 命中**；② 文档 ↔ 6 个资产 + 按真机现状的描述 **全部通过**
+  （`/tmp` 现仅出现在 §4.5 的"重新解压"做法里，共 2 处，已按白名单核对）；③ `bash -n` **exit 0**；④ `check-docs` **0 问题**；
+  ⑤ 主线零 Docker 残影、零 `sha512`+校验和、零 `scp`；全仓上一代版本号与旧路径 **0 命中**；⑥ 全篇 **§N.M 与 §N 引用零悬空**。
+  **本轮仍无任何应用代码变更**。
+
 ---
 
 ## 功能完成度

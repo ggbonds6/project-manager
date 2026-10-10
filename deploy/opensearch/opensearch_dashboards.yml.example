@@ -5,7 +5,7 @@
 #   cp deploy/opensearch/opensearch_dashboards.yml.example \
 #      /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
 #   chown opensearch:opensearch /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
-#   chmod 644 /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+#   chmod 640 /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
 #
 # 字段名与默认值依据：Dashboards 官方示例配置 `config/opensearch_dashboards.yml`
 # （https://github.com/opensearch-project/OpenSearch-Dashboards/blob/main/config/opensearch_dashboards.yml）

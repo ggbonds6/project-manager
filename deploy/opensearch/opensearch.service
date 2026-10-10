@@ -32,7 +32,7 @@
 # ⚠️ 程序放在 /home/lhim/ 下、服务却以专用用户 opensearch 运行 ⇒ **家目录必须能被"穿过"（至少 o+x）**，
 #    否则 systemd 启动时会报权限不足 / 找不到路径。现场核对与修法见文档 §2.4：
 #      ls -ld /home/lhim          # 若是 drwxr-x---（750）就需要处理
-#      sudo chmod 711 /home/lhim  # 可穿过、但不可列目录
+#      （历史写法，D 方案下已不需要：部署根就是 opensearch 自己的家目录，无需放通 lhim 家目录）
 #    验证： sudo -u opensearch ls /home/opensearch/app/bin/opensearch
 # ============================================================
 [Unit]
