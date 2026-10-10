@@ -6,7 +6,7 @@
 > **怎么用这份文档（3 条）**
 > 1. **按步骤号顺序执行**（第 1 步 → 第 N 步），不要跳步；每步只依赖它前面的步骤。
 > 2. **每步都看 ② 期望输出 与 ③ 完成判据**：输出对得上、判据成立，才算这步过了，再往下走。
-> 3. **出错看 ④ 失败了怎么办**（指向 步骤 19 常见故障的具体条目），别自己猜。
+> 3. **出错看 ④ 失败了怎么办**（指向 参考 B · 常见故障 的具体条目），别自己猜。
 >
 > **总步骤清单（可勾选）**
 >
@@ -35,7 +35,7 @@
 >
 > **背景与取舍**（想先知道"为什么这么定"再看）：[`AI模型调用与任务队列评估.md`](AI模型调用与任务队列评估.md)、
 > 本文 **附录 D**（结论与前提）、**附录 C**（官方文档逐条核对）。
-> **关联资产**：[`deploy/opensearch/`](../deploy/opensearch/)（6 个文件，落位见 参考 C · 未确认项）。
+> **关联资产**：[`deploy/opensearch/`](../deploy/opensearch/)（6 个文件，落位见 步骤 10）。
 > **官方依据**：[Tar 安装页](https://docs.opensearch.org/latest/install-and-configure/install-opensearch/tar/)、
 > [安全插件启停](https://docs.opensearch.org/latest/security/configuration/disable-enable-security/)、
 > [demo 配置与口令要求](https://docs.opensearch.org/latest/security/configuration/demo-configuration/)、
@@ -147,7 +147,7 @@ ls "$ASSETS"
 **② 期望输出**：6 个条目 —— `opensearch.yml.example`、`jvm.options.d`、`opensearch.service`、
 `snapshot-backup.sh`、`opensearch_dashboards.yml.example`、`opensearch-dashboards.service`。
 **③ ✅ 完成判据**：6 个条目齐全。
-**④ ✗ 失败**：少文件 ⇒ 从仓库重新取 `deploy/opensearch/`（落位表见 参考 C · 未确认项）。
+**④ ✗ 失败**：少文件 ⇒ 从仓库重新取 `deploy/opensearch/`（落位表见 步骤 10）。
 
 ### 1.6 应用/AI 服务器可达（本机与对端都要能通）
 
@@ -653,7 +653,7 @@ systemctl show opensearch -p LimitNOFILE -p LimitMEMLOCK
 
 **③ ✅ 完成判据**：`Active: active (running)` **且** `systemctl is-enabled opensearch` = `enabled`。
 **④ ✗ 失败了怎么办**
-**`status=203/EXEC`**（且 `logs/` 为空）⇒ **§4.5**（执行位被抹掉）→ 仍失败按 步骤 19 该条目查另外三类原因；
+**`status=203/EXEC`**（且 `logs/` 为空）⇒ **§4.5**（执行位被抹掉）→ 仍失败按 参考 B · 常见故障 中 `status=203/EXEC` 条目查另外三类原因；
 `max virtual memory areas … too low` ⇒ 回**步骤 5**；
 `AccessDeniedException` / 读不到配置 ⇒ 回**步骤 10** 复核属主与 `640`。
 
@@ -727,8 +727,8 @@ curl -sS -m 5 -u admin:'<强口令>' http://10.254.212.110:9200/_cluster/health
 **④ ✗ 失败了怎么办**
 A1 报 SSL 错误（`wrong version number` / `certificate verify failed`）⇒ 运行时配置里不是 `ssl.http.enabled: false`（回**步骤 12**）；
 A1 报 `Empty reply from server` ⇒ 仍是 HTTPS 在应答（同上）；
-A2 是 `yellow` ⇒ 某索引设了 `number_of_replicas ≥ 1`（详见 步骤 19）；
-A2 是 `red` ⇒ 见 步骤 19；
+A2 是 `yellow` ⇒ 某索引设了 `number_of_replicas ≥ 1`（详见 参考 B · 常见故障）；
+A2 是 `red` ⇒ 见 参考 B · 常见故障；
 A4 是 `false` ⇒ 回**步骤 5/6**（memlock limits 或 `bootstrap.memory_lock`）；
 A6 不通 ⇒ 回**步骤 8** 的白名单与 `network.host`。
 
@@ -757,7 +757,7 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 
 **② 期望输出**：重启后 `enabled` / `active` / `green`；演练期间 `exit=7` 或 `28`；恢复后再次 `green`。
 **③ ✅ 完成判据**：**重启后自动恢复为 `green`**，且服务停止时 AI 侧**明确失败**（不是"没找到相关内容"）。
-**④ ✗ 失败了怎么办**：重启后没起来 ⇒ `systemctl status -l` + 步骤 19；AI 侧没报错而是"空结果" ⇒ 那说明降级被静默吞了，按 步骤 19 的口径修正。
+**④ ✗ 失败了怎么办**：重启后没起来 ⇒ `systemctl status -l` + 参考 B · 常见故障；AI 侧没报错而是"空结果" ⇒ 那说明降级被静默吞了，按 步骤 19 的降级口径修正。
 
 ---
 
@@ -805,7 +805,7 @@ curl -sS -u "$AUTH" "$OS/_cat/indices?v&expand_wildcards=all"
 **③ ✅ 完成判据**：索引存在、`dimension=4096`、`health=green`。
 **④ ✗ 失败了怎么办**
 `resource_already_exists_exception` ⇒ 索引已建，跳过（要重建先 `DELETE /pm-ai-chunks`）；
-`Unknown engine [nmslib]` ⇒ 用 `lucene`（见 步骤 8）；
+`Unknown engine [nmslib]` ⇒ 用 `lucene`（见 附录 E · HNSW 与引擎的版本注记）；
 `health=yellow` ⇒ 副本数写成 ≥1 了，`PUT /pm-ai-chunks/_settings {"index":{"number_of_replicas":0}}`。
 
 ---
@@ -1011,7 +1011,7 @@ bash /home/opensearch/config/snapshot-backup.sh status       # 最近快照
 ```
 
 > **改配置的规矩**：改 `/home/opensearch/config/` 下那份（源头），按**步骤 12 的 ③** 拷进 `app/config/`，再 `systemctl restart opensearch`。
-> **升级与回滚**：见 **步骤 19**；**常见故障**：见 **步骤 19**（含 `status=203/EXEC` 条目）；**程序可执行位恢复**：见 **§4.5**。
+> **升级与回滚**：见 **参考 B · 升级路径与回滚**；**常见故障**：见 **参考 B · 常见故障**（含 `status=203/EXEC` 条目）；**程序可执行位恢复**：见 **§4.5**。
 
 ---
 
