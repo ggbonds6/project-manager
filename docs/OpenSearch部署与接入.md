@@ -252,7 +252,238 @@ sudo chown -R opensearch:opensearch /home/opensearch/app
 ls -ld /home/opensearch/app                          # 期望：drwxr-sr-x opensearch opensearch
 ```
 
-### 1.5 换版本时要同步改的地方（**就这两处，别到处找**）
+### 1.5 仓库资产落位对照表（**属主 / 权限 / 一条 `install` 搞定**）
+
+> **为什么单列一节**：真机上就卡在这里——用 `lhim` 能把包 scp 到 `/home/opensearch/`（父目录是 `2775`、组可写），
+> 但**进不去 `/home/opensearch/config`**（该子目录是 `750`，组只有 `r-x`，没有 `w`），`cp` 同样 `Permission denied`；
+> 就算写进去了，**文件属主会是 `lhim`**，而服务以 `opensearch` 运行，**读不了配置**。
+> 本节给出"源 → 目标 → 属主:组 → 权限"的**唯一对照表**与可直接复制的一条命令。
+
+**本节约定的源路径**：你已经把本仓库的 `deploy/` 目录 scp 到服务器（例如 `/home/lhim/software/deploy/`），
+所以下面统一用 **`ASSETS=/home/lhim/software/deploy/opensearch`** 指代资产源；**按你实际的暂存路径改这一行即可**。
+
+```bash
+# 在每个目标机上先设好这个变量（按你实际的暂存路径改）
+ASSETS=/home/lhim/software/deploy/opensearch
+ls "$ASSETS"        # 期望看到 6 个资产：opensearch.yml.example / jvm.options.d/ / opensearch.service /
+                    #              snapshot-backup.sh / opensearch_dashboards.yml.example / opensearch-dashboards.service
+```
+
+| 源（仓库 `deploy/opensearch/`） | 目标 | 属主:组 | 权限 |
+| --- | --- | --- | --- |
+| `opensearch.yml.example` | `/home/opensearch/config/opensearch.yml`（我们维护的副本）→ 再拷进 `/home/opensearch/app/config/opensearch.yml` | `opensearch:opensearch` | `640` |
+| `jvm.options.d/heap.options` | `/home/opensearch/config/jvm.options.d/heap.options` → 再拷进 `/home/opensearch/app/config/jvm.options.d/heap.options` | `opensearch:opensearch` | `640` |
+| `snapshot-backup.sh` | `/home/opensearch/config/snapshot-backup.sh` | `opensearch:opensearch` | `750` |
+| `opensearch.service` | `/etc/systemd/system/opensearch.service` | **`root:root`** | **`644`** |
+| `opensearch_dashboards.yml.example` | `/home/opensearch/dashboards/app/config/opensearch_dashboards.yml` | `opensearch:opensearch` | `640` |
+| `opensearch-dashboards.service` | `/etc/systemd/system/opensearch-dashboards.service` | **`root:root`** | **`644`** |
+
+**逐条命令（`install -D` 一条同时完成「建目录 + 复制 + 定属主 + 定权限」）**
+
+```bash
+# ① OpenSearch 配置：落到「我们维护的副本」config/ 下（这一步需要 root 跨用户搬）
+sudo install -D -o opensearch -g opensearch -m 640 \
+     "$ASSETS/opensearch.yml.example" /home/opensearch/config/opensearch.yml
+
+# ② 堆大小（同样落到 config/jvm.options.d/）
+sudo install -D -o opensearch -g opensearch -m 640 \
+     "$ASSETS/jvm.options.d/heap.options" /home/opensearch/config/jvm.options.d/heap.options
+
+# ③ 每晚快照脚本（可执行；放 config/，cron 用绝对路径调用）
+sudo install -D -o opensearch -g opensearch -m 750 \
+     "$ASSETS/snapshot-backup.sh" /home/opensearch/config/snapshot-backup.sh
+
+# ④⑤ 两个 systemd unit：必须是 root:root + 644（systemd 不接受非 root 属主的 unit）
+sudo install -D -o root -g root -m 644 \
+     "$ASSETS/opensearch.service" /etc/systemd/system/opensearch.service
+sudo install -D -o root -g root -m 644 \
+     "$ASSETS/opensearch-dashboards.service" /etc/systemd/system/opensearch-dashboards.service
+
+# ⑥ Dashboards 配置：官方的配置文件位置就在解包目录的 config/ 下
+sudo install -D -o opensearch -g opensearch -m 640 \
+     "$ASSETS/opensearch_dashboards.yml.example" /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+```
+
+```bash
+# ⑦ 把 config/ 里那份「源头副本」再拷进程序目录（运行时真正生效的是 app/config/ 这份）
+#    ★这一步【用 sudo -u opensearch cp，不要用 sudo install】：目标已存在，
+#      cp 会覆盖内容并保留 opensearch 属主；而 install 的源是 lhim 属主文件，会把它带成 lhim。
+sudo -u opensearch cp /home/opensearch/config/opensearch.yml \
+                      /home/opensearch/app/config/opensearch.yml
+sudo -u opensearch mkdir -p /home/opensearch/app/config/jvm.options.d
+sudo -u opensearch cp /home/opensearch/config/jvm.options.d/heap.options \
+                      /home/opensearch/app/config/jvm.options.d/heap.options
+
+# ⑧ 拷贝完复核属主与权限（应为 opensearch:opensearch / 640，且「组/其他人不可写」）
+ls -l /home/opensearch/app/config/opensearch.yml /home/opensearch/app/config/jvm.options.d/heap.options
+```
+
+> ⚠️ **改配置要改哪一份**：**改 `config/` 下那份**（它是源头），按 ⑦ 再拷一次进 `app/config/`，然后
+> `sudo systemctl restart opensearch`。**别直接改 `app/config/`** —— 下次升级换 `app/` 时会被换掉，
+> 你会以为"配置丢了"。这条在 §3.3 与 §7.3 都各写了一遍，因为这是最容易反复踩的地方。
+
+### 1.5.1 为什么会卡 + 三条纪律（**照着做就不会反复踩**）
+
+**① 为什么父目录能写、而 `config` 不能？**
+`/home/opensearch` 是 **`2775`**（setgid + 组可写）——这是为了让 `lhim` 能把**安装包**直传进来（§1.3 做法 A）；
+而 `config` / `data` / `logs` / `backup` 是 **`750`**：**组只有 `r-x`、没有 `w`**，所以 `lhim` 写不进去。
+> **这是故意的**（父目录开给运维搬包、子目录只给服务自己），不是装错了。**不要把子目录也改成组可写**：
+> - OpenSearch 的安全插件**拒绝"组或其他人可写"的配置文件**（`.yml`/`.pem`/keystore），**会直接起不来**；
+> - `data/` 被别的账号写更危险（索引文件损坏 = 只能靠快照恢复）。
+> **如果你确实嫌麻烦**：先看 **§1.5.3 的两条省事路径**（路线一"以服务账号身份干活"是正解；路线二"权限共享"是可选捷径且有明确代价）。
+
+**② 为什么"`cp` 进去了"也会坏？**
+`cp` 默认按**你（lhim）的身份**创建目标文件 ⇒ 属主是 `lhim:lhim`（或 `lhim:opensearch`）。
+服务以 `opensearch` 用户运行：**读配置**会 `Permission denied`，**写日志/数据**也会失败。
+所以落配置**一律用 `sudo install -o opensearch -g opensearch -m …`**（root 复制 + 一步定属主），
+或者 `sudo cp` 之后再 `sudo chown -R opensearch:opensearch`。
+
+**③ 禁止 `sudo -u opensearch cp /home/lhim/...`**
+`opensearch` 用户**穿不过 `0700` 的 `/home/lhim`**（路径上某一级缺 `x`），这条命令**必然失败**。
+跨用户搬运只有两种正经姿势：
+- `sudo`（root 两侧都过得去）→ `install` / `cp` + `chown`；
+- 或先放到**两边都能读的位置**（`/tmp`、或 `/home/opensearch` 这个组可写的父目录），再搬进子目录。
+
+### 1.5.2 落位完成后的核对（**4 条命令，逐条看输出**）
+
+```bash
+# ① 看 config/ 里的三样东西：属主应为 opensearch:opensearch，脚本应为可执行
+ls -l /home/opensearch/config/
+# 期望：opensearch.yml(-rw-r-----) / jvm.options.d(drwxr-x---) / snapshot-backup.sh(-rwxr-x---)
+
+# ② 看程序目录里那份运行时配置的属主
+ls -ld /home/opensearch/app/config
+ls -l  /home/opensearch/app/config/opensearch.yml
+# 期望：drwxr-x--- opensearch opensearch ／ -rw-r----- opensearch opensearch
+
+# ③ unit 文件语法与路径自检（★改完 unit 必做；报错会明确指出哪一行/哪个路径不对）
+sudo systemd-analyze verify /etc/systemd/system/opensearch.service
+sudo systemd-analyze verify /etc/systemd/system/opensearch-dashboards.service
+# 期望：没有任何输出（有输出即为问题）
+
+# ④ 「配置文件不得组/其他人可写」的全量自检 —— 期望【输出为空】
+find /home/opensearch -perm /022 -type f
+#   非空 ⇒ 列出来的文件是"别账号可写"的，OpenSearch 安全插件会拒绝它，逐个修：
+#     sudo chmod 640 <文件>   （目录则 sudo chmod 750 <目录>）
+#   ⚠️ 注意：/home/opensearch 本身是 2775（父目录），用 -type d 单看目录会命中它，属预期；
+#      上面这条只看【文件】(-type f)，正好避开父目录这个有意的例外。
+```
+
+> **为什么第 ④ 条这么重要**：这不是"洁癖"。安全插件对 `config/` 下的 `.yml`、`.pem`、keystore 有**硬校验**，
+> 一旦"组或其他人可写"，节点会**拒绝启动**并在日志里给出明确原因。用 `install -m 640` 落位就天然满足；
+> 只有当你用 `cp` + `chmod 664/666` 之类手工操作时才可能踩到。
+
+
+### 1.5.3 两条省事路径（**"权限太麻烦"时的正解**）
+
+> 上面 §1.5 的默认做法是"每条命令都 `sudo install -o/-g/-m`" ——**可控，但确实啰嗦**。
+> 如果你嫌烦，只有下面两条正经路径，**都写明代价与底线**，按你的运维信任级选。
+
+#### 路线一（★推荐，不动任何权限）：以服务账号身份干活
+
+思路：**别来回跨用户搬文件**，直接把整套资产交给 `opensearch` 账号，然后**用它的身份操作**——
+之后所有文件操作都在它自己的家目录里完成，一条 `sudo` 都不需要。
+
+```bash
+# ① 把暂存目录整体交给服务账号（这一步需要 root，就这一次）
+sudo cp -r /home/lhim/software/deploy /home/opensearch/
+sudo chown -R opensearch:opensearch /home/opensearch/deploy
+
+# ② 切到服务账号（-s 表示用它的登录 shell；进来后就是"它"了，无需 sudo）
+sudo -u opensearch -s
+
+# ③ 在它自己的家里落位（路径都与 §1.5 的表一致）
+cd /home/opensearch
+cp deploy/opensearch/opensearch.yml.example config/opensearch.yml
+mkdir -p config/jvm.options.d
+cp deploy/opensearch/jvm.options.d/heap.options config/jvm.options.d/
+cp deploy/opensearch/snapshot-backup.sh config/ && chmod 750 config/snapshot-backup.sh
+#   再拷进程序目录（运行时真正生效的那份；同样是自己的身份，文件属主天然是 opensearch）
+cp config/opensearch.yml app/config/opensearch.yml
+mkdir -p app/config/jvm.options.d && cp config/jvm.options.d/heap.options app/config/jvm.options.d/
+ls -l config/ app/config/opensearch.yml        # 复核：应为 opensearch:opensearch，配置 640（见下）
+
+# ④ 改完退出，回到你自己的账号
+exit
+```
+```bash
+# ⑤ systemd unit 例外：必须 root 落位（systemd 不接受非 root 属主的 unit）
+sudo install -D -o root -g root -m 644 \
+     /home/opensearch/deploy/opensearch.service /etc/systemd/system/opensearch.service
+sudo install -D -o root -g root -m 644 \
+     /home/opensearch/deploy/opensearch-dashboards.service /etc/systemd/system/opensearch-dashboards.service
+```
+
+**为什么推荐**：
+- **完全不改权限**（父目录 `2775`、子目录 `750` 原样保留），**不削弱任何隔离**；
+- 比"每条命令都加 `sudo` + 指定 `-o/-g/-m`"**顺手得多**，而且**不会再出现属主是 `lhim` 的坑**（因为你本来就是 `opensearch`）；
+- 唯一需要 root 的只有"把暂存目录搬进部署根"和"放 systemd unit"这两处。
+
+> ⚠️ 两条注意：① 进服务账号前**先确认它是被锁口令的**（`passwd -l opensearch`，见 §2.4），只能从 `sudo` 进来；
+> ② 配置文件的 `640` 不会因为"是自己拷的"而变化 —— `cp` 保留源权限位，若源是 `644`，**进来后补一条 `chmod 640`**
+> （或用 `install -m 640`）。下线前按 §1.5.2 第 ④ 条自检一遍。
+
+#### 路线二（可选捷径）：权限共享
+
+思路：**让 `lhim` 能直接用终端工具把文件传进 `/home/opensearch` 及其所有子目录**——
+把目录开给 `opensearch` 组（`lhim` 已在该组），并且**必须同时把已有文件也开给组写**（原因见下方"为什么文件也要开"）。
+
+```bash
+sudo usermod -aG opensearch lhim                          # 让 lhim 属于 opensearch 组
+sudo find /home/opensearch -type d -exec chmod 2775 {} +   # 目录：组可写 + setgid（新文件自动继承 opensearch 组）
+sudo find /home/opensearch -type f -exec chmod 664 {} +    # 文件：组可读写（SFTP 覆盖已有文件才不需要"先删再传"）
+sudo find /home/opensearch -name '*.pem' -exec chmod 640 {} +   # 私钥例外：不给组写（安全插件对私钥最敏感）
+echo 'umask 002' | sudo tee /etc/profile.d/lhim-umask.sh >/dev/null   # 之后新建的文件默认 664（组可写）
+# ★命令执行完必须【断开终端工具并重连】（组身份要新会话才生效）；
+#   重连后验证： groups | grep opensearch
+```
+
+> **⚠️ 为什么"目录开写"不够、还必须开文件（我第一版写错过这里，留档免得改回去）**：
+> 用 `chmod -R 2775 …` 一把梭是**错的**，两个原因：
+> ① `-R` 会把 setgid 位与可执行位一起加到**文件**上 ⇒ 文件变成 **775**（带 `x` 位，语义也不对）；
+> ② 更关键：**SFTP 覆盖一个已存在的文件需要"文件本身可写"** —— 工具做的是 **open + truncate**，
+> **不是**"先删再建"。所以只让目录可写，覆盖 `config/opensearch.yml` 这类已存在文件**照样失败**。
+> 正确做法就是上面这两条 `find … -type d` / `find … -type f` 分开设。
+
+**三条底线（缺一条都不要走这条路）**：
+1. **配置文件不得组/其他人可写**——安全插件对 `config/` 下的 `.yml`/`.pem`/keystore 有**硬校验**，
+   组可写（`664`）会让节点**拒绝启动**。
+   - **唯一的回退点**：若启动日志报 `... is writable by group/others` 之类，按下面收回去（**只收配置文件，不动别的**）：
+     ```bash
+     sudo chmod 640 /home/opensearch/config/opensearch.yml /home/opensearch/app/config/opensearch.yml
+     sudo find /home/opensearch -path '*opensearch-security*' -name '*.yml' -exec chmod 640 {} +
+     ```
+   - 自检：**`find /home/opensearch -perm /022 -type f`（期望输出为空）**（§1.5.2 第 ④ 条）。
+     ⚠️ 走了路线二之后，**这条自检大概率会命中**（因为文件就是 664）——这时它不再是"体检通过"的判据，
+     而是**"你要清楚自己开了哪些文件"**的清单：跑一次，确认列出来的都是配置/资产文件，且你接受这个风险。
+2. **仍必须 root 的两处（不可绕、也不该绕）**：`/etc/systemd/system/*.service` 必须 `root:root 644`；
+   `systemctl daemon-reload` / `enable` / `start` 也必须 `sudo`。这两处与"文件怎么传"无关。
+3. **建议保留的例外（可选，但强烈建议）**：
+   ```bash
+   sudo chmod -R 2750 /home/opensearch/data
+   ```
+   基本不会往 `data/` 传文件，但**它被误删/误覆盖等于索引报废**（只能靠快照恢复，§7.2）。
+   用户若坚持全开也可以，**风险自负**。
+
+**更省事的替代（可能一步都不用改权限）**：如果你的终端工具**支持以 root 建 SFTP 会话**
+（或单独配一个 root 连接专门用来传文件），那上面这些 `chmod` **全都不需要**——
+root 本来就两边都过得去。是否可行取决于运维是否允许 root 登录，**交由你决定**。
+
+**代价（不美化）**：
+- 这等于**把服务目录的写权限交给了 `lhim`** —— **一次手滑（尤其批量删除）可以直接毁掉 OpenSearch 数据**，
+  而 `data/` 被写坏的代价通常只能靠快照恢复（见 §7.2）；
+- 它把"**服务账号自包含**"降级为"**同一运维信任级**"：谁拿到 `lhim` 就等于拿到服务数据目录的写权限。
+- 因此**列为可选捷径、不是默认**；单人运维、机器又是"部署完就不怎么动"的场景下，这个取舍**可以接受**。
+- 走了这条路请务必：① 备份策略照旧（快照 + `rsync` 到 `.111`，§7.2）；
+  ② 每次动 `data/` 前后都跑一次 `curl -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health`。
+
+> **再强调一次那条"故意的"分工**（也是真机上卡住的原因）：`/home/opensearch` 父目录是 **`2775`（setgid、组可写）**
+> ——**这是故意的**，只为让 `lhim` 能把**安装包**直传进来（§1.3 做法 A）；
+> 而 `config` / `data` / `logs` / `backup` 是 **`750`（组仅 `r-x`）**——**这也是故意的**，因为服务自己的运行目录
+> 只应给服务账号写。路线一保留了这个分工，路线二**主动放弃**了它（所以有上述代价）。
+
+
+### 1.6 换版本时要同步改的地方（**就这两处，别到处找**）
 
 | 序号 | 位置 | 改什么 |
 | --- | --- | --- |
@@ -263,7 +494,7 @@ ls -ld /home/opensearch/app                          # 期望：drwxr-sr-x opens
 > 服务器上"当前是哪个版本"用 `cat /home/opensearch/app/VERSION` 或看目录名即可查。
 > **SHA512 不在本文件里**（见 §1.1 的说明）：每次都从现场 `.sha512` 现取现比。
 
-### 1.6 安装包的占用与清理（**离线环境的"能重建"取决于包还在**）
+### 1.7 安装包的占用与清理（**离线环境的"能重建"取决于包还在**）
 
 | 项 | 值 |
 | --- | --- |
@@ -403,10 +634,17 @@ sudo usermod -aG opensearch lhim
 sudo chown -R opensearch:opensearch /home/opensearch
 sudo chmod 755 /home/opensearch                    # 部署根：可穿过（子目录各自 750）
 sudo chmod 750 /home/opensearch/data /home/opensearch/logs /home/opensearch/backup /home/opensearch/config
+#   ★配置文件一律 640（组可读、但【组/其他人不可写】）——安全插件对 config/ 下的 .yml/.pem/keystore 有硬校验，
+#     "组或其他人可写"会让节点拒绝启动。具体见 §1.5 的落位表与 §3.4 的自检命令。
 
 # ⑦ 复核（子目录都应显示 opensearch opensearch 与 drwxr-x---）
 ls -ld /home/opensearch /home/opensearch/config /home/opensearch/data /home/opensearch/logs \
        /home/opensearch/backup /home/opensearch/backup/fs-repo
+
+# ⑧ ★「子目录只给服务、父目录开给运维搬包」这条分工不要动（真机上就是在这里卡的）：
+#    /home/opensearch            → 2775（setgid、组可写）：让 lhim 能把【安装包】直传进来（§1.3 做法 A）
+#    config/data/logs/backup     → 750（组只有 r-x）：lhim 写不进去，必须用 sudo install（§1.5）
+#    不要为了图省事把子目录也改成 775/2775（既会让安全插件拒绝启动，也会让 data/ 被别账号写坏）。
 ```
 
 ### 2.4.1 家目录可用性检查（**D 方案成立的前提，必须现场核对**）
@@ -623,6 +861,10 @@ sudo -u opensearch -H bash -lc "cd /home/opensearch/app && OPENSEARCH_INITIAL_AD
 
 ### 3.3 接入我们的配置（`opensearch.yml` + 堆大小）
 
+> **这一节是"把配置落到位"**；**每个文件该落到哪、属主与权限是多少，见 §1.5 的落位对照表**
+> （含可直接复制的 `sudo install -D -o … -g … -m …` 命令）；嫌 `sudo` 麻烦见 **§1.5.3 两条省事路径**。
+> 下面的命令是"逐步说明版"，与那张表等价。
+
 ```bash
 # ① 先备份 demo 脚本刚写的那份（出问题能对照）
 sudo -u opensearch cp /home/opensearch/app/config/opensearch.yml \
@@ -649,7 +891,7 @@ sudo -u opensearch vi /home/opensearch/config/opensearch.yml
 #   plugins.security.ssl.http.enabled: false（= 内网 HTTP）/ transport 证书三行
 sudo chown -R opensearch:opensearch /home/opensearch/config
 sudo chmod 750 /home/opensearch/config
-sudo chmod 644 /home/opensearch/config/opensearch.yml /home/opensearch/config/jvm.options.d/heap.options
+sudo chmod 640 /home/opensearch/config/opensearch.yml /home/opensearch/config/jvm.options.d/heap.options   # 配置文件：组/其他人【不可写】（§1.5 表）
 ```
 
 ```bash
@@ -661,7 +903,7 @@ sudo -u opensearch cp /home/opensearch/config/jvm.options.d/heap.options \
                       /home/opensearch/app/config/jvm.options.d/heap.options
 sudo chown opensearch:opensearch /home/opensearch/app/config/opensearch.yml \
                                   /home/opensearch/app/config/jvm.options.d/heap.options
-sudo chmod 644 /home/opensearch/app/config/opensearch.yml \
+sudo chmod 640 /home/opensearch/app/config/opensearch.yml \
                /home/opensearch/app/config/jvm.options.d/heap.options
 
 # ⑦ 核对生效值（应能看到 -Xms8g / -Xmx8g；以及我们那份 opensearch.yml 已经在 app/config/ 里）
@@ -676,18 +918,20 @@ grep -nE '^(cluster\.name|node\.name|discovery\.type|network\.host|path\.(data|l
 > 另外把 unit 与快照脚本也放进 `config/`，这样"部署完就不管"时所有自定义物都在一个目录里：
 > ```bash
 > cp deploy/opensearch/opensearch.service deploy/opensearch/snapshot-backup.sh /home/opensearch/config/
-> chmod 755 /home/opensearch/config/snapshot-backup.sh
+> chmod 750 /home/opensearch/config/snapshot-backup.sh        # 750：服务账号可执行，组/其他人只读
 > ls -l /home/opensearch/config/
 > ```
 
 ### 3.4 权限收口（**一份都不能漏**）
 
+> 落位对照表在 **§1.5**；本节的"最终确认"与 §1.5.2 的 4 条核对是同一件事的两个视角（一个按用途、一个按文件）。
+
 ```bash
 # 程序目录整体归 opensearch（官方步骤：sudo chown -R opensearch /opt/opensearch/）
 sudo chown -R opensearch:opensearch /home/opensearch/app
 # 关键文件权限：官方文档反复强调 config 下的文件与 keystore
-sudo chmod 644 /home/opensearch/app/config/opensearch.yml
-sudo chmod 644 /home/opensearch/app/config/jvm.options.d/heap.options
+sudo chmod 640 /home/opensearch/app/config/opensearch.yml
+sudo chmod 640 /home/opensearch/app/config/jvm.options.d/heap.options
 sudo chmod 755 /home/opensearch/app/plugins/opensearch-security/tools/*.sh 2>/dev/null || true
 sudo chmod 600 /home/opensearch/app/config/opensearch.keystore 2>/dev/null || true
 ls -l /home/opensearch/app/config/opensearch.yml /home/opensearch/app/config/opensearch.keystore 2>/dev/null
@@ -1418,7 +1662,7 @@ sudo mv /home/opensearch/app-<新版本>   /home/opensearch/app
 
 # ⑦ 权限归位（换目录后必须重做，属主会跟着改名的目录走，但确认一次更稳）
 sudo chown -R opensearch:opensearch /home/opensearch
-sudo chmod 644 /home/opensearch/app/config/opensearch.yml \
+sudo chmod 640 /home/opensearch/app/config/opensearch.yml \
                /home/opensearch/app/config/jvm.options.d/heap.options
 sudo -u opensearch ls /home/opensearch/app/bin/opensearch     # 最终确认能读到
 
@@ -1668,7 +1912,7 @@ sudo -u opensearch cp deploy/opensearch/opensearch_dashboards.yml.example \
 sudo -u opensearch vi /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
 #   ★必改两处：server.host 改成 10.254.212.110；opensearch.password 填只读账号口令
 sudo chown opensearch:opensearch /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
-sudo chmod 644 /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+sudo chmod 640 /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
 ```
 
 | 配置项 | 本方案取值 | 为什么 |

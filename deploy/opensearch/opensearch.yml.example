@@ -4,7 +4,7 @@
 # 用法（服务器上执行；部署根按本文档统一为 /home/opensearch/，程序在 app/）：
 #   cp deploy/opensearch/opensearch.yml.example /home/opensearch/app/config/opensearch.yml
 #   chown opensearch:opensearch /home/opensearch/app/config/opensearch.yml
-#   chmod 644 /home/opensearch/app/config/opensearch.yml
+#   chmod 640 /home/opensearch/app/config/opensearch.yml
 #
 # ⚠️ 【config/ 与 tarball 自带 config/ 的关系 —— 全方案只有一种做法，别搞成两套】
 #   ① 我们【维护的唯一副本】放在 /home/opensearch/config/：

@@ -11,7 +11,7 @@
 #   cp /home/opensearch/config/jvm.options.d/heap.options \
 #      /home/opensearch/app/config/jvm.options.d/heap.options
 #   chown -R opensearch:opensearch /home/opensearch/config /home/opensearch/app/config
-#   chmod 644 /home/opensearch/config/jvm.options.d/heap.options \
+#   chmod 640 /home/opensearch/config/jvm.options.d/heap.options \
 #             /home/opensearch/app/config/jvm.options.d/heap.options
 #
 # 为什么放在 jvm.options.d/ 而不是直接改 config/jvm.options：
