@@ -1,0 +1,78 @@
+# ============================================================
+# OpenSearch Dashboards 配置模板（tar 解包 + systemd，**不用 Docker**）
+#
+# 用法（服务器上执行；部署根 /home/opensearch/）：
+#   cp deploy/opensearch/opensearch_dashboards.yml.example \
+#      /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+#   chown opensearch:opensearch /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+#   chmod 644 /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
+#
+# 字段名与默认值依据：Dashboards 官方示例配置 `config/opensearch_dashboards.yml`
+# （https://github.com/opensearch-project/OpenSearch-Dashboards/blob/main/config/opensearch_dashboards.yml）
+# 与官方《Configuring OpenSearch Dashboards》页。配置文件的官方位置说明：
+#   "You can find opensearch_dashboards.yml in <install>/config/opensearch_dashboards.yml"
+#   （Docker 是 /usr/share/opensearch-dashboards/config/，发行版包多在 /etc/opensearch-dashboards/；
+#    我们是 tar 安装 ⇒ 就在解包目录的 config/ 下）
+#
+# ⚠️ 本文件是【静态配置】：改完必须 systemctl restart opensearch-dashboards。
+# ============================================================
+
+# ── 服务监听（浏览器访问入口）──
+# ★绑到本机内网 IP（10.254.212.110），不要写 0.0.0.0：绑定面越小越安全，
+#   对外暴露交给防火墙（§12.4 只放行运维网段/跳板机）。
+server.host: "10.254.212.110"
+server.port: 5601
+# 官方默认是 "localhost"（远端连不上），所以我们显式改成内网 IP；
+# 官方示例注释原话：The default is 'localhost', which usually means remote machines will not be able to connect.
+server.name: "pm-os-dashboards"
+
+# ── 后端连哪个 OpenSearch ──
+# ★与"关掉 REST 层 TLS"的取舍绑定（见主文档 §3.5 方案 A）：
+#   我们 OpenSearch 的 9200 是 **HTTP**（plugins.security.ssl.http.enabled: false），所以这里用 http://。
+#   若你改用自签 TLS（方案 B），这里必须写成 https:// 并配下面的证书项，否则 Dashboards 连不上。
+opensearch.hosts: ["http://127.0.0.1:9200"]
+
+# Dashboards 自己用的系统索引（存 saved objects / 动态配置）
+# 官方示例中的两个键名，保持默认即可；快照脚本默认会把 .opensearch_dashboards* 一起备份（见 §12.6）
+# opensearchDashboards.index: ".opensearch_dashboards"
+# opensearchDashboards.configIndex: ".opensearch_dashboards_config"
+
+# ── 认证（security 插件开着就必须给凭据）──
+# Dashboards 用这个账号做"维护自己的系统索引"这类后台动作；**用户自己仍然要各自登录**。
+# ⚠️ 建议用【专用只读账号】而不是 admin（见主文档 §12.2 的建账号步骤）：
+#     能读写 .opensearch_dashboards* 与读取业务索引即可，不需要集群管理权限。
+opensearch.username: "dashboards_ro"
+opensearch.password: "<该账号的强口令>"
+
+# 若走自签 TLS（方案 B）才需要下面几项：
+# opensearch.ssl.certificateAuthorities: ["/home/opensearch/app/config/root-ca.pem"]
+# opensearch.ssl.verificationMode: full      # full（校验证书+主机名）/ certificate（只校验证书）/ none（不校验，不推荐）
+
+# ── 多租户（安全插件特性）──
+# 官方示例 yml 明确：开启 workspace 特性时必须关掉多租户（二者互斥）
+#   "Please note, workspace will not work with multi-tenancy. To enable workspace feature,
+#    you need to disable multi-tenancy first with `opensearch_security.multitenancy.enabled: false`"
+# 本方案按"传统多租户"用（默认开启），保持这一行不动；若改用 workspace 再改成 false。
+opensearch_security.multitenancy.enabled: true
+opensearch_security.multitenancy.tenants.preferred: ["Private", "Global"]
+# 未登录也要能看到租户选择页（安全插件正常工作时用不到，留着可避免某些 401 体验问题）
+opensearch_security.readonly_mode.roles: ["kibana_read_only"]
+
+# ── 转发给 OpenSearch 的请求头 ──
+# 官方示例里 opensearch.requestHeadersWhitelist 已标注 DEPRECATED，新名字是 requestHeadersAllowlist。
+# 必须允许 authorization，否则登录态传不到 OpenSearch（表现为"登录后立刻又跳登录页"）。
+opensearch.requestHeadersAllowlist: ["securitytenant", "Authorization", "authorization"]
+# 旧名（2.x 仍兼容，留着是为了对照官方旧文档；若你的版本已移除该键，删掉这一行即可）
+# opensearch.requestHeadersWhitelist: ["securitytenant", "Authorization", "authorization"]
+
+# ── 超时与内存 ──
+opensearch.requestTimeout: 30000
+opensearch.shardTimeout: 30000
+# Node.js 堆上限（MB）：官方示例的 opensearch.memoryCircuitBreaker 依赖 max-old-space-size。
+# 8GB 堆给 OpenSearch、16GB 物理内存的机器上，Dashboards 的 Node 进程给 1GB 足够（估算，见主文档 §12.3）：
+#   NODE_OPTIONS="--max-old-space-size=1024"
+# 这一项【不写在这里】，而是由 systemd unit 的 Environment= 注入（见 opensearch-dashboards.service）。
+logging.dest: stdout
+
+# ── 中文界面 ──
+i18n.locale: "zh-CN"

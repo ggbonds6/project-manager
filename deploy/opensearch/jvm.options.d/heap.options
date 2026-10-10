@@ -2,11 +2,17 @@
 # JVM 堆大小（8 核 / 16GB 内存的机器）
 #
 # 用法（服务器上执行）：
-#   mkdir -p /home/lhim/os/opensearch/config/jvm.options.d
+#   我们维护的唯一副本放在部署根的 config/ 下；安装/升级时【拷贝】进程序目录 app/config/jvm.options.d/：
+#   mkdir -p /home/opensearch/config/jvm.options.d
 #   cp deploy/opensearch/jvm.options.d/heap.options \
-#      /home/lhim/os/opensearch/config/jvm.options.d/heap.options
-#   chown opensearch:opensearch /home/lhim/os/opensearch/config/jvm.options.d/heap.options
-#   chmod 644 /home/lhim/os/opensearch/config/jvm.options.d/heap.options
+#      /home/opensearch/config/jvm.options.d/heap.options
+#   # 再拷进程序目录（每次升级换 app/ 之后都要再拷一次）：
+#   mkdir -p /home/opensearch/app/config/jvm.options.d
+#   cp /home/opensearch/config/jvm.options.d/heap.options \
+#      /home/opensearch/app/config/jvm.options.d/heap.options
+#   chown -R opensearch:opensearch /home/opensearch/config /home/opensearch/app/config
+#   chmod 644 /home/opensearch/config/jvm.options.d/heap.options \
+#             /home/opensearch/app/config/jvm.options.d/heap.options
 #
 # 为什么放在 jvm.options.d/ 而不是直接改 config/jvm.options：
 #   官方 Tar 页的做法是让你去改 config/jvm.options 里的 -Xms/-Xmx；而 jvm.options.d/*.options

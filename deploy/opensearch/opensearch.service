@@ -1,14 +1,24 @@
 # ============================================================
 # OpenSearch systemd unit（tar 解包安装；**不用 Docker**）
 #
-# 安装位置（两台机器都一样；安装目录=/home/lhim/os/opensearch）：
+# 部署根（两台机器都一样；程序在 app/，配置/数据/日志/备份与它平级）：
+#   /home/opensearch/
+#   ├─ app/               ← 当前程序（tarball 解包出来的内容）
+#   ├─ app-<旧版本>/       ← 升级时保留的旧目录（回滚点）
+#   ├─ config/            ← 我们维护的 opensearch.yml + jvm.options.d/heap.options
+#   │                       （安装/升级时【拷贝】进 app/config/，见文档 §3.3）
+#   ├─ data/              ← path.data
+#   ├─ logs/              ← path.logs
+#   └─ backup/fs-repo/    ← path.repo（快照仓库）
+#
+# 安装：
 #   sudo cp deploy/opensearch/opensearch.service /etc/systemd/system/opensearch.service
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now opensearch
 #
 # 写法依据：官方《Installing OpenSearch from a tarball》→ "Run OpenSearch as a service using systemd"
 # 给的示例 unit。我们只做三类改动，其余保持官方原样：
-#   ① 路径：官方示例用 /opt/opensearch，本项目统一 /home/lhim/os/opensearch；
+#   ① 路径：官方示例用 /opt/opensearch，本项目统一 /home/opensearch/app；
 #   ② User/Group：官方示例叫 opensearch，本项目沿用同名专用系统用户（OpenSearch 拒绝以 root 启动）；
 #   ③ 内存与文件句柄上限：官方示例没有 LimitMEMLOCK，而我们要开 bootstrap.memory_lock，
 #      所以补 LimitMEMLOCK=infinity 与 Environment=MAX_MAP_COUNT=262144（官方 configuring-opensearch
@@ -18,6 +28,12 @@
 #    following configuration in a production environment"，并建议要 systemd 托管就用 RPM 包。
 #    本项目选 tar 的理由是"新机器不装 Docker、部署完就不怎么动"（见文档 §0），
 #    因此下面的加固项（专用用户、memlock、nofile、开机自启、重启策略）必须逐条落实，别省。
+#
+# ⚠️ 程序放在 /home/lhim/ 下、服务却以专用用户 opensearch 运行 ⇒ **家目录必须能被"穿过"（至少 o+x）**，
+#    否则 systemd 启动时会报权限不足 / 找不到路径。现场核对与修法见文档 §2.4：
+#      ls -ld /home/lhim          # 若是 drwxr-x---（750）就需要处理
+#      sudo chmod 711 /home/lhim  # 可穿过、但不可列目录
+#    验证： sudo -u opensearch ls /home/opensearch/app/bin/opensearch
 # ============================================================
 [Unit]
 Description=OpenSearch
@@ -28,14 +44,14 @@ After=network-online.target
 # 官方示例：Type=forking + ExecStart 带 -d（后台守护），保留原样
 Type=forking
 
-WorkingDirectory=/home/lhim/os/opensearch
-ExecStart=/home/lhim/os/opensearch/bin/opensearch -d
+WorkingDirectory=/home/opensearch/app
+ExecStart=/home/opensearch/app/bin/opensearch -d
 
 # 专用非 root 用户（OpenSearch 不能以 root 运行）
 User=opensearch
 Group=opensearch
 
-# 日志进 journald（另有 /home/lhim/os/logs 下的文件日志，见 path.logs）
+# 日志进 journald（另有 /home/opensearch/logs 下的文件日志，见 path.logs）
 StandardOutput=journal
 StandardError=inherit
 
@@ -51,7 +67,7 @@ LimitMEMLOCK=infinity
 #   "If you're using systemd... you must also add MAX_MAP_COUNT=262144"
 Environment=MAX_MAP_COUNT=262144
 # 官方 Tar 页 Step 4：让服务用自带的 JDK
-Environment=OPENSEARCH_HOME=/home/lhim/os/opensearch
+Environment=OPENSEARCH_HOME=/home/opensearch/app
 
 # 停服与重启行为（官方示例保留；Restart 是本项目加固项，
 # 让"部署完就不管"成立：进程异常退出后自动拉起，但不要无限快速重启）

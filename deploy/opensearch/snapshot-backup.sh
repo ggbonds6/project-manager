@@ -12,7 +12,7 @@
 #   ③ 按保留期删除过期快照（默认 7 天）
 #   ④ 把快照目录 rsync 到第二台机器（10.254.212.111）
 #
-# 用法（在部署根目录执行，例如 /home/lhim/os）：
+# 用法（脚本建议放在部署根的 config/ 下，例如 /home/opensearch/config/）：
 #   bash snapshot-backup.sh                  # 等价于 snapshot：打快照 + 清理 + 同步
 #   bash snapshot-backup.sh snapshot         # 同上
 #   bash snapshot-backup.sh status           # 只看：集群健康 + 仓库 + 已有快照列表
@@ -20,12 +20,12 @@
 #   bash snapshot-backup.sh help             # 用法
 #
 # 建议的 cron（每晚 02:30；见文档 §7.2）：
-#   30 2 * * * /bin/bash /home/lhim/os/snapshot-backup.sh snapshot >> /home/lhim/os/logs/snapshot-cron.log 2>&1
+#   30 2 * * * /bin/bash /home/opensearch/config/snapshot-backup.sh snapshot >> /home/opensearch/logs/snapshot-cron.log 2>&1
 #
 # 退出码：0 成功 ｜ 1 环境/依赖/接口失败 ｜ 2 参数用法错误
 #
 # 依赖：bash 4+、curl、rsync（同步到 .111 时需要）。**不依赖 jq、不需要 docker**。
-# 覆盖配置：同目录（或环境变量 SNAPSHOT_ENV）下的 snapshot-backup.env，见文末 usage。
+# 覆盖配置：同目录（或环境变量 SNAPSHOT_ENV）下的 snapshot-backup.env，见 usage。
 # ============================================================
 set -euo pipefail
 
@@ -34,17 +34,27 @@ set -euo pipefail
 #    BASE 按脚本自身位置推导，不硬编码；所有默认值都带环境变量/配置文件覆盖口子。
 # ============================================================
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 配置文件默认与脚本同目录；放在 config/ 下时就是 /home/opensearch/config/snapshot-backup.env
 ENV_FILE="${SNAPSHOT_ENV:-$BASE/snapshot-backup.env}"
 readonly BASE ENV_FILE
 
 DEF_OS_URL="http://127.0.0.1:9200"
 DEF_USER="admin"
 DEF_REPO="os-backup"
-# 仓库 location 必须在 opensearch.yml 的 path.repo 之下（默认 /home/lhim/os/backup）
-DEF_REPO_LOCATION="/home/lhim/os/backup/fs-repo"
-DEF_INDEX="pm-ai-chunks"
+# 仓库 location 必须在 opensearch.yml 的 path.repo 之下（默认 /home/opensearch/backup）
+DEF_REPO_LOCATION="/home/opensearch/backup/fs-repo"
+# ⚠⚠ 要快照哪些索引：**必须显式列出系统索引**。
+#   原因：OpenSearch 的 `_snapshot` 默认【不含系统索引】——只写业务索引的话，恢复后：
+#     · `.opensearch_dashboards*`（saved objects：仪表盘/可视化/索引模式）会丢 ⇒ **Dashboards 打开是空的**；
+#     · `.opendistro_security`（安全配置：内部用户/角色/角色映射）会丢 ⇒ **安全配置回默认值**（口令/权限全变）。
+#   所以这里用逗号分隔的索引列表，把三类都带上：
+#     ① 业务：pm-ai-chunks
+#     ② Dashboards：.opensearch_dashboards*（含 .opensearch_dashboards_config）
+#     ③ 安全插件：.opendistro_security（若你们改过用户/角色/租户，就必须带上它）
+#   ⚠️ 用通配符（`*`）要求请求里带 "expand_wildcards"，见 take_snapshot 里的请求体。
+DEF_INDEX="pm-ai-chunks,.opensearch_dashboards*,.opendistro_security"
 DEF_KEEP_DAYS="7"
-DEF_REMOTE="lhim@10.254.212.111:/home/lhim/os/backup/"
+DEF_REMOTE="lhim@10.254.212.111:/home/opensearch/backup/"
 DEF_REMOTE_HOST="10.254.212.111"
 readonly DEF_OS_URL DEF_USER DEF_REPO DEF_REPO_LOCATION DEF_INDEX DEF_KEEP_DAYS DEF_REMOTE DEF_REMOTE_HOST
 
@@ -84,10 +94,13 @@ snapshot-backup.sh —— OpenSearch 单节点每晚快照 + 异地副本（bash
   OS_PASSWORD         ★口令：不写在这里就用 /etc/opensearch-backup.pass 里的那一行
   SNAPSHOT_REPO       仓库名（默认 os-backup）
   REPO_LOCATION       仓库目录，必须在 opensearch.yml 的 path.repo 之下
-                      （默认 /home/lhim/os/backup/fs-repo）
-  INDEX               要快照的索引（默认 pm-ai-chunks；写 _all 表示全部）
+                      （默认 /home/opensearch/backup/fs-repo）
+  INDEX               要快照的索引（逗号分隔，支持通配符；默认已含系统索引）：
+                      pm-ai-chunks,.opensearch_dashboards*,.opendistro_security
+                      ★不要图省事只写业务索引：OpenSearch 快照默认不含系统索引，
+                        Dashboards 的 saved objects 与安全配置就都恢复不回来（详见脚本头部注释）。
   KEEP_DAYS           保留天数（默认 7；更早的 nightly-* 会被删掉）
-  REMOTE              异地副本目标（默认 lhim@10.254.212.111:/home/lhim/os/backup/）
+  REMOTE              异地副本目标（默认 lhim@10.254.212.111:/home/opensearch/backup/）
   REMOTE_HOST         远端主机 IP（默认 10.254.212.111）——仅用于预检与提示
   SKIP_REMOTE         设为 1 则跳过 rsync（第二台还没就绪时用）
 
@@ -225,8 +238,8 @@ ensure_repo() {
       else
         fail "注册仓库被拒（HTTP 400）：$API_BODY"
         log "      常见原因：location 不在 opensearch.yml 的 path.repo 之下。"
-        log "      核对： grep -n '^path.repo' \${OPENSEARCH_HOME:-/home/lhim/os/opensearch}/config/opensearch.yml"
-        log "            上面应为 ${loc} 的父目录（默认 /home/lhim/os/backup）"
+        log "      核对： grep -n '^path.repo' \${OPENSEARCH_HOME:-/home/opensearch/app}/config/opensearch.yml"
+        log "            上面应为 ${loc} 的父目录（默认 /home/opensearch/backup）"
         return 1
       fi
       ;;
@@ -254,7 +267,10 @@ ensure_repo() {
 take_snapshot() {
   local name="$1" body st i
   step "2/4" "打快照：${name}（异步发起，之后轮询状态）"
-  body="{\"indices\":\"$(cfg_index)\",\"ignore_unavailable\":true,\"include_global_state\":false}"
+  # expand_wildcards=all：索引列表里有 .opensearch_dashboards* 这样的通配符，必须显式展开，
+  # 否则通配符匹配不到（尤其系统索引默认不在 open 之外的通配范围里）⇒ 快照会"成功"但内容不全。
+  # include_global_state=false：不备份集群全局状态（模板/设置等），与本方案的"只要数据"口径一致。
+  body="{\"indices\":\"$(cfg_index)\",\"ignore_unavailable\":true,\"expand_wildcards\":\"all\",\"include_global_state\":false}"
   if ! api PUT "/_snapshot/$(cfg_repo)/${name}?wait_for_completion=false" "$body"; then
     fail "发起快照失败：OpenSearch 不可达"
     return 1
@@ -400,7 +416,7 @@ sync_remote() {
   if ! ssh -o BatchMode=yes -o ConnectTimeout=10 "$(printf '%s' "$remote" | cut -d: -f1)" true 2>/dev/null; then
     fail "无法免密 ssh 到 ${rhost}（rsync 需要它）"
     log "      ① 配免密： ssh-copy-id ${remote%%:*}      （在【本机】执行，输一次远端口令）"
-    log "      ② 确认远端目录存在且属主正确： ssh ${rhost} 'ls -ld /home/lhim/os/backup'"
+    log "      ② 确认远端目录存在且属主正确： ssh ${rhost} 'ls -ld /home/opensearch/backup'"
     log "         期望属主 opensearch:opensearch（否则恢复时读不了）"
     log "      ③ 临时跳过本次同步： SKIP_REMOTE=1 bash snapshot-backup.sh snapshot"
     return 1
@@ -428,7 +444,7 @@ cmd_snapshot() {
   log "OpenSearch 快照任务：${name}"
   log "  地址   $(cfg_url)（用户 $(cfg_user)）"
   log "  仓库   $(cfg_repo) → $(cfg_location)"
-  log "  索引   $(cfg_index)"
+  log "  索引   $(cfg_index)（含系统索引，见脚本头部注释）"
   log "  保留   ${keep} 天"
   log "  异地   $(cfg_remote)（SKIP_REMOTE=${SKIP_REMOTE:-0}）"
   log "================================================"
@@ -489,22 +505,25 @@ cmd_restore() {
   fail "恢复会把索引【覆盖】成快照里的状态（这是一条会改数据的命令）"
   log "      快照名：${name}"
   log "      索引：$(cfg_index)"
+  log "      （默认含 .opensearch_dashboards* 与 .opendistro_security：恢复后 Dashboards 的仪表盘与安全配置都会回来）"
   log "      注意：目标索引若已存在，恢复请求会失败（HTTP 400）——"
   log "            应急恢复的常见做法是先删旧索引再恢复："
-  log "              curl -XDELETE -u $(cfg_user):'<口令>' '$(cfg_url)/$(cfg_index)'"
+  log "              curl -XDELETE -u $(cfg_user):'<口令>' '$(cfg_url)/pm-ai-chunks'"
+  log "              # 系统索引（.opensearch_dashboards*）一般无需删：演练机上本来就不存在"
   log "      确认无误请输入 yes 继续："
   read -r ans || true
   [ "$ans" = "yes" ] || { log "已取消（只接受 yes）"; return 1; }
 
   step "restore" "从 ${name} 恢复 $(cfg_index)"
   if ! api POST "/_snapshot/$(cfg_repo)/${name}/_restore?wait_for_completion=true" \
-       "{\"indices\":\"$(cfg_index)\",\"ignore_unavailable\":false,\"include_global_state\":false}"; then
+       "{\"indices\":\"$(cfg_index)\",\"ignore_unavailable\":true,\"include_global_state\":false}"; then
     fail "OpenSearch 不可达（$(cfg_url)）"
     return 1
   fi
   if [ "$API_CODE" = "200" ]; then
     ok "恢复完成"
-    log "      核对条数： curl -sS -u $(cfg_user):'<口令>' '$(cfg_url)/$(cfg_index)/_count'"
+    log "      核对业务索引条数： curl -sS -u $(cfg_user):'<口令>' '$(cfg_url)/pm-ai-chunks/_count'"
+    log "      核对系统索引回来了： curl -sS -u $(cfg_user):'<口令>' '$(cfg_url)/_cat/indices/.opensearch_dashboards*?v'"
     return 0
   fi
   fail "恢复失败（HTTP ${API_CODE}）：$API_BODY"

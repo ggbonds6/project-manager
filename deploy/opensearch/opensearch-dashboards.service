@@ -1,0 +1,77 @@
+# ============================================================
+# OpenSearch Dashboards systemd unit（tar 解包 + systemd，**不用 Docker**）
+#
+# 部署根（/home/opensearch/）：
+#   ├─ app/             ← OpenSearch 程序
+#   ├─ config/          ← 我们维护的 opensearch.yml + jvm.options.d/heap.options
+#   ├─ dashboards/      ← Dashboards（程序 + 配置）
+#   │  └─ app/          ←   tar 解包出来的内容（bin/ config/ node/ plugins/ …）
+#   ├─ data/ logs/ backup/fs-repo/
+#
+# 安装：
+#   sudo cp deploy/opensearch/opensearch-dashboards.service /etc/systemd/system/opensearch-dashboards.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now opensearch-dashboards
+#
+# ⚠️ 写法说明（照官方的哪里、我们自己补了什么）：
+#   · 官方《Installing OpenSearch Dashboards from a tarball》页**只给了**
+#     `tar -zxf …` → 改 config/opensearch_dashboards.yml → `./bin/opensearch-dashboards` 三步，
+#     **没有给 systemd 示例**（该页 Related 只指向"Preparing OpenSearch Dashboards for production"）。
+#   · 因此本 unit 的骨架照搬官方【OpenSearch tar 页】给的那份 systemd 示例
+#     （同样的 User/Group、StandardOutput=journal、LimitNOFILE、LimitNPROC/AS/FSIZE、
+#       TimeoutStopSec=0、KillSignal=SIGTERM、SendSIGKILL=no、SuccessExitStatus=143、TimeoutStartSec=75），
+#     再按 Dashboards 是 **Node.js 进程**这一点做三处调整（下面每处都有注释）。
+#   · 官方在 OpenSearch 那节明确写了 tar+systemd "只适合非生产、要 systemd 就用 RPM"；本项目按既定决定走 tar，
+#     所以加固项（专用用户、nofile、开机自启、Restart）逐条落实。
+# ============================================================
+[Unit]
+Description=OpenSearch Dashboards
+Wants=network-online.target
+After=network-online.target
+# Dashboards 起来后要连 9200；让 systemd 先尝试把 OpenSearch 拉起来（不强制依赖，避免它挂了 Dashboards 也起不来）
+Wants=opensearch.service
+After=opensearch.service
+
+[Service]
+# ★调整①：Dashboards 用 Type=simple（官方 OpenSearch 示例是 Type=forking，那个对应 `-d` 守护进程；
+#   `bin/opensearch-dashboards` 在前台运行，没有任何 daemonize 参数，用 simple 才由 systemd 正确跟踪主进程）
+Type=simple
+
+WorkingDirectory=/home/opensearch/dashboards/app
+ExecStart=/home/opensearch/dashboards/app/bin/opensearch-dashboards
+
+# 专用非 root 用户（与 OpenSearch 同一个服务账号；Dashboards 同样不应以 root 运行）
+User=opensearch
+Group=opensearch
+
+# 日志进 journald（`logging.dest: stdout` 已写在 opensearch_dashboards.yml 里，两边配合）
+StandardOutput=journal
+StandardError=inherit
+
+# 文件句柄：与 OpenSearch 一份（官方示例写 65535，OpenSearch 重要设置页写 65536；取 65536）
+LimitNOFILE=65536
+LimitNPROC=4096
+LimitAS=infinity
+LimitFSIZE=infinity
+
+# ★调整②：Node.js 堆上限。官方示例配置提到 opensearch.memoryCircuitBreaker 的阈值基于 Node 的
+#   max-old-space-size ⇒ 用官方支持的 NODE_OPTIONS 显式给 Dashboards 的 Node 进程 1GB 上限
+#   （8GB 堆给 OpenSearch、16GB 物理内存的机器上，1GB 足够；估算见主文档 §12.3）。
+#   ★只能有一行 Environment=NODE_OPTIONS=：systemd 对同名变量是"后者覆盖"，写多行前一行不生效。
+Environment=NODE_OPTIONS=--max-old-space-size=1024
+
+# ★调整③：停服行为。官方 OpenSearch 示例用 KillMode=process（JVM 自己处理 SIGTERM，且 set -e 下不给 KILL）。
+#   Dashboards 是 `bin/opensearch-dashboards`（shell 包装）→ 真正的 Node 子进程，
+#   用 mixed 才能让 systemd 既通知主进程也把整个 cgroup 里的 Node 一起收掉，避免残留孤儿进程占着 5601。
+KillMode=mixed
+KillSignal=SIGTERM
+SendSIGKILL=no
+SuccessExitStatus=143
+TimeoutStopSec=90
+TimeoutStartSec=75
+# "部署完就不管"：异常退出自动拉起（但不要无限快速重启）
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
