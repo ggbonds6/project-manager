@@ -4,8 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pmgt.ai.common.config.AiSettings;
+import com.pmgt.ai.common.model.ModelRegistry;
 import com.pmgt.ai.module.store.DocStore;
 import com.pmgt.ai.module.store.StoredDoc;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import jakarta.annotation.PreDestroy;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -65,6 +71,7 @@ import java.util.regex.Pattern;
  * 而 OCR 降级会产出"看起来对但实际编造"的文本，错误被藏在结果里。所以这里降级 + note 说明即可，
  * OCR 那边必须让失败页显式暴露 error。
  */
+@Slf4j
 @Service
 public class RetrievalService implements SearchPort {
 
@@ -106,6 +113,11 @@ public class RetrievalService implements SearchPort {
     private final VecApi vec;
     private final DocStore docStore;
     private final OpenSearchIndex openSearchIndex;
+    private final ModelRegistry models;
+    private final DocMetaStore docMetaStore;
+    private final EmbedBatcher embedBatcher;
+    private final Counter lazyBackfill;
+    private final Counter scopeFiltered;
 
     /**
      * 索引是否已经"确保存在"过（进程内一次性懒初始化）。
@@ -115,21 +127,44 @@ public class RetrievalService implements SearchPort {
      */
     private volatile boolean indexEnsured;
 
-    /** 注入用构造器；{@code openSearchIndex} 可以为 null（后端为 opensearch 时才会被用到）。 */
+    /** 生产装配（Spring）。{@code models}/{@code registry} 由容器注入，指标落到 actuator 的注册表。 */
     @Autowired
-    public RetrievalService(AiSettings settings, VecApi vec, OpenSearchIndex openSearchIndex) {
-        this.settings = settings;
-        this.vec = vec;
-        this.docStore = DocStore.underWorkDir(settings.getWorkDir());
-        this.openSearchIndex = openSearchIndex;
+    public RetrievalService(AiSettings settings, VecApi vec, OpenSearchIndex openSearchIndex,
+                            ModelRegistry models, MeterRegistry registry, DocMetaStore docMetaStore) {
+        this(settings, vec, DocStore.underWorkDir(settings.getWorkDir()), openSearchIndex, models, registry,
+                docMetaStore);
     }
 
-    /** 测试用：显式指定文档库与索引适配层。 */
+    /** 测试用：显式指定文档库与索引适配层（不接监控与信号量，行为与生产一致但指标落进程内注册表）。 */
     public RetrievalService(AiSettings settings, VecApi vec, DocStore docStore, OpenSearchIndex openSearchIndex) {
+        this(settings, vec, docStore, openSearchIndex, ModelRegistry.offline(settings), new SimpleMeterRegistry(),
+                new DocMetaStore(settings.getWorkDir()));
+    }
+
+    /** 全部装配点（生产/测试最终都走这里）。 */
+    public RetrievalService(AiSettings settings, VecApi vec, DocStore docStore, OpenSearchIndex openSearchIndex,
+                            ModelRegistry models, MeterRegistry registry, DocMetaStore docMetaStore) {
         this.settings = settings;
         this.vec = vec;
         this.docStore = docStore;
         this.openSearchIndex = openSearchIndex;
+        this.models = models;
+        this.docMetaStore = docMetaStore == null ? new DocMetaStore(settings.getWorkDir()) : docMetaStore;
+        this.embedBatcher = new EmbedBatcher(vec, models);
+        MeterRegistry meterRegistry = registry == null ? new SimpleMeterRegistry() : registry;
+        // P0-3：向量化前移之后，"查询侧补算"应当是**例外**而非常态——
+        // 所以这里既计日志又计指标（懒补算一旦持续 >0，说明解析路径漏了向量）。
+        this.lazyBackfill = Counter.builder("ai.vector.lazy_backfill")
+                .description("检索时才发现缺向量、被查询侧补算的切片数（正常应为 0）")
+                .register(meterRegistry);
+        this.scopeFiltered = Counter.builder("ai.retrieval.scope.filtered")
+                .description("被作用域硬过滤掉的切片数（越界即空的可观测依据）")
+                .register(meterRegistry);
+    }
+
+    @PreDestroy
+    void shutdown() {
+        embedBatcher.shutdown();
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -144,9 +179,35 @@ public class RetrievalService implements SearchPort {
     /**
      * 混合检索：向量 + 关键词召回 → Reranker 精排 → topK。
      *
-     * @param recall 覆盖召回应返回的条数；{@code null} 用配置（默认 50）
+     * @param recall 覆盖召回应返回的条数；{@code null} 用配置（默认 50，见
+     *               {@link AiSettings.Retrieval#getRecallMode()} 的降配开关）
      */
     public SearchResult search(String query, Integer topK, String docId, Integer recall) {
+        // docId 是**硬约束**（不是提示词级）：下推成 SearchScope 之后，
+        // 本地路径与 OpenSearch 路径都会在检索前把范围收窄到这份文档。
+        SearchScope scope = (docId == null || docId.isBlank())
+                ? SearchScope.empty() : SearchScope.ofDocIds(List.of(docId));
+        return searchInScope(query, topK, scope, recall);
+    }
+
+    /**
+     * 带<b>显式作用域</b>的检索（{@code doc_ids} / {@code attachmentIds} / {@code projectId}）。
+     *
+     * <p>作用域是<b>硬约束</b>：越界的切片在**召回之前**被排除（本地路径按元数据交集过滤，
+     * OpenSearch 路径下推成 kNN 的 {@code filter}），因此"作用域外的文档不可能被返回"。
+     * 元数据缺失的文档在带约束的维度上<b>视为越界</b>（缺失 ≠ 通配）。
+     *
+     * <p>⚠️ 把主系统 {@code /chat} 请求里的 {@code doc_ids} 一路接到这里（P1-3"检索级硬作用域"）
+     * 需要动 {@code ToolAgent}/{@code QaService} 的签名，<b>不在本轮 P0 范围内</b>——
+     * 本轮先把"接缝 + 两条后端的下推"做出来（模型给的 {@code doc_id} 已经是硬约束）。
+     */
+    @Override
+    public SearchResult searchInScope(String query, Integer topK, SearchScope scope) {
+        return searchInScope(query, topK, scope, null);
+    }
+
+    /** 同上，可覆盖召回条数（重建索引/评测用）。 */
+    public SearchResult searchInScope(String query, Integer topK, SearchScope scope, Integer recall) {
         String q = query == null ? "" : query.strip();
         if (q.isEmpty()) {
             return new SearchResult(0, List.of(), "none", false, "查询为空");
@@ -155,13 +216,36 @@ public class RetrievalService implements SearchPort {
         // 配了未支持/未配置的后端就直接失败（不静默降级），错误由调用方暴露给使用者
         checkBackend();
 
-        List<DocStore.Chunk> chunks = docStore.loadChunks(docId);
+        SearchScope effectiveScope = scope == null ? SearchScope.empty() : scope;
+        List<DocStore.Chunk> chunks = loadChunks(effectiveScope);
         if (chunks.isEmpty()) {
-            return new SearchResult(0, List.of(), "none", false, "文档库里还没有切片（先上传并解析文档）");
+            return new SearchResult(0, List.of(), "none", false, effectiveScope.constrained()
+                    ? "作用域内没有可检索的切片（scope: " + effectiveScope.describe()
+                            + "）——越界即空，不退回全库（元数据缺失的文档按越界处理）"
+                    : "文档库里还没有切片（先上传并解析文档）");
+        }
+
+        // ── 作用域硬过滤：先过滤再检索（两条后端都必须在这里收窄）──
+        if (effectiveScope.constrained()) {
+            Map<String, DocMeta> metas = docMetaStore.all();
+            List<DocStore.Chunk> inScope = new ArrayList<>(chunks.size());
+            for (DocStore.Chunk chunk : chunks) {
+                if (effectiveScope.matches(chunk.docId(),
+                        metas.getOrDefault(chunk.docId(), DocMeta.EMPTY))) {
+                    inScope.add(chunk);
+                }
+            }
+            scopeFiltered.increment(Math.max(0, chunks.size() - inScope.size()));
+            chunks = inScope;
+            if (chunks.isEmpty()) {
+                return new SearchResult(0, List.of(), "none", false,
+                        "作用域内没有可检索的切片（scope: " + effectiveScope.describe()
+                                + "；元数据缺失的文档按越界处理，见 PUT /documents/{docId}/meta）");
+            }
         }
 
         int k = Math.max(1, Math.min(topK != null ? topK : settings.getRetrieval().getTopK(), HARD_MAX_TOP_K));
-        int effectiveRecall = Math.max(k, recall != null ? recall : settings.getRetrieval().getRecall());
+        int effectiveRecall = Math.max(k, recall != null ? recall : effectiveRecall());
 
         Map<String, Double> kw = keywordScores(q, chunks);
 
@@ -171,13 +255,18 @@ public class RetrievalService implements SearchPort {
         try {
             if (usesOpenSearch()) {
                 // ── 在线路由：向量召回交给 OpenSearch kNN（索引里找；缺失的切片幂等 upsert 进去）──
-                vecScore.putAll(recallByOpenSearch(chunks, q, effectiveRecall));
+                vecScore.putAll(recallByOpenSearch(chunks, q, effectiveRecall, effectiveScope));
                 vectorsUsed = !vecScore.isEmpty();
-                // 这条路径**已接线、未实测**：把话写进 note，别让使用者以为是验证过的能力
-                note = "OpenSearch 路由已接线、未实测（集群部署后须按 docs/迁移方案与对照表.md §5 验证）";
+                // 这条路径已接线，但**未实测**（集群部署后要按《OpenSearch部署与接入.md》做 top-k 一致性验证）：
+                // 把话写进 note，别让使用者以为是验证过的能力
+                note = "OpenSearch 路由已接线（**未实测**：未对真集群跑过 top-k 一致性验证，" 
+                        + "口径见 docs/OpenSearch部署与接入.md 步骤 19）";
+                if (settings.getOpenSearch().isHybrid()) {
+                    note = note + "；hybrid（BM25+kNN）已开启";
+                }
             } else {
                 // ── local：进程内余弦 + workDir/vectors 缓存 ──
-                Map<String, float[]> vectors = embedChunks(chunks);
+                Map<String, float[]> vectors = embedChunksForQuery(chunks);
                 List<float[]> queryVectors = vec.embedTexts(List.of(q), null);
                 if (!queryVectors.isEmpty()) {
                     float[] queryVector = queryVectors.get(0);
@@ -222,6 +311,12 @@ public class RetrievalService implements SearchPort {
         boolean reranked = false;
         List<Map.Entry<String, Double>> order;
         List<String> candidateList = new ArrayList<>(candidates);
+        // P0-7：把"每次检索的重排对数"写进日志与指标——它同时是**降配 RETRIEVAL_RECALL 的收益口径**
+        // （对数 ÷ 实测 24 对/s = 重排耗时；一次问答 ≈ 2 次检索）。
+        log.info("检索重排候选 {} 对（召回 recall={}；候选 = 向量榜 + 关键词榜去重；"
+                        + "平台实测约 24 对/s ⇒ 预计耗时 {}s），一次问答通常触发 2 次检索",
+                candidateList.size(), effectiveRecall,
+                Math.round(candidateList.size() / 24.0 * 10) / 10.0);
         try {
             List<String> texts = candidateList.stream().map(key -> byKey.get(key).text()).toList();
             List<RerankHit> hits = vec.rerank(q, texts, k);
@@ -308,14 +403,17 @@ public class RetrievalService implements SearchPort {
      *
      * <p>⚠️ <b>未实测</b>：集群尚未部署；任何调用失败都抛 {@link VecClient.VecException}，
      * 由调用方显式暴露——绝不静默退回 local。
+     *
+     * @param scope 作用域硬约束：下推成 kNN 的 {@code filter}（越界文档不参与竞争候选位）
      */
-    private Map<String, Double> recallByOpenSearch(List<DocStore.Chunk> chunks, String query, int recall) {
+    private Map<String, Double> recallByOpenSearch(List<DocStore.Chunk> chunks, String query, int recall,
+                                                   SearchScope scope) {
         Map<String, DocStore.Chunk> byKey = new LinkedHashMap<>();
         for (DocStore.Chunk chunk : chunks) {
             byKey.putIfAbsent(chunkKey(chunk), chunk);
         }
 
-        Map<String, float[]> vectors = embedChunks(chunks);
+        Map<String, float[]> vectors = embedChunksForQuery(chunks);
         int dimension = 0;
         for (float[] vector : vectors.values()) {
             dimension = vector.length;   // VEC_EMBED_DIMENSIONS=0 时维度取实际返回长度（平台 4096）
@@ -326,6 +424,7 @@ public class RetrievalService implements SearchPort {
             openSearchIndex.ensureIndexOnce(dimension);
             indexEnsured = true;
         }
+        Map<String, DocMeta> metas = docMetaStore.all();
         // ⚠️ 逐切片按 chunkKey 取向量再组装：embedChunks 返回的是 Map，**迭代顺序没有任何保证**，
         // 若把 values() 直接和 chunks 按下标 zip，向量就会和别的切片文本错配——
         // 而错配比报错严重得多（索引用的是错的向量，检索结果看起来正常却全错）。
@@ -334,18 +433,20 @@ public class RetrievalService implements SearchPort {
             float[] vector = vectors.get(chunkKey(chunk));
             if (vector != null) {
                 docs.add(new OpenSearchIndex.ChunkDoc(
-                        chunkKey(chunk), chunk.docId(), chunk.filename(), chunk.pageNo(), chunk.text(), vector));
+                        chunkKey(chunk), chunk.docId(), chunk.filename(), chunk.pageNo(), chunk.text(), vector,
+                        metas.getOrDefault(chunk.docId(), DocMeta.EMPTY)));
             }
         }
         if (!docs.isEmpty()) {
-            openSearchIndex.upsertAll(docs);   // 幂等：_id = 切片键
+            openSearchIndex.upsertAll(docs);   // 幂等：_id = 切片键（含内容指纹）
         }
 
         List<float[]> queryVectors = vec.embedTexts(List.of(query), null);
         if (queryVectors.isEmpty()) {
             throw new VecClient.VecException("查询向量返回为空，无法执行 kNN 检索");
         }
-        List<OpenSearchIndex.SearchHit> hits = openSearchIndex.search(queryVectors.get(0), recall);
+        List<OpenSearchIndex.SearchHit> hits =
+                openSearchIndex.search(queryVectors.get(0), query, recall, scope);
 
         Map<String, Double> out = new LinkedHashMap<>();
         for (OpenSearchIndex.SearchHit hit : hits) {
@@ -360,6 +461,49 @@ public class RetrievalService implements SearchPort {
     // ══════════════════════════════════════════════════════════════
     // 后端守卫
     // ══════════════════════════════════════════════════════════════
+
+    /**
+     * 生效召回条数（P0-7 的"可配 + 记录、不改默认"）。
+     *
+     * <p>{@code recall-mode=baseline}（默认）→ {@code RETRIEVAL_RECALL}（50）；
+     * {@code low} → {@code RETRIEVAL_RECALL_LOW}（25），并打一条 WARN 让人知道现在不是基线；
+     * 其它值按 baseline（未知取值不静默降配，与后端守卫同一纪律）。
+     */
+    int effectiveRecall() {
+        AiSettings.Retrieval retrieval = settings.getRetrieval();
+        String mode = retrieval.getRecallMode() == null ? "" : retrieval.getRecallMode().strip().toLowerCase();
+        if ("low".equals(mode)) {
+            int low = retrieval.getRecallLow() > 0 ? retrieval.getRecallLow() : retrieval.getRecall();
+            log.warn("召回已降配（RETRIEVAL_RECALL_MODE=low）：recall {} → {}。"
+                            + "改默认前必须用 eval/smoke-30.json 跑降配前后对比，引用命中率与数字一致率不降才可改；"
+                            + "一次问答的重排对数 ≈ 3 × recall，耗时 ≈ 对数 ÷ 24 对/s",
+                    retrieval.getRecall(), low);
+            return low;
+        }
+        if (!mode.isEmpty() && !"baseline".equals(mode) && !"custom".equals(mode)) {
+            log.warn("未知的 RETRIEVAL_RECALL_MODE={}，按 baseline 处理（recall={}）",
+                    retrieval.getRecallMode(), retrieval.getRecall());
+        }
+        return retrieval.getRecall();
+    }
+
+    /**
+     * 按作用域装载切片：{@code docIds} 非空时逐份读（避免为了一个 doc 扫描整个文档库），
+     * 否则读全库。attachment/project 维度的收窄在调用方按元数据做（{@link SearchScope#matches}）。
+     */
+    private List<DocStore.Chunk> loadChunks(SearchScope scope) {
+        if (scope == null || scope.docIds().isEmpty()) {
+            return docStore.loadChunks(null);
+        }
+        List<DocStore.Chunk> out = new ArrayList<>();
+        for (String docId : scope.docIds()) {
+            StoredDoc doc = docStore.get(docId);
+            if (doc != null) {
+                out.addAll(docStore.iterChunks(doc));
+            }
+        }
+        return out;
+    }
 
     /**
      * 索引后端守卫：只支持 {@code local}（进程内余弦 + JSON 缓存）；{@code opensearch} 必须
@@ -555,8 +699,38 @@ public class RetrievalService implements SearchPort {
      * 确保所有切片都有向量（缺的补算并落缓存），返回 {@code {切片键: 向量}}。
      *
      * <p>按文档分组缓存：一份文档的切片进了同一份 JSON，重算粒度就是"这份文档"。
+     *
+     * <p><b>入库/重建路径用这个重载</b>：它们本来就是"该算向量"的地方，
+     * 不算"查询侧补算"，所以<b>不</b>计 {@code ai.vector.lazy_backfill}、也不打 WARN。
+     * 查询路径请用 {@link #embedChunksForQuery(List)}。
      */
     Map<String, float[]> embedChunks(List<DocStore.Chunk> chunks) {
+        return embedChunks(chunks, false);
+    }
+
+    /**
+     * 同 {@link #embedChunks(List)}，但按"<b>查询侧补算</b>"记账：缺失向量会打 WARN 并计
+     * {@code ai.vector.lazy_backfill}（P0-3 要求"保留补齐能力但要有明确日志与计数"）。
+     *
+     * <p>为什么要分开：向量化已经前移到解析入库，正常路径上查询侧<b>一次都不该补算</b>；
+     * 若把入库阶段自己的向量化也计进来，这个指标就永远是正数、失去告警价值。
+     */
+    Map<String, float[]> embedChunksForQuery(List<DocStore.Chunk> chunks) {
+        return embedChunks(chunks, true);
+    }
+
+    /**
+     * 确保所有切片都有向量（缺的补算并落缓存），返回 {@code {切片键: 向量}}。
+     *
+     * <p>按文档分组缓存：一份文档的切片进了同一份 JSON，重算粒度就是"这份文档"。
+     *
+     * <p><b>并发（P0-3）</b>：补算走 {@link EmbedBatcher}——批 32、并发 8（embed 信号量全局共享），
+     * 手册实测 147.9 条/s（旧的串行批 32 约 18.5 条/s，约 8×）。
+     *
+     * @param queryPath true = 本次调用来自**检索路径**（"查询侧补算"要记账，见
+     *                  {@link #embedChunksForQuery(List)}）；false = 入库/重建路径的正常向量化
+     */
+    private Map<String, float[]> embedChunks(List<DocStore.Chunk> chunks, boolean queryPath) {
         Map<String, List<DocStore.Chunk>> byDoc = new LinkedHashMap<>();
         for (DocStore.Chunk chunk : chunks) {
             byDoc.computeIfAbsent(chunk.docId() == null ? "" : chunk.docId(), k -> new ArrayList<>()).add(chunk);
@@ -579,12 +753,17 @@ public class RetrievalService implements SearchPort {
             if (missing.isEmpty()) {
                 continue;
             }
-            for (int start = 0; start < missing.size(); start += VecClient.EMBED_BATCH) {
-                List<DocStore.Chunk> batch = missing.subList(start, Math.min(start + VecClient.EMBED_BATCH, missing.size()));
-                List<float[]> vectors = vec.embedTexts(batch.stream().map(DocStore.Chunk::text).toList(), null);
-                for (int i = 0; i < batch.size() && i < vectors.size(); i++) {
-                    out.put(chunkKey(batch.get(i)), vectors.get(i));
-                }
+            if (queryPath) {
+                // 查询侧补算 = 异常路径：日志 + 指标（P0-3 明确要求"保留补齐能力但要有明确日志与计数"）。
+                // 入库/重建路径不算——那本来就是该算向量的地方。
+                lazyBackfill.increment(missing.size());
+                log.warn("向量缓存缺失，查询侧补算 {} 个切片（docId={}）：正常路径应在解析入库时算完"
+                                + "（见 DocIndexer）；持续出现说明解析链路漏了向量化",
+                        missing.size(), docId);
+            }
+            List<float[]> vectors = embedBatcher.embedAll(missing.stream().map(DocStore.Chunk::text).toList());
+            for (int i = 0; i < missing.size() && i < vectors.size(); i++) {
+                out.put(chunkKey(missing.get(i)), vectors.get(i));
             }
             Map<String, float[]> toSave = new LinkedHashMap<>();
             for (String key : keys) {

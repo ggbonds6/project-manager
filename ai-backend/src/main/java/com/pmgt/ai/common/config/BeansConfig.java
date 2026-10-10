@@ -1,5 +1,6 @@
 package com.pmgt.ai.common.config;
 
+import com.pmgt.ai.module.retrieval.DocMetaStore;
 import com.pmgt.ai.module.store.DocStore;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -17,5 +18,11 @@ public class BeansConfig {
     @Bean
     public DocStore docStore(AiSettings settings) {
         return DocStore.underWorkDir(settings.getWorkDir());
+    }
+
+    /** 文档过滤元数据（`work/doc-meta.json`）：与 DocStore 同理，按 workDir 装配一次。 */
+    @Bean
+    public DocMetaStore docMetaStore(AiSettings settings) {
+        return new DocMetaStore(settings.getWorkDir());
     }
 }

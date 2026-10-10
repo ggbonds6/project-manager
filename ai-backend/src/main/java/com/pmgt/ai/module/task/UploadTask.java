@@ -32,14 +32,20 @@ public class UploadTask {
             "render", "渲染页面",
             "ocr", "识别中",
             "check", "数据校验",
+            "embed", "向量化入库",
             "store", "写入文档库",
             "done", "完成");
 
-    /** 阶段 → (起点占比, 终点占比)。识别最耗时，权重 0.20~0.97（兜底阶段移除后归还给它）。 */
+    /**
+     * 阶段 → (起点占比, 终点占比)。识别最耗时，权重 0.20~0.95；
+     * {@code embed}（P0-3 向量化前移）拿 0.95~0.99——它是入库的最后一道重活，
+     * 3,000 切片在并发 8 下约 20s（手册 147.9 条/s），所以给它留出可见的进度区间。
+     */
     private static final Map<String, double[]> STAGE_RANGE = Map.of(
             "render", new double[]{0.05, 0.20},
-            "ocr", new double[]{0.20, 0.97},
-            "check", new double[]{0.97, 0.99},
+            "ocr", new double[]{0.20, 0.95},
+            "check", new double[]{0.95, 0.96},
+            "embed", new double[]{0.96, 0.99},
             "store", new double[]{0.99, 1.0});
 
     private String taskId = "";

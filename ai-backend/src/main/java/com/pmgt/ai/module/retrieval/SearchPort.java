@@ -13,6 +13,19 @@ public interface SearchPort {
 
     SearchResult search(String query, Integer topK, String docId);
 
+    /**
+     * 带<b>作用域硬约束</b>的检索（{@code doc_ids} / {@code attachmentIds} / {@code projectIds}）。
+     *
+     * <p>为什么要有它：{@code docId} 只能表达"一份文档"，而"先过滤再检索"需要能表达
+     * 项目/附件维度的交集（权限合规与效率都靠它）。默认实现退化为"只认单个 docId"，
+     * 老实现（及测试替身）因此不需要改就能编译——但<b>只有真正实现了过滤的后端</b>
+     * （{@code RetrievalService}）才能保证"作用域外的文档不可能被返回"。
+     */
+    default SearchResult searchInScope(String query, Integer topK, SearchScope scope) {
+        String single = scope != null && scope.docIds().size() == 1 ? scope.docIds().iterator().next() : null;
+        return search(query, topK, single);
+    }
+
     /** 检索结果。字段名对齐 Python 版，主系统/模型看到的结构不变。 */
     record SearchResult(int found, List<Hit> hits, String retrieval, boolean reranked, String note) {
     }

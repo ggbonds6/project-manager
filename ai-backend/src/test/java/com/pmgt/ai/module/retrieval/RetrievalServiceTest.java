@@ -18,6 +18,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -112,6 +113,8 @@ class RetrievalServiceTest {
         int upsertedDocs;
         int searchCalls;
         boolean indexSearchFails;
+        /** 最近一次 kNN 查询带下来的作用域（钉"docId 下推成硬约束"）。 */
+        SearchScope lastScope;
         /** kNN 的"返回值"：由测试按切片键造，模拟集群里已有的切片。 */
         List<SearchHit> hits = List.of();
         /** 写进索引的文档（按切片键取文本，用来断言"向量没和别的切片文本错配"）。 */
@@ -143,7 +146,23 @@ class RetrievalServiceTest {
 
         @Override
         public List<SearchHit> search(float[] queryVector, int k) {
+            return search(queryVector, null, k, SearchScope.empty());
+        }
+
+        @Override
+        public List<SearchHit> search(float[] queryVector, int k, SearchScope scope) {
+            return search(queryVector, null, k, scope);
+        }
+
+        /**
+         * 生产路径调用的就是这个四参版本（带 query 文本与作用域，hybrid 与 filter 都在它里面）。
+         * 离线替身在这里<b>只记调用、不发请求</b>——真实 HTTP 行为由
+         * {@code OpenSearchIndexTest} 用本机 HttpServer 桩覆盖。
+         */
+        @Override
+        public List<SearchHit> search(float[] queryVector, String queryText, int k, SearchScope scope) {
             searchCalls++;
+            lastScope = scope;
             if (indexSearchFails) {
                 throw new VecClient.VecException("集群不可达（http://stub:9200）：ConnectException: Connection refused");
             }
@@ -151,10 +170,18 @@ class RetrievalServiceTest {
         }
     }
 
-    /** 文档库 + 向量缓存都落在临时目录，配置取 AiSettings 默认值（backend=local）。 */
+    /**
+     * 文档库 + 向量缓存都落在临时目录，配置取 AiSettings 默认值（backend=local）。
+     *
+     * <p>退避改成 1ms：{@code 502} 现在是可重试错误（P0-2），若用默认的 1s→4s，
+     * 每条"向量不可用 → 降级"的用例都要真睡 5s。**退避策略本身**由
+     * {@code ModelRegistryTest#idempotentCallRetriesOn5xx} 钉住，这里只关心降级语义。
+     */
     private RetrievalService service(DocStore store, VecApi vec) {
         AiSettings settings = new AiSettings();
         settings.setWorkDir(tmp);
+        settings.getLimits().setRetryBackoffMs(1);
+        settings.getLimits().setRetryJitterMs(0);
         return new RetrievalService(settings, vec, store, null);
     }
 
@@ -164,6 +191,8 @@ class RetrievalServiceTest {
         settings.setWorkDir(tmp);
         settings.getRetrieval().setBackend("opensearch");
         settings.getOpenSearch().setUrl("http://stub:9200");
+        settings.getLimits().setRetryBackoffMs(1);
+        settings.getLimits().setRetryJitterMs(0);
         return new RetrievalService(settings, vec, store, index);
     }
 
@@ -289,7 +318,13 @@ class RetrievalServiceTest {
 
     // ── 用例 5: test_unimplemented_backend_fails_fast ───────────
 
-    /** {@code VEC_BACKEND=opensearch} 而 url 未配置：必须显式报错，且**不做任何检索工作**（不动向量、不动网络）。 */
+    /**
+     * {@code VEC_BACKEND=opensearch} 而 url <b>显式留空</b>：必须显式报错，
+     * 且**不做任何检索工作**（不动向量、不动网络）。
+     *
+     * <p>注：2026-10-10 起 {@code OPENSEARCH_URL} 的默认值是生产集群（{@code http://10.254.212.110:9200}），
+     * 所以这条用例要显式把 url 清空——它钉的是"配成 opensearch 却没给地址"时的守卫，与默认值无关。
+     */
     @Test
     void unconfiguredOpenSearchBackendFailsFast() {
         DocStore store = store();
@@ -297,7 +332,8 @@ class RetrievalServiceTest {
 
         AiSettings settings = new AiSettings();
         settings.setWorkDir(tmp);
-        settings.getRetrieval().setBackend("opensearch");   // url 默认空
+        settings.getRetrieval().setBackend("opensearch");
+        settings.getOpenSearch().setUrl("");                // 显式留空
         FakeVec vec = new FakeVec();
         RetrievalService service = new RetrievalService(settings, vec, store, null);
 
@@ -346,7 +382,7 @@ class RetrievalServiceTest {
         vec.rerankFn = (query, documents) -> documents.isEmpty()
                 ? List.of()
                 : List.of(new RerankHit(0, 0.88, 0));
-        SearchPort.SearchResult result = openSearchService(store, vec, index).search("付款方式", 2, null);
+        SearchPort.SearchResult result = openSearchService(store, vec, index).search("付款方式", 2, docId);
 
         assertEquals(1, index.healthCalls, "走 opensearch 前必须探活（连不上就显式报错）");
         assertEquals(1, index.ensureIndexCalls, "首次检索要确保索引存在");
@@ -359,6 +395,10 @@ class RetrievalServiceTest {
         assertEquals(1, result.hits().get(0).pageNo(), "kNN 命中必须带页码（来源标注的前提）");
         assertEquals(0.62, result.hits().get(0).vectorScore(), 1e-9, "vector_score 取 kNN 的相似度");
         assertTrue(result.note().contains("未实测"), "必须在返回里诚实标注这条路径未实测：" + result.note());
+        // 请求作用域必须一路下推到 kNN：单 docId 也要变成硬约束（越界文档不参与竞争候选位）
+        assertNotNull(index.lastScope);
+        assertTrue(index.lastScope.docIds().contains(docId),
+                "docId 必须作为 filter 下推，而不是只在本地丢弃越界命中：" + index.lastScope.describe());
     }
 
     /** local 后端绝不能碰 OpenSearch（防止"顺手也探一下"变成隐式依赖）。 */

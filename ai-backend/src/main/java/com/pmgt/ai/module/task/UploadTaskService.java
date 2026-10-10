@@ -3,15 +3,22 @@ package com.pmgt.ai.module.task;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.util.ProgressFn;
+import com.pmgt.ai.common.web.ApiException;
 import com.pmgt.ai.module.doc.DocumentText;
 import com.pmgt.ai.module.doc.DocumentReader;
 import com.pmgt.ai.module.ocr.PdfInfo;
 import com.pmgt.ai.module.ocr.PdfReader;
+import com.pmgt.ai.module.retrieval.DocIndexer;
 import com.pmgt.ai.module.store.DocStore;
 import com.pmgt.ai.module.store.StoredDoc;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.task.TaskRejectedException;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.stereotype.Service;
 
@@ -41,7 +48,6 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class UploadTaskService {
 
     public static final int MAX_TASKS_KEPT = 100;
@@ -51,9 +57,36 @@ public class UploadTaskService {
     private final DocumentReader documentReader;
     private final PdfReader pdfReader;
     private final DocStore docStore;
+    private final DocIndexer docIndexer;
     private final ThreadPoolTaskExecutor uploadTaskExecutor;
 
     private final Map<String, UploadTask> tasks = new ConcurrentHashMap<>();
+
+    /** 队列满被拒的次数（P0-4：拒绝要可见，不能只体现在日志里）。 */
+    private final Counter rejected;
+
+    public UploadTaskService(AiSettings settings, ObjectMapper mapper, DocumentReader documentReader,
+                             PdfReader pdfReader, DocStore docStore, DocIndexer docIndexer,
+                             ThreadPoolTaskExecutor uploadTaskExecutor, MeterRegistry registry) {
+        this.settings = settings;
+        this.mapper = mapper;
+        this.documentReader = documentReader;
+        this.pdfReader = pdfReader;
+        this.docStore = docStore;
+        this.docIndexer = docIndexer;
+        this.uploadTaskExecutor = uploadTaskExecutor;
+        MeterRegistry meters = registry == null ? new SimpleMeterRegistry() : registry;
+        this.rejected = Counter.builder("ai.upload.rejected")
+                .description("因解析队列已满被拒绝的上传任务数（诚实失败：任务标 FAILED 并清临时文件）")
+                .register(meters);
+        // 队列深度 / 在途数（P0-6）：运维不用看日志就能回答"解析为什么排队"
+        Gauge.builder("ai.upload.queue.depth", uploadTaskExecutor,
+                        executor -> executor.getThreadPoolExecutor().getQueue().size())
+                .description("解析任务排队数").register(meters);
+        Gauge.builder("ai.upload.inflight", uploadTaskExecutor,
+                        executor -> executor.getThreadPoolExecutor().getActiveCount())
+                .description("解析任务在途数").register(meters);
+    }
 
     private Path storeFile() {
         return settings.getWorkDir().resolve("tasks.json");
@@ -100,7 +133,15 @@ public class UploadTaskService {
 
     // ── 对外 ───────────────────────────────────────────────────────
 
-    /** 登记任务并立即返回；解析在后台线程里跑（由 AsyncConfig 的线程池承载）。 */
+    /**
+     * 登记任务并立即返回；解析在后台线程里跑（由 AsyncConfig 的线程池承载）。
+     *
+     * <p><b>队列满 = 诚实失败（P0-4）</b>：线程池用默认 AbortPolicy，队列（100）满了会抛
+     * {@link TaskRejectedException}。改造前这个异常直接冒到通用 500，而任务记录<b>永远停在 QUEUED</b>、
+     * 临时文件残留在 {@code work/tmp/}——用户看到"上传失败"却查不出原因，任务列表里还挂着一个永不结束的任务。
+     * 现在：<b>标 FAILED + 写明原因与当前深度 + 删临时文件 + 抛 429</b>，
+     * 保证"0 条永久 QUEUED、0 个 work/tmp 残留"。
+     */
     public UploadTask submit(Path tmpPath, String filename, long sizeBytes, Integer dpi) {
         UploadTask task = new UploadTask();
         task.setTaskId(UUID.randomUUID().toString().replace("-", "").substring(0, 16));
@@ -110,9 +151,44 @@ public class UploadTaskService {
         task.setTmpPath(tmpPath.toString());
         tasks.put(task.getTaskId(), task);
         persist();
-        // 显式提交到线程池（不用 @Async：类内自调用走不到代理，会变成同步执行）
-        uploadTaskExecutor.execute(() -> run(task.getTaskId(), dpi));
+        try {
+            // 显式提交到线程池（不用 @Async：类内自调用走不到代理，会变成同步执行）
+            uploadTaskExecutor.execute(() -> run(task.getTaskId(), dpi));
+        } catch (TaskRejectedException e) {
+            rejected.increment();
+            int depth = queueDepth();
+            String reason = "解析队列已满（当前排队 " + depth + "/" + queueCapacity()
+                    + "），任务未被执行，请稍后重试（或等待在途解析完成）。文件已清理，不会留下半成品。";
+            task.setStatus("FAILED");
+            task.setFinishedAt(UploadTask.timestamp());
+            task.setStageKey("receive");
+            task.setStage("已拒绝");
+            task.setError(reason);
+            task.setTmpPath("");
+            deleteQuietly(tmpPath);
+            persist();
+            log.warn("解析队列已满，任务 {}（{}）被拒绝：{}", task.getTaskId(), filename, reason);
+            throw ApiException.queueFull(reason);
+        }
         return task;
+    }
+
+    /** 当前排队数（{@code ai.upload.queue.depth} 的同一个口径）。 */
+    public int queueDepth() {
+        try {
+            return uploadTaskExecutor.getThreadPoolExecutor().getQueue().size();
+        } catch (Exception e) {
+            return -1;
+        }
+    }
+
+    /** 队列容量（{@code AsyncConfig} 里配的 100）。 */
+    public int queueCapacity() {
+        try {
+            return uploadTaskExecutor.getThreadPoolExecutor().getQueue().remainingCapacity() + queueDepth();
+        } catch (Exception e) {
+            return -1;
+        }
     }
 
     public List<Map<String, Object>> list() {
@@ -206,10 +282,22 @@ public class UploadTaskService {
                     doc,
                     task.getSizeBytes() > 0 ? task.getSizeBytes() : fileSize(tmp));
             task.setDocId(saved.getDocId());
+
+            // ── P0-3：向量化前移进解析任务 ─────────────────────────────
+            // 切片完就在入库阶段算完向量并写进后端（local=向量缓存 / opensearch=_bulk），
+            // 不留到"第一次检索时"在问答线程里惰性补算——那正是"第一次提问超时"的根因。
+            // ⚠️ opensearch 后端写索引失败会在这里抛错 → 任务 FAILED（**不静默降级**）。
+            task.setStageKey("embed");
+            task.setStage(UploadTask.STAGE_LABEL.get("embed"));
+            DocIndexer.IndexOutcome indexed = docIndexer.indexDocument(saved, onProgress);
+            List<String> notes = new ArrayList<>(doc.getNotes() == null ? List.of() : doc.getNotes());
+            notes.add("向量化/入库：" + indexed.describe());
+            task.setNotes(notes);
+            log.info("任务 {} 向量化入库完成：{}", taskId, indexed.describe());
+
             task.setSummary(doc.summary());
             task.setStages(doc.getStages());
             task.setChecks(doc.getChecks());
-            task.setNotes(doc.getNotes());
             task.setPages(doc.getPages().stream().map(p -> (Map<String, Object>) p.quality()).toList());
             task.setStatus("DONE");
             task.setStageKey("done");

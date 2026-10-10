@@ -29,6 +29,8 @@ ai:
   gateway:
     base-url: ${LLM_BASE_URL:http://10.254.208.35:8090/v1}
     api-key: ${LLM_API_KEY:}
+    # ⚠️ 2026-10-10 起它只是**兜底值**：四类模型各有自己的超时（见下面的 ai.limits），
+    #    只有"未分级"的调用才会回落到它。chat 走 150s，不再是 300s。
     timeout-seconds: ${LLM_TIMEOUT:300}
   llm:
     model: ${LLM_MODEL:Qwen3.8-27B-W8A8}
@@ -39,7 +41,11 @@ ai:
     # 平台 OCR 地址默认复用网关（同一个网关、同一把 sk）
     model: ${OCR_MODEL:PaddleOCR-VL-1.6-0.9B}
     timeout-seconds: ${OCR_TIMEOUT:600}
+    # ⚠️ 语义已修正（P0-4）：这是**全进程**的 OCR 在飞请求上限（全进程共享一个线程池），
+    #    不再是"每份文档内 min(12, ceil(页数/8))"（那对 8 页文档是死配置）。
     concurrency: ${OCR_CONCURRENCY:12}
+    # 单个请求的页数**上限**（平台建议 ≤16）；实际批页 = min(它, ceil(页数 / 在飞上限))，
+    # 所以页数少的文档会自动切成更小的批次，把并发用起来。
     batch-pages: ${OCR_BATCH_PAGES:8}
     seal: ${OCR_SEAL:false}
     seal-min-pixels: ${OCR_SEAL_MIN_PIXELS:400000}
@@ -52,19 +58,80 @@ ai:
     # 0 = 不传维度（平台默认 4096；本部署不支持 MRL 降维）
     dimensions: ${VEC_EMBED_DIMENSIONS:0}
   retrieval:
+    # 召回条数 = 送进 Reranker 的候选数（每次检索 ≈ 1.5 × recall，一次问答 ≈ 2 次检索）。
+    # 耗时口径：平台重排实测 24 对/s ⇒ recall=50 时 ≈75 对/次 ≈3.1s、≈6.3s/问，
+    # 把问答上限压到 ≈0.16 QPS；降到 20~25 可到 ≈0.4 QPS（约 2.5×）。
+    # ⚠️ 默认保持 50：降配会动答案质量，必须先评测（见 recall-mode 的说明）。
     recall: ${RETRIEVAL_RECALL:50}
+    # 召回档位（P0-7 的"便于后续降配"开关）：baseline（默认，用 recall）| low（用 recall-low）| custom。
+    # ⚠️ 把默认改成 low/25 之前，必须先用 eval/smoke-30.json 跑降配前后对比，
+    #    **引用命中率与数字一致率都不下降**才允许改（口径见 docs/AI模型调用与任务队列评估.md §6.1 P0-2）。
+    recall-mode: ${RETRIEVAL_RECALL_MODE:baseline}
+    # recall-mode=low 时使用的召回条数（P0-2 建议区间 20~25）。
+    recall-low: ${RETRIEVAL_RECALL_LOW:25}
     top-k: ${RETRIEVAL_TOP_K:5}
+    # local = 进程内余弦 + JSON 向量缓存（零部署、可随时回滚）；opensearch = 正式选型（真集群）。
     backend: ${VEC_BACKEND:local}
+  # OpenSearch 向量后端（VEC_BACKEND=opensearch 时生效）。
+  # ⚠️ URL 必须指向**实际作为生产的那一台**：两台机器（.110/.111）各自是**独立的单节点集群**
+  #    （discovery.type: single-node，数据集不共享），**不要同时接业务**，否则同一个问题在两个后端上
+  #    召回不同、索引各自演化。生产 = .110；.111 是冷备/演练机（收快照与归档，不接业务）。
   open-search:
-    url: ${OPENSEARCH_URL:}
+    url: ${OPENSEARCH_URL:http://10.254.212.110:9200}
     index: ${OPENSEARCH_INDEX:pm-ai-chunks}
-    username: ${OPENSEARCH_USER:}
+    username: ${OPENSEARCH_USER:admin}
+    # 口令**只从环境变量/.env 读**：仓库里留空，日志/异常/自检里都不出现（只报"配没配"）。
     password: ${OPENSEARCH_PASSWORD:}
+    # 单次 REST 请求超时（秒）。这是检索基础设施的超时，与 GPU 模型的超时分开。
+    timeout-seconds: ${OPENSEARCH_TIMEOUT:20}
+    # _bulk 每批文档数（切片向量 4096 维，单批约 10MB 级）。
+    bulk-size: ${OPENSEARCH_BULK_SIZE:500}
+    # hybrid（BM25 + kNN 两路融合）：默认关闭。理由见 AiSettings.OpenSearch#hybrid 的注释
+    # （量纲不同需归一、本地已有关键词召回、开与不开没有评测基线）。
+    hybrid: ${OPENSEARCH_HYBRID:false}
+  # 模型调用的超时 / 并发 / 重试（P0-1、P0-5、P0-2）。取值依据见 AiSettings.Limits 的注释。
+  limits:
+    # 硬约束：所有模型超时必须 < caller-timeout-seconds（调用方主系统→AI 的预算 180s）。
+    chat-timeout-seconds: ${LLM_CHAT_TIMEOUT:150}
+    embed-timeout-seconds: ${VEC_EMBED_TIMEOUT:30}
+    rerank-timeout-seconds: ${VEC_RERANK_TIMEOUT:20}
+    caller-timeout-seconds: ${AI_CALLER_TIMEOUT:180}
+    # 在飞上限（每模型信号量）：chat 4（平台 4 副本）/ embed 8（手册：批 32 + 并发 8 = 147.9 条/s）
+    # / rerank 2（单实例、峰值 24.8 对/s、问答链路单点）；OCR 用上面的 OCR_CONCURRENCY=12。
+    chat-concurrency: ${LLM_CHAT_CONCURRENCY:4}
+    embed-concurrency: ${VEC_EMBED_CONCURRENCY:8}
+    rerank-concurrency: ${VEC_RERANK_CONCURRENCY:2}
+    # 等 permit 的时长：交互式（chat/rerank）短——宁可快速 503"模型繁忙"，也不排队到用户超时；
+    # 批量（OCR/重建索引的向量化）长——没人等，可以排。
+    interactive-acquire-ms: ${MODEL_ACQUIRE_TIMEOUT_MS:1500}
+    batch-acquire-ms: ${MODEL_BATCH_ACQUIRE_TIMEOUT_MS:60000}
+    # 只对**幂等**调用重试（OCR / embedding / 检索）；chat 永不重试。
+    # 退避 1s → 4s + 抖动 0~250ms；仅重试连接错误/超时/5xx/429（4xx 与业务错误不重试）。
+    retry-max: ${MODEL_RETRY_MAX:2}
+    retry-backoff-ms: ${MODEL_RETRY_BACKOFF_MS:1000}
+    retry-backoff-multiplier: ${MODEL_RETRY_BACKOFF_MULTIPLIER:4}
+    retry-jitter-ms: ${MODEL_RETRY_JITTER_MS:250}
   # P2 受控查询（docs/AI前端与集成方案.md §11）：回调主系统 /api/ai/query/{entity} 的超时（秒）。
   # ⚠️ 回调地址与 scope_token **不在配置文件里**：它们由主系统在每次 /chat 请求的 biz_query 里现给，
   #    AI 侧不持有长期凭据（§11.1"反向回调"）。不传 biz_query 时不注册 query_business_data 工具。
   biz-query:
     timeout-seconds: ${BIZ_QUERY_TIMEOUT:20}
+
+# 指标（P0-6，唯一的本轮新增依赖 spring-boot-starter-actuator + micrometer）。
+# 读法：
+#   · 每模型 QPS        /actuator/metrics/ai.model.requests        （COUNT，按 outcome 分子）
+#   · 延迟分位 P50/95/99 /actuator/metrics/ai.model.latency        （publishPercentiles 在代码里开，不依赖配置）
+#   · 在途 / 排队 / 上限  /actuator/metrics/ai.model.inflight、ai.model.queue.depth、ai.model.concurrency.limit
+#   · 解析队列深度       /actuator/metrics/ai.upload.queue.depth、ai.upload.inflight
+#   · 聚合视图（一眼看全）curl 'http://127.0.0.1:8100/health?with_metrics=true'
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: never
 
 logging:
   level:

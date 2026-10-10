@@ -212,10 +212,14 @@ public class QaService {
         CitationRegistry citations = new CitationRegistry();
 
         BuiltMessages built = buildQaMessages(q, docs, history, bizQuery);
+        // P0-1：单轮对话的超时用**每模型超时**（chat 150s），不是网关兜底的 300s。
+        // 不变式：它必须 < 调用方（主系统→AI）的 180s，否则"用户已超时、槽位仍被占用"。
         ToolAgent.AgentResult result = agent.run(
                 built.messages(),
                 maxRounds == null ? ToolAgent.DEFAULT_MAX_ROUNDS : maxRounds,
-                (double) Math.max(1, settings.getGateway().getTimeoutSeconds()),
+                settings.getLimits().getChatTimeoutSeconds() > 0
+                        ? settings.getLimits().getChatTimeoutSeconds()
+                        : (double) Math.max(1, settings.getGateway().getTimeoutSeconds()),
                 citations,
                 bizQuery);
 

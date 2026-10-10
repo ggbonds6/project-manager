@@ -5,6 +5,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pmgt.ai.common.config.AiSettings;
+import com.pmgt.ai.common.model.ModelRegistry;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -64,13 +69,27 @@ public class VecClient implements VecApi {
 
     private final AiSettings settings;
     private final HttpClient http;
+    private final ModelRegistry models;
+    private final Counter rerankPairs;
 
+    /** 测试/离线用（不接监控与信号量；指标落进程内简单注册表）。 */
     public VecClient(AiSettings settings) {
+        this(settings, ModelRegistry.offline(settings), new SimpleMeterRegistry());
+    }
+
+    @Autowired
+    public VecClient(AiSettings settings, ModelRegistry models, MeterRegistry registry) {
         this.settings = settings;
+        this.models = models;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
+        // P0-7：把"每次检索的重排对数"记成指标——降召回（RETRIEVAL_RECALL 50→20~25）的收益
+        // 就是靠它量化（对数 ÷ 实测 24 对/s = 重排耗时），日志里也同样会打出来。
+        this.rerankPairs = Counter.builder("ai.retrieval.rerank.pairs")
+                .description("送进 Reranker 的候选对数（累加；每次问答 ≈ 2 次检索 × 1.5 × recall）")
+                .register(registry == null ? new SimpleMeterRegistry() : registry);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -105,13 +124,25 @@ public class VecClient implements VecApi {
             // messages 形式：每次一条，逐条取 data[0]（手册只给了单条 messages 的示例）
             List<float[]> out = new ArrayList<>();
             for (String text : texts) {
-                JsonNode data = post("/embeddings", Payloads.withInstruction(model, instruction, text), null);
+                JsonNode data = embedCall(Payloads.withInstruction(model, instruction, text));
                 out.add(toVector(firstRow(data)));
             }
             return out;
         }
-        JsonNode data = post("/embeddings", Payloads.plainInput(model, texts, dims), null);
+        JsonNode data = embedCall(Payloads.plainInput(model, texts, dims));
         return parseEmbeddings(data);
+    }
+
+    /**
+     * 向量化的 HTTP 出口：<b>每模型超时（embed 30s）+ 信号量（embed 8）+ 幂等重试（最多 2 次）</b>。
+     *
+     * <p>这三件事都由 {@link ModelRegistry} 统一施加（P0-1/P0-5/P0-2），所以
+     * "embedding 到底受不受并发约束、超时多少、会不会重试"只有一处答案，不在调用点各写一遍。
+     */
+    private JsonNode embedCall(JsonNode payload) {
+        double timeout = models.timeoutSeconds(ModelRegistry.Kind.EMBED);
+        return models.callIdempotent(ModelRegistry.Kind.EMBED, models.batchAcquireMs(),
+                () -> post("/embeddings", payload, timeout));
     }
 
     /**
@@ -234,7 +265,12 @@ public class VecClient implements VecApi {
         if (documents == null || documents.isEmpty()) {
             return List.of();
         }
-        JsonNode data = post("/rerank", Payloads.rerank(settings.getVec().getRerankModel(), query, documents), null);
+        rerankPairs.increment(documents.size());
+        // 重排是幂等的（同一批候选重复打分不改变语义），所以允许重试；但它在问答路径上，
+        // 等 permit 用**交互式**时长（1.5s）——宁可快速 503，也不让用户多等一轮重试。
+        double timeout = models.timeoutSeconds(ModelRegistry.Kind.RERANK);
+        JsonNode data = models.callIdempotent(ModelRegistry.Kind.RERANK, models.interactiveAcquireMs(),
+                () -> post("/rerank", Payloads.rerank(settings.getVec().getRerankModel(), query, documents), timeout));
 
         List<JsonNode> rows = new ArrayList<>();
         JsonNode results = data == null ? null : data.path("results");

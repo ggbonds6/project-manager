@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pmgt.ai.common.config.AiSettings;
+import com.pmgt.ai.common.model.ModelRegistry;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -67,9 +69,17 @@ public class LlmClient {
 
     private final AiSettings settings;
     private final HttpClient http;
+    private final ModelRegistry models;
 
+    /** 测试/离线用：不接监控与信号量（等价于"上限无限、指标落进程内简单注册表"）。 */
     public LlmClient(AiSettings settings) {
+        this(settings, ModelRegistry.offline(settings));
+    }
+
+    @Autowired
+    public LlmClient(AiSettings settings, ModelRegistry models) {
         this.settings = settings;
+        this.models = models;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(15))
                 .followRedirects(HttpClient.Redirect.NORMAL)
@@ -179,7 +189,7 @@ public class LlmClient {
 
         HttpRequest.Builder builder = HttpRequest.newBuilder()
                 .uri(URI.create(chatCompletionsUrl()))
-                .timeout(Duration.ofSeconds(timeout()));
+                .timeout(Duration.ofMillis(effectiveTimeoutMillis(timeoutSeconds)));
         builder.header("Content-Type", "application/json");
         String apiKey = settings.getGateway().getApiKey();
         if (apiKey != null && !apiKey.isBlank()) {
@@ -194,16 +204,21 @@ public class LlmClient {
         }
         builder.POST(HttpRequest.BodyPublishers.ofString(payload, java.nio.charset.StandardCharsets.UTF_8));
 
-        HttpResponse<String> response;
-        try {
-            response = http.send(builder.build(), HttpResponse.BodyHandlers.ofString(
-                    java.nio.charset.StandardCharsets.UTF_8));
-        } catch (InterruptedException exc) {
-            Thread.currentThread().interrupt();
-            throw new LlmException("请求被中断: " + exc.getMessage(), exc);
-        } catch (Exception exc) {
-            throw new LlmException(exc.getClass().getSimpleName() + ": " + exc.getMessage(), exc);
-        }
+        HttpRequest request = builder.build();
+        // ⚠️ 对话**不重试**（不幂等：重试会重复消耗 4 个副本的稀缺算力，并让已等待两分半的用户再等一轮，
+        //   见《AI模型调用与任务队列评估》§7）。但要受每模型信号量约束（chat 4），
+        //   等不到 permit 就立刻 503"模型繁忙"，不把 Tomcat 线程挂到用户超时为止。
+        HttpResponse<String> response = models.callInteractive(ModelRegistry.Kind.CHAT, () -> {
+            try {
+                return http.send(request, HttpResponse.BodyHandlers.ofString(
+                        java.nio.charset.StandardCharsets.UTF_8));
+            } catch (InterruptedException exc) {
+                Thread.currentThread().interrupt();
+                throw new LlmException("请求被中断: " + exc.getMessage(), exc);
+            } catch (Exception exc) {
+                throw new LlmException(exc.getClass().getSimpleName() + ": " + exc.getMessage(), exc);
+            }
+        });
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new LlmException("HTTP " + response.statusCode() + ": " + brief(response.body()));
@@ -290,9 +305,26 @@ public class LlmClient {
         return trimmed + "/chat/completions";
     }
 
-    private long timeout() {
-        double seconds = settings.getGateway().getTimeoutSeconds();
-        return (long) Math.max(1, seconds);
+    /**
+     * 请求超时（毫秒）。
+     *
+     * <p>⚠️ <b>修掉的缺陷（P0-1）</b>：原实现把传入的 {@code timeoutSeconds} 参数<b>完全忽略</b>，
+     * 一律取 {@code gateway.timeout-seconds}（默认 300s）——于是
+     * ① {@code ping(15.0)} 自称 15s、实际最长卡 300s；
+     * ② AI 侧 300s &gt; 调用方 180s，"用户已放弃、槽位仍被占用"（最坏 8 轮 × 300s）。
+     * 现在的优先级：<b>调用方显式传入值 &gt; 每模型超时（chat 150s） &gt; 网关兜底值</b>。
+     *
+     * <p>包可见（不是 private）：单测要直接断言"参数真的生效了"，而不是等 150 秒。
+     */
+    long effectiveTimeoutMillis(Double timeoutSeconds) {
+        double seconds;
+        if (timeoutSeconds != null && timeoutSeconds > 0) {
+            seconds = timeoutSeconds;
+        } else {
+            double perModel = models.timeoutSeconds(ModelRegistry.Kind.CHAT);
+            seconds = perModel > 0 ? perModel : settings.getGateway().getTimeoutSeconds();
+        }
+        return Math.max(1, (long) Math.ceil(seconds * 1000));
     }
 
     private static Map<String, Object> message(String role, String content) {

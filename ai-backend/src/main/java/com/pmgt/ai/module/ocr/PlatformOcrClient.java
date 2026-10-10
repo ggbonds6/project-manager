@@ -6,9 +6,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pmgt.ai.common.config.AiSettings;
+import com.pmgt.ai.common.model.ModelRegistry;
 import com.pmgt.ai.common.util.ProgressFn;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -64,13 +67,23 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <h2>与 Python 版的行为对齐（照搬，不自己发明）</h2>
  * <ul>
- *   <li><b>分批</b>：每批 {@code ocr.batchPages}（默认 8）页，硬上限 {@link #MAX_BATCH_PAGES} = 16（手册 §7.2）。</li>
- *   <li><b>并发</b>：同时在飞的请求数 = {@code min(ocr.concurrency, 批数)}，至少 1；为 1 时串行执行（不走线程池）。
- *       平台是本项目专用的，可以打满（实测并发 12 → 2.45 页/秒）。</li>
+ *   <li><b>分批</b>：每批 <b>≤</b> {@code ocr.batchPages}（默认 8）页，硬上限 {@link #MAX_BATCH_PAGES} = 16（手册 §7.2）。
+ *       <b>批大小按并发上限动态取</b>（见下"并发语义"）。</li>
+ *   <li><b>并发语义（2026-10-10 修正，P0-4）</b>：今天的写法是
+ *       {@code workers = min(OCR_CONCURRENCY, ceil(页数/批页))} 且<b>每个上传任务自建线程池</b>——
+ *       于是 {@code OCR_CONCURRENCY=12} 对 8 页文档是<b>死配置</b>（批数 1 → 在飞恒为 1），
+ *       实测"并发 12 → 2.45 页/s"这个甜点只有 ≥96 页的文档才踩得到。
+ *       现在改为：<b>全进程共享一个 OCR 线程池，池大小 = {@code OCR_CONCURRENCY}</b>（真正的全局在飞上限），
+ *       文档把批次<b>提交进队列</b>后等待自己的批次；批页大小取
+ *       {@code min(batchPages, ceil(页数 / OCR_CONCURRENCY))}——页数少的文档自动切成更小的批次，
+ *       使"在飞批次数 ≈ min(OCR_CONCURRENCY, 页数)"与"ceil(页数/8)"这个旧公式<b>解耦</b>。
+ *       批页大小仍然可配（{@code OCR_BATCH_PAGES}，平台上限 16）。</li>
  *   <li><b>失败页占位</b>：整批失败（HTTP 错误 / 连不上 / 超时 / 响应不是合法 JSON）时，
  *       把同一句错误**分发给该批每一页**并保留 {@code elapsed}，不中断其它批；失败页在返回列表里**占位**，
  *       所以 {@code 返回顺序 == 输入图片顺序}，页号靠下标对齐。</li>
- *   <li><b>不重试、不退避</b>：Python 版没有重试逻辑（失败就是失败，交给上传任务层报错），这里也不加。</li>
+ *   <li><b>重试（2026-10-10 新增，P0-2）</b>：OCR 是<b>幂等</b>调用（同页重跑结果一致，实测确认），
+ *       所以对连接错误 / 超时 / 5xx / 429 做最多 {@code MODEL_RETRY_MAX}（默认 2）次指数退避重试，
+ *       由 {@link ModelRegistry} 统一施加。失败仍按"该批逐页占位"处理，不把整份文档判失败。</li>
  *   <li><b>单页耗时是估算值</b>：平台按批返回，拿不到单页耗时，按服务端 {@code total_ms} 均摊到本批各页；
  *       拿不到就退回客户端墙钟。</li>
  *   <li><b>健康探测 TTL 缓存</b>：ok 缓存 60s、fail 缓存 15s（失败不缓存太久，平台恢复后能自动接回）。</li>
@@ -112,18 +125,56 @@ public class PlatformOcrClient {
 
     private final AiSettings settings;
     private final HttpClient http;
+    private final ModelRegistry models;
     private final Object progressLock = new Object();
+
+    /**
+     * 全进程共享的 OCR 线程池（P0-4）。
+     *
+     * <p>池大小 = {@code OCR_CONCURRENCY}（默认 12）= <b>真正的全局在飞上限</b>；
+     * 任务在无界队列里排队（每份文档只提交自己的批次，等待期间不占线程）。
+     * 用共享池而不是"每个上传任务自建池"，才能让并发上限是全局的——
+     * 旧写法下 4 份文档各自开池，总在飞数既可能超过 12，也被"每份文档的批数"卡死。
+     */
+    private final ExecutorService pool;
 
     /** 健康探测缓存（Python 的模块级 {@code _HEALTH} + {@code _HEALTH_LOCK}）。 */
     private volatile CacheEntry healthCache;
 
+    /** 测试/离线用（不接监控；同样使用共享池，池大小取配置的 OCR_CONCURRENCY）。 */
     public PlatformOcrClient(AiSettings settings) {
+        this(settings, ModelRegistry.offline(settings));
+    }
+
+    @Autowired
+    public PlatformOcrClient(AiSettings settings, ModelRegistry models) {
         this.settings = settings;
+        this.models = models;
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(CONNECT_TIMEOUT_SECONDS))
                 .followRedirects(HttpClient.Redirect.NEVER)
                 .version(HttpClient.Version.HTTP_1_1)
                 .build();
+        AtomicInteger seq = new AtomicInteger();
+        int permits = models.concurrency(ModelRegistry.Kind.OCR);
+        this.pool = Executors.newFixedThreadPool(permits, runnable -> {
+            Thread thread = new Thread(runnable, "platform-ocr-" + seq.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        });
+    }
+
+    @PreDestroy
+    void shutdown() {
+        pool.shutdown();
+        try {
+            if (!pool.awaitTermination(2, TimeUnit.SECONDS)) {
+                pool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            pool.shutdownNow();
+        }
     }
 
     // ── 识别 ─────────────────────────────────────────────────────────
@@ -136,8 +187,13 @@ public class PlatformOcrClient {
     /**
      * 批量识别图片，**返回顺序与输入严格一致**（失败页占位并带 {@code error}）。
      *
-     * <p>分批、并发、印章开关全部来自 {@link AiSettings.Ocr}；进度阶段名为 {@code ocr}，
-     * 每完成一批回调一次 {@code (已完成页数, 总页数)}（与 Python 的 {@code on_progress} 一致）。
+     * <p><b>队列化提交（P0-4）</b>：分批、提交、并发全部来自 {@link AiSettings.Ocr} 与共享池；
+     * 批页大小按"页数 ÷ 全局在飞上限"动态取（≤ 配置的 {@code OCR_BATCH_PAGES}，≤ 平台上限 16），
+     * 于是<b>在飞批次数与"ceil(页数/批页)"这个旧公式解耦</b>：8 页文档在 12 个 permit 下会被切成
+     * 8 个单页批次（8 个请求在飞），而不是旧写法里的 1 个批次。
+     *
+     * <p>进度阶段名为 {@code ocr}，每完成一批回调一次 {@code (已完成页数, 总页数)}
+     * （与 Python 的 {@code on_progress} 一致；这里在共享池下用锁保证回调不交叉）。
      */
     public List<PlatformPage> recognize(List<Path> images, ProgressFn progress) {
         List<Path> items = images == null ? List.of() : List.copyOf(images);
@@ -147,9 +203,10 @@ public class PlatformOcrClient {
         }
 
         AiSettings.Ocr ocr = settings.getOcr();
-        int size = Math.max(1, Math.min(ocr.getBatchPages(), MAX_BATCH_PAGES));
-        int groupCount = (items.size() + size - 1) / size;
-        int workers = Math.max(1, Math.min(ocr.getConcurrency(), groupCount));
+        int maxBatch = Math.max(1, Math.min(ocr.getBatchPages(), MAX_BATCH_PAGES));
+        int permits = Math.max(1, models.concurrency(ModelRegistry.Kind.OCR));
+        // 动态批页：页数少 → 批次更小更多（把 permit 用起来）；页数多 → 用满配置的批页（少往返）。
+        int perRequest = Math.max(1, Math.min(maxBatch, ceilDiv(items.size(), permits)));
         boolean seal = ocr.isSeal();
         int sealMinPixels = ocr.getSealMinPixels();
         ProgressFn onProgress = progress == null ? ProgressFn.NONE : progress;
@@ -158,52 +215,35 @@ public class PlatformOcrClient {
         List<PlatformPage> out = new ArrayList<>(Collections.nCopies(items.size(), emptyPage()));
         AtomicInteger done = new AtomicInteger();
 
-        if (workers == 1) {
-            for (int start = 0; start < items.size(); start += size) {
-                runGroup(items, out, start, size, seal, sealMinPixels, onProgress, done);
-            }
-            return out;
+        List<Future<?>> futures = new ArrayList<>();
+        for (int start = 0; start < items.size(); start += perRequest) {
+            int from = start;
+            // 每批单独提交到共享池：在飞数由池大小（= OCR_CONCURRENCY）决定，与文档页数无关。
+            futures.add(pool.submit(() -> runBatch(items, out, from, perRequest, seal, sealMinPixels,
+                    onProgress, done)));
         }
-
-        ExecutorService pool = Executors.newFixedThreadPool(workers, r -> {
-            Thread t = new Thread(r, "platform-ocr");
-            t.setDaemon(true);
-            return t;
-        });
-        try {
-            List<Future<?>> futures = new ArrayList<>(groupCount);
-            for (int start = 0; start < items.size(); start += size) {
-                int s = start;
-                futures.add(pool.submit(() -> runGroup(items, out, s, size, seal, sealMinPixels, onProgress, done)));
-            }
-            for (Future<?> f : futures) {
-                try {
-                    f.get();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    log.warn("平台 OCR 等待被中断，剩余批次不再等待：{}", e.toString());
-                    break;
-                } catch (Exception e) {
-                    // runGroup 内部已兜底；真漏出来了也只影响该批（那批保持空页占位），不能让整份文档失败。
-                    log.warn("平台 OCR 批次异常退出：{}", e.toString());
-                }
-            }
-        } finally {
-            pool.shutdown();
+        for (Future<?> future : futures) {
             try {
-                if (!pool.awaitTermination(1, TimeUnit.SECONDS)) {
-                    pool.shutdownNow();
-                }
+                future.get();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                pool.shutdownNow();
+                log.warn("平台 OCR 等待被中断，剩余批次不再等待：{}", e.toString());
+                break;
+            } catch (Exception e) {
+                // runBatch 内部已兜底；真漏出来了也只影响该批（那批保持空页占位），不能让整份文档失败。
+                log.warn("平台 OCR 批次异常退出：{}", e.toString());
             }
         }
         return out;
     }
 
+    /** 向上取整除法（{@code (a + b - 1) / b}，避免整数溢出写法）。 */
+    private static int ceilDiv(int a, int b) {
+        return (a + b - 1) / b;
+    }
+
     /** 识别一批页面（**一次请求**，≤16 页）。失败时把错误分发给整组，不中断其它组。 */
-    private void runGroup(List<Path> items, List<PlatformPage> out, int start, int size,
+    private void runBatch(List<Path> items, List<PlatformPage> out, int start, int size,
                           boolean seal, int sealMinPixels, ProgressFn progress, AtomicInteger done) {
         int end = Math.min(start + size, items.size());
         int count = end - start;
@@ -255,8 +295,19 @@ public class PlatformOcrClient {
         }
     }
 
-    /** {@code POST {base}/ocr}；非 2xx、连不上、超时、响应不是合法 JSON 都抛 {@link OcrCallException}。 */
+    /**
+     * {@code POST {base}/ocr}；非 2xx、连不上、超时、响应不是合法 JSON 都抛 {@link OcrCallException}。
+     *
+     * <p>外面包一层 {@link ModelRegistry}：<b>全局 OCR 信号量（默认 12）+ 幂等重试（默认 2 次，
+     * 仅连接错误 / 超时 / 5xx / 429）+ 指标</b>。重试放在这里（而不是批处理层）的理由：
+     * 一次重试就是"重发同一个批"，语义与幂等性完全对齐，且失败页占位的契约不受影响。
+     */
     private JsonNode post(JsonNode payload) {
+        return models.callIdempotent(ModelRegistry.Kind.OCR, models.batchAcquireMs(),
+                () -> postOnce(payload));
+    }
+
+    private JsonNode postOnce(JsonNode payload) {
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(baseUrl() + "/ocr"))
                 .timeout(Duration.ofSeconds(Math.max(1, settings.getOcr().getTimeoutSeconds())))
                 .header("Content-Type", "application/json");
