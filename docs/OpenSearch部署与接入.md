@@ -597,7 +597,7 @@ curl -s -u "$OPENSEARCH_USER:$OPENSEARCH_PASSWORD" "$OS/_cluster/health?pretty"
 }
 ```
 > 期望**恰好是 `green`**。**若看到 `yellow`**：多半是某个索引设了 `number_of_replicas ≥ 1`——
-> **单节点上副本永远无法分配**，状态必然 yellow 且白占一份盘。修法见 §5.1 / §7.5。
+> **单节点上副本永远无法分配**，状态必然 yellow 且白占一份盘。修法见 §5.1（参数建议）与 §7.5（yellow 的判读与逐索引处置）。
 
 **A2 · 节点就位（单节点 = 1 行）**
 
