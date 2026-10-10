@@ -51,7 +51,7 @@
 | 安全 | **内网 HTTP + basic auth（强口令）**：显式关掉 REST 层 TLS（§3.5）；transport 层 TLS 保持开启 |
 | 数据/日志/快照 | `/home/opensearch/{data,logs,backup}`（**在程序目录 `app/` 之外**，升级换 `app/` 不碰数据） |
 | 部署根 | **`/home/opensearch/`** = **专用账号 `opensearch` 自己的家目录**（`useradd -m -d /home/opensearch …` + `passwd -l` 锁登录），见 §2.4 |
-| Dashboards | **OpenSearch Dashboards 2.19.1 与 OpenSearch 同机**（`10.254.212.110:5601`，单独 systemd 服务），见 **§12** |
+| Dashboards | **OpenSearch Dashboards 3.1.0 与 OpenSearch 同机**（`10.254.212.110:5601`，单独 systemd 服务），见 **§12** |
 
 **部署根目录结构（两台机器一致；安装当天建好，之后升级只动 `app/`）**
 
@@ -123,23 +123,31 @@
 > **服务器无外网** ⇒ 安装包只能先在别处下载、校验、再 scp 过去。
 > 官方包 URL 形式（官方 Tar 页原文）：`https://artifacts.opensearch.org/releases/bundle/opensearch/<版本>/opensearch-<版本>-linux-x64.tar.gz`
 
-### 1.1 固定版本（本文示例 pin **2.19.1**，x86_64）
+### 1.1 固定版本（**3.1.0**，x86_64）
 
 | 项 | 值 |
 | --- | --- |
-| 文件名 | `opensearch-2.19.1-linux-x64.tar.gz` |
-| 体积 | **≈ 920 MiB**（964,414,604 字节，本轮实测 HTTP HEAD） |
-| 校验和文件 | `opensearch-2.19.1-linux-x64.tar.gz.sha512`（**165 字节文本**，内容格式：`<128位sha512>  <文件名>`） |
-| 本轮实测的 SHA512 | `72af27eaab94f0dad092d5a97bfda0baeb995a390cdfb94ce076424216032f0d7c5081001997b95a0954bee15a44b824e8b7ecd2066b920ac6cbb313b7be24de` |
+| OpenSearch 文件名 | `opensearch-3.1.0-linux-x64.tar.gz` |
+| OpenSearch 体积 | **1,000,330,285 字节 ≈ 954 MiB**（真机 `pdmsosgh` 上的实际大小） |
+| Dashboards 文件名 | `opensearch-dashboards-3.1.0-linux-x64.tar.gz` |
+| Dashboards 体积 | **385,456,866 字节 ≈ 368 MiB**（同上） |
+| 两个包合计 | **≈ 1.32 GiB**（留出这个空间再传；见 §1.6 的占用与清理） |
+| 校验和文件 | 各自同目录的 `<包名>.sha512`（文本，内容格式：`<128位sha512>  <文件名>`） |
+| SHA512 | **未固化在本文件里** —— 见下方说明，必须在能联网的机器上现场取 |
 
-> ⚠️ **版本以官方下载页当前可用为准**：`2.19.1` 是本轮实际验证过 URL 与校验和可用的版本，不是"永远最新"。
-> 换版本时**只需改两个地方**（见 §1.5 的清单，别到处找）。**校验不通过绝不安装**。
+> ⚠️ **关于校验和（改动原因，必读）**：本文件上一版曾固化过【上一代版本】的实测 SHA512。
+> 版本升到 **3.1.0** 后**那串值作废**，而且 `3.1.0` 的校验和本轮**没有联网核实**（我这边到 artifacts 的连接不可用）。
+> 因此：**以现场 `curl` 下来的 `.sha512` 文件为准**，用下面 §1.2 的命令自己比一遍。
+> **校验不通过绝不安装**——离线环境没有第二份副本可比对，传坏的包要到启动期才暴露。
+>
+> ⚠️ **版本以官方下载页当前可用为准**：`3.1.0` 是真机上实际下载到的版本，不是"永远最新"。
+> 换版本时只需改 §1.5 清单里的两个地方。**3.1.0 是 3.x 主线**，所以本文所有配置项都已按 `docs/latest`（= 3.x）核对过，见 **附录 B**。
 
 ### 1.2 下载（二选一，取决于你手上是什么机器）
 
 **有外网的 Windows 机器（开发机）**
 ```powershell
-$VER = '2.19.1'
+$VER = '3.1.0'
 $URL = 'https://artifacts.opensearch.org/releases/bundle/opensearch'
 New-Item -ItemType Directory -Path dist\opensearch -Force | Out-Null
 
@@ -158,7 +166,7 @@ if ($expected -eq $actual) { "校验通过 ✅" } else { "校验不通过 ❌ �
 
 **有外网的 Linux 机器**
 ```bash
-VER=2.19.1
+VER=3.1.0
 URL=https://artifacts.opensearch.org/releases/bundle/opensearch
 mkdir -p dist/opensearch && cd dist/opensearch
 
@@ -167,40 +175,112 @@ curl -fL --retry 3 -O "$URL/$VER/opensearch-$VER-linux-x64.tar.gz.sha512"
 
 # 官方给的 .sha512 就是 sha512sum -c 能直接吃的格式
 sha512sum -c "opensearch-$VER-linux-x64.tar.gz.sha512"
-# 期望：opensearch-2.19.1-linux-x64.tar.gz: OK
+# 期望：opensearch-3.1.0-linux-x64.tar.gz: OK
 ```
 
-### 1.3 传到两台机器
+### 1.3 传到两台机器（**★目标目录统一 `/home/opensearch/`，不是 `/tmp`**）
+
+> **本节是"跨用户/跨家目录拷贝"的显式前置。** 真机上卡住的就是这一步，所以把两种做法与代价都写清楚。
+>
+> **为什么会卡**：部署根 `/home/opensearch` 是专用账号 `opensearch` 的家目录（`useradd -m` 默认 `0700`），
+> 而你平时登录用的是 **`lhim`** —— `lhim` 对该目录**没有写权限**，直接 `scp` 会报 `Permission denied`。
+> 反向也一样：若改成 `sudo -u opensearch cp /home/lhim/…`，`opensearch` 用户又**穿不过 `0700` 的 `/home/lhim`**。
+
+**做法 A（推荐；真机现状就是这样）：一次性给目录 setgid 让 `lhim` 能直传**
 
 ```bash
-# 在【有外网那台机器】的 dist/opensearch 目录下执行（用户与既有服务器一致：lhim）
-scp opensearch-2.19.1-linux-x64.tar.gz opensearch-2.19.1-linux-x64.tar.gz.sha512 lhim@10.254.212.110:/tmp/
-scp opensearch-2.19.1-linux-x64.tar.gz opensearch-2.19.1-linux-x64.tar.gz.sha512 lhim@10.254.212.111:/tmp/
+# ★在两台目标机上各执行一次（用有 sudo 的账号，例如 lhim 登录后执行）
+sudo usermod -aG opensearch lhim        # 让 lhim 属于 opensearch 组
+sudo chmod 2775 /home/opensearch        # 2775 = setgid + rwxrwsr-x：新文件自动继承 opensearch 组
+#   —— 执行完【退出 SSH 重新登录】，否则组身份不生效；复核： groups | grep opensearch
 ```
+
+```bash
+# 然后就可以直传了（在【有外网那台机器】的 dist/opensearch 目录下执行）
+scp opensearch-3.1.0-linux-x64.tar.gz opensearch-3.1.0-linux-x64.tar.gz.sha512 lhim@10.254.212.110:/home/opensearch/
+```
+```bash
+# 第二台同样（.111 主要用来归档包，见 §1.6）
+scp opensearch-3.1.0-linux-x64.tar.gz opensearch-3.1.0-linux-x64.tar.gz.sha512 lhim@10.254.212.111:/home/opensearch/
+scp opensearch-dashboards-3.1.0-linux-x64.tar.gz opensearch-dashboards-3.1.0-linux-x64.tar.gz.sha512 lhim@10.254.212.111:/home/opensearch/
+```
+
+> **代价值得说清**：`2775` 之后，**`lhim` 与 `opensearch` 组对该目录都有写权限** ——
+> 前提是把 `lhim` 当成**同一运维信任级**的账号（本项目本来就是一个人/一个组在运维）。
+> 若安全基线不接受，就把权限收回到 **`2750`**（组可读写、其他人无权限，`lhim` 靠组身份仍能写），
+> 或者干脆用下面的做法 B（完全不动目录权限）。
+
+**做法 B（不动权限）：先落在自己能写的地方，再用 `install` 落到目标属主**
+
+```bash
+# ① 先传到 /tmp（或你自己的家目录）——这里 /tmp 只是【中转】，不是安装包的家
+scp opensearch-3.1.0-linux-x64.tar.gz* lhim@10.254.212.110:/tmp/
+
+# ② 在目标机上用 install 一步到位（属主/权限一次设好，不需要再 chown）
+ssh lhim@10.254.212.110
+sudo install -o opensearch -g opensearch -m 644 \
+     /tmp/opensearch-3.1.0-linux-x64.tar.gz /home/opensearch/
+sudo install -o opensearch -g opensearch -m 644 \
+     /tmp/opensearch-3.1.0-linux-x64.tar.gz.sha512 /home/opensearch/
+ls -l /home/opensearch/          # 期望：-rw-r--r-- opensearch opensearch
+```
+
+> ⚠️ **不要**用 `sudo -u opensearch cp /home/lhim/…`：`opensearch` 用户穿不过 `0700` 的 `/home/lhim`，
+> 会报 `Permission denied`（这正是"看着像权限问题、其实是路径上某一级缺 x"的典型）。
 
 ### 1.4 服务器侧再核一次校验（**两台都做**）
 
 ```bash
-# 服务器执行
-cd /tmp
-sha512sum -c opensearch-2.19.1-linux-x64.tar.gz.sha512
-# 期望：opensearch-2.19.1-linux-x64.tar.gz: OK
+# 服务器执行（安装包统一在 /home/opensearch/ 下）
+cd /home/opensearch
+sha512sum -c opensearch-3.1.0-linux-x64.tar.gz.sha512
+# 期望：opensearch-3.1.0-linux-x64.tar.gz: OK
 # 不一致 = 传输损坏 → 重传（不要"先解开看看"）
 ```
 ```bash
 # 顺手确认架构（应输出 x86_64；若输出 aarch64 说明你拿的是 ARM 机器，安装包要换 arm64 版）
 uname -m
 ```
+```bash
+# ★解压前把"属主"这件事做掉：谁解压，文件属主就是谁
+#   真机上这两个包属主是 lhim:opensearch、权限 644（做法 A 的结果）；
+#   用 lhim 解压会让 app/ 里混入 lhim 属主的文件，服务以 opensearch 用户启动时会报权限错误。
+cd /home/opensearch
+tar -xvf opensearch-3.1.0-linux-x64.tar.gz          # 解压动作本身可用 lhim
+sudo chown -R opensearch:opensearch /home/opensearch/app
+#   （若你还没建 app/，见 §3.1；这一步在"用户已自行解压"的情形下同样是必须的收尾动作）
+ls -ld /home/opensearch/app                          # 期望：drwxr-sr-x opensearch opensearch
+```
 
 ### 1.5 换版本时要同步改的地方（**就这两处，别到处找**）
 
 | 序号 | 位置 | 改什么 |
 | --- | --- | --- |
-| 1 | `docs/OpenSearch部署与接入.md`（本文件） | §1.1 表格里的版本号、文件名、体积、SHA512（**从官方 `.sha512` 文件里抄**） |
-| 2 | `deploy/opensearch/` 的使用命令 | 所有 `opensearch-<版本>-linux-x64.tar.gz` 路径（§3.1 的解包命令） |
+| 1 | `docs/OpenSearch部署与接入.md`（本文件） | §1.1 表格里的版本号、两个包的文件名与体积；以及 §12.1 Dashboards 的版本（**三个数字必须与 OpenSearch 一致**） |
+| 2 | `deploy/opensearch/` 的使用命令 | 所有 `opensearch-<版本>-linux-x64.tar.gz` / `opensearch-dashboards-<版本>-…` 路径（§3.1、§12.2 的解包命令） |
 
-> 版本号**不写进任何配置文件**（`opensearch.yml` / systemd unit 里都没有版本号），所以不存在第三处。
+> 版本号**不写进任何配置文件**（`opensearch.yml`、`opensearch_dashboards.yml`、systemd unit 里都没有版本号），所以不存在第三处。
 > 服务器上"当前是哪个版本"用 `cat /home/opensearch/app/VERSION` 或看目录名即可查。
+> **SHA512 不在本文件里**（见 §1.1 的说明）：每次都从现场 `.sha512` 现取现比。
+
+### 1.6 安装包的占用与清理（**离线环境的"能重建"取决于包还在**）
+
+| 项 | 值 |
+| --- | --- |
+| 两个包合计 | **≈ 1.32 GiB**（OpenSearch 1,000,330,285 + Dashboards 385,456,866 字节） |
+| `.110` 上的包 | **校验通过、且服务成功启动并验收之后可以删**（程序已经解开在 `app/`/`dashboards/app/` 里） |
+| `.111` 上的包 | **留一份归档**（冷备机的意义就在这里：`.110` 磁盘坏了，`.111` 上有包 + 快照） |
+
+```bash
+# 验收通过后再删（★先确认 §4.2 的 A1~A6 全绿）
+ls -l /home/opensearch/*.tar.gz*
+sudo rm -f /home/opensearch/opensearch-3.1.0-linux-x64.tar.gz /home/opensearch/opensearch-3.1.0-linux-x64.tar.gz.sha512
+sudo rm -f /home/opensearch/opensearch-dashboards-3.1.0-linux-x64.tar.gz /home/opensearch/opensearch-dashboards-3.1.0-linux-x64.tar.gz.sha512
+df -h /home/opensearch        # 复核释放了约 1.3 GiB
+
+# ★若你想保留原包做"离线重装"（不依赖 .111、也不怕 .111 一起坏），那就别删——
+#   代价只是 1.3 GiB 磁盘；这句话的取舍由你定，但【至少 .111 上要有一份】。
+```
 
 **本节说明**：为什么坚持 pin 一个具体版本 + 校验和？离线环境没有"自动升级"，也**没有第二份副本可对比**；
 tar 包一旦传坏，症状是解包/启动期的各种奇怪失败，排查成本远高于先花 10 秒做一次校验。
@@ -483,14 +563,27 @@ timedatectl | head -3              # synchronized: yes
 
 ### 3.1 解包（官方 Tar 页 Step 1）
 
+> **安装包就在部署根下**（`/home/opensearch/opensearch-3.1.0-linux-x64.tar.gz`，见 §1.3）。
+> **★若你已经自行解压、并核对过 `app/` 属主，直接跳到 §3.2。**
+
 ```bash
-# 用 lhim 解包到部署根（部署根已是 opensearch 账号的家目录，权限见 §2.4）
+# 用 lhim 解包到部署根，并把解出来的目录改名成 app（★不叫 opensearch，避免与部署根同名）
 cd /home/opensearch
-tar -xvf /tmp/opensearch-2.19.1-linux-x64.tar.gz
-ls -d opensearch-2.19.1        # 确认解出来的目录名
-mv opensearch-2.19.1 app
-ls /home/opensearch/app    # 期望看到 bin/ config/ jdk/ lib/ modules/ plugins/ …
+tar -xvf opensearch-3.1.0-linux-x64.tar.gz
+ls -d opensearch-3.1.0        # 确认解出来的目录名（3.x 的目录名带完整版本号）
+mv opensearch-3.1.0 app
+ls /home/opensearch/app        # 期望看到 bin/ config/ jdk/ lib/ modules/ plugins/ …
 ```
+
+```bash
+# ★解压后必须改属主（§1.4 提到过，这里再确认一次）：
+#   用 lhim 解压 ⇒ app/ 里是 lhim 属主的文件 ⇒ 服务以 opensearch 运行时会读不了配置、写不了日志，
+#   启动直接报权限错误（这是"解压成功了却起不来"的常见原因）
+sudo chown -R opensearch:opensearch /home/opensearch/app
+ls -ld /home/opensearch/app    # 期望：drwxr-sr-x opensearch opensearch
+```
+> **已解压的情形**：如果包已经解到 `app/`、且 `ls -ld /home/opensearch/app` 显示属主是 `opensearch`，
+> 本节整段**跳过**，直接从 §3.2 继续。（包本身属主是谁不影响运行，`app/` 的属主才影响。）
 
 > 升级时**不要**复用它：新版本解包成 `/home/opensearch/app-<新版本>/`（保留旧 `app/` 作回滚点），步骤见 §7.3。
 
@@ -545,9 +638,9 @@ sudo -u opensearch ls -l /home/opensearch/app/config/ | grep -E '\.pem$'
 
 ```bash
 # ④ 落地"我们维护的副本"到 config/（资产来自仓库；也可以直接 scp 这两个文件过来）
-cp /tmp/opensearch.yml.example /home/opensearch/config/opensearch.yml
+cp deploy/opensearch/opensearch.yml.example /home/opensearch/config/opensearch.yml
 mkdir -p /home/opensearch/config/jvm.options.d
-cp /tmp/heap.options            /home/opensearch/config/jvm.options.d/heap.options
+cp deploy/opensearch/jvm.options.d/heap.options /home/opensearch/config/jvm.options.d/heap.options
 
 # ⑤ ★把 network.host 改成【本机】内网 IP：.110 写 10.254.212.110，.111 写 10.254.212.111
 sudo -u opensearch vi /home/opensearch/config/opensearch.yml
@@ -582,7 +675,7 @@ grep -nE '^(cluster\.name|node\.name|discovery\.type|network\.host|path\.(data|l
 > **用拷贝、不用软链**：软链在 `chown -R`、备份、权限排查时容易变成隐形坑。
 > 另外把 unit 与快照脚本也放进 `config/`，这样"部署完就不管"时所有自定义物都在一个目录里：
 > ```bash
-> cp /tmp/opensearch.service /tmp/snapshot-backup.sh /home/opensearch/config/
+> cp deploy/opensearch/opensearch.service deploy/opensearch/snapshot-backup.sh /home/opensearch/config/
 > chmod 755 /home/opensearch/config/snapshot-backup.sh
 > ls -l /home/opensearch/config/
 > ```
@@ -646,7 +739,7 @@ sudo -u opensearch cat /home/opensearch/app/config/jvm.options.d/heap.options
 ```bash
 # ① 放 unit 文件（路径按官方示例：/etc/systemd/system/opensearch.service）
 #    资产来自仓库： deploy/opensearch/opensearch.service
-sudo cp /tmp/opensearch.service /etc/systemd/system/opensearch.service
+sudo cp /home/opensearch/config/opensearch.service /etc/systemd/system/opensearch.service
 sudo chmod 644 /etc/systemd/system/opensearch.service
 
 # ② 刷新 systemd 并开机自启 + 立即启动
@@ -686,7 +779,7 @@ curl -sS -u "$AUTH" "$OS/" | head -20
 {
   "name" : "os01",
   "cluster_name" : "pm-os",
-  "version" : { "distribution" : "opensearch", "number" : "2.19.1", "build_type" : "tar" },
+  "version" : { "distribution" : "opensearch", "number" : "3.1.0", "build_type" : "tar" },
   "tagline" : "The OpenSearch Project: https://opensearch.org/"
 }
 ```
@@ -803,6 +896,14 @@ curl -sS -u "$AUTH" http://127.0.0.1:9200/_cluster/health | head -3   # green
 
 ### 5.2 索引创建（`knn_vector` 4096 维 / cosinesimil / HNSW）
 
+> **3.x 的写法要点（与 2.x 的差别，先看这三条再抄下面的请求）**：
+> ① **引擎只能是 `faiss` / `lucene`**（`nmslib` 是 legacy/deprecated，不要在 3.x 新索引上用）；
+> ② `space_type` **写在字段这一层**（官方 k-NN vector 页明确："This value can also be specified within the `method`"，
+>    两种都合法；我们选**字段层**，与 `knn_vector` 文档的示例一致，避免两种写法混用）；
+> ③ 方法参数统一放 **`method.parameters`**，键名是 `m` / `ef_construction`（**注意不是 `params`**）。
+> 我们**不写** `mode` 与 `compression_level`：`mode` 默认就是 `in_memory`（本方案要的低延迟），
+> 量化/`on_disk` 是百万级或磁盘受限时才用（见 §5.3）。
+
 ```bash
 OS=http://127.0.0.1:9200
 AUTH='admin:<强口令>'
@@ -820,11 +921,11 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
       "vector": {
         "type": "knn_vector",
         "dimension": 4096,
+        "data_type": "float",
         "space_type": "cosinesimil",
         "method": {
           "name": "hnsw",
           "engine": "lucene",
-          "space_type": "cosinesimil",
           "parameters": { "m": 16, "ef_construction": 128 }
         }
       },
@@ -876,13 +977,17 @@ curl -sS -u "$AUTH" -XPUT "$OS/pm-ai-chunks" -H 'Content-Type: application/json'
 
 | 项 | 取值 | 注记 |
 | --- | --- | --- |
-| `engine` | **`lucene`（推荐默认）** | OpenSearch 自带、无需额外插件配置；**本仓库代码写的就是 `lucene`**（`OpenSearchIndex.ensureIndex`）。与 `local` 后端的暴力余弦结果最接近，便于"顺序对得上"的验证 |
-| `engine` | `faiss`（可选） | 需要 `method.parameters.encoder`（如 `"encoder": {"name":"sq","parameters":{"type":"fp16"}}`）；**`m` 等参数名与 lucene 路径不同**，切引擎必须重建索引 |
-| `name` | `hnsw` | 近似最近邻图索引 |
-| `m` | `16`（建议值） | 每个节点的连边数；越大召回越好、内存与建索引越慢。**未实测**，属工程常规推荐值 |
-| `ef_construction` | `128`（建议值） | 建图时的候选队列长度；越大图质量越好、建索引越慢 |
-| `space_type` | `cosinesimil` | **与 `local` 后端的余弦同一口径**（这一条**未实测**：集群起来后必须做"top-k 顺序与 local 一致"的对照，见 §5.5 验证口径） |
-| `on_disk` / 量化（`sq`/`pq`、`mode: on_disk`） | **本方案不用** | 百万级切片或磁盘受限时才考虑；**版本前提**：磁盘化向量检索是 2.x 后期引入的能力（2.17 起在 k-NN 插件里逐步提供），**本项目当前约 2 万切片规模用不上**。要用请先核对你的版本与官方 k-NN 文档，切了必须**重建索引** |
+| `engine` | **`lucene`（本方案默认）** | OpenSearch 自带、无需额外插件配置；**本仓库代码写的就是 `lucene`**（`OpenSearchIndex.ensureIndex`）。与 `local` 后端的暴力余弦结果最接近，便于"顺序对得上"的验证。官方对它的定位是 "well suited for smaller deployments" 且**支持带过滤的检索**（与我们的 `filter` 预过滤用法契合），上限约"少于 1000 万向量"——本项目 2 万量级绰绰有余 |
+| `engine` | `faiss`（可选） | 官方默认引擎（不写 `engine` 时就是 `faiss`）。支持 `hnsw` 与 `ivf`（IVF 需训练）；`cosinesimil` 在 **2.19 起**才支持，且官方说明"Faiss 引擎下用 `cosinesimil` 时向量会在索引时被自动归一化（因为 Faiss 内部用归一化向量的内积）⇒ **存储的向量值与你输入的不同**"。切引擎必须**重建索引** |
+| `engine` | ~~`nmslib`~~ | **3.x 不要用**：官方 `docs/latest` 把它标为 legacy、"now deprecated"。老集群的 2.x 索引还在用它，但**新索引一律选 `lucene` 或 `faiss`** |
+| `name` | `hnsw` | 近似最近邻图索引（另一个可选是 `ivf`，需要训练步骤，本项目不用） |
+| `m` | `16`（= 官方默认值） | 每个节点的双向连边数（官方要求保持 2~100）；越大召回越好、内存与建索引越慢 |
+| `ef_construction` | `128`（官方默认 **100**，我们略调高） | 建图时的候选队列长度；越大图质量越好、建索引越慢 |
+| `space_type` | `cosinesimil` | **与 `local` 后端的余弦同一口径**（这一条**未实测**：集群起来后必须做"top-k 顺序与 local 一致"的对照，见 §5.5 验证口径）。官方对 `lucene` 支持的 space 列表是 `l2` / `cosinesimil` / `innerproduct`，`cosinesimil` 在列 |
+| `data_type` | `float` | 官方默认值；`on_disk` 模式只支持 `float` / `half_float` |
+| `mode` | **不写**（默认 `in_memory`） | 官方默认 `in_memory`（低延迟优先）。`on_disk` 是 2.17 引入的低成本路线，官方明确"配合 `compression_level`、默认 `32x`、并默认开启 rescore（用磁盘上的全精度向量重排）" |
+| `on_disk` / 量化（`sq`/`pq`、`compression_level`） | **本方案不用** | 百万级切片或磁盘受限时才考虑；本项目当前约 2 万切片。要用请先核对你的版本与官方 k-NN 文档，切了必须**重建索引** |
+| 维数上限 | **16,000** | 官方 `knn_vector.dimension` 的合法区间是 `[1, 16000]` ⇒ 我们的 **4096 在范围内**（这是选型时容易忽略的一条硬上限） |
 
 > **验证口径（做完 §5.5 的对照才算数）**：对同一份语料、同一批问题，把 OpenSearch kNN 的 top-k 顺序与 `local` 的 top-k **逐条对比**；
 > 顺序对不上通常意味着 `space_type` 或字段名写错（对照 [`OpenSearchIndex`](../ai-backend/src/main/java/com/pmgt/ai/module/retrieval/OpenSearchIndex.java) 的注释协议：
@@ -913,6 +1018,13 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_bulk?refresh=false" \
 ### 5.5 查询（预过滤 + kNN + hybrid）
 
 **① 纯 kNN + filter 预过滤（"先过滤再检索"的落地形态）**
+
+> **★3.x 的查询语法与 2.x 不同**（官方 k-NN query 页 `docs/latest` 的原文结构）：
+> 查询体是 **`"knn": { "<向量字段名>": { "vector": [...], "k": n, "filter": {...} } }`** ——
+> **字段名直接放在 `knn` 下面**，而不是像旧写法那样嵌一层固定的 `vector` 键。
+> 我们的字段名就叫 `vector`，所以下面看起来像旧写法，但结构是 **3.x 的**（`knn.vector.vector` 里的第一个 `vector` 是**字段名**）。
+> 另外 3.x 官方明确：**`filter` 只能配合 `faiss` 或 `lucene` 引擎**（本项目用 `lucene`，没问题）。
+
 ```bash
 curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: application/json' -d '{
   "size": 5,
@@ -967,6 +1079,7 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: applicat
 }'
 
 # 向量路（kNN）：同一套 filter，k=50（对应 RETRIEVAL_RECALL=50）
+# 结构说明同 ①：knn 下面第一层是【字段名】vector（3.x 写法）
 curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: application/json' -d '{
   "size": 50,
   "_source": ["filename","page_no","doc_id","chunk_key"],
@@ -976,6 +1089,13 @@ curl -sS -u "$AUTH" -XPOST "$OS/pm-ai-chunks/_search" -H 'Content-Type: applicat
       { "terms": { "security_level": ["内部","公开"] } } ] } } } } }
 }'
 ```
+
+> **⚠️ 与仓库现有适配层的一处不一致（要认账，属应用改动、不在本轮范围）**：
+> 仓库里的 [`OpenSearchIndex.search()`](../ai-backend/src/main/java/com/pmgt/ai/module/retrieval/OpenSearchIndex.java)
+> 按 **2.x 的固定结构**拼查询体（`{"knn":{"vector":{"vector":[...],"k":k}}}`，那个 `vector` 是**固定键名**）。
+> 3.x 的官方结构是"`knn` 下第一层写**字段名**"。由于我们的字段名恰好也叫 `vector`，**语义正确**；
+> 但**这个巧合不能当保障**——真要上线前必须按 §6.2 ⑧ 做一次"top-k 顺序与 local 一致"的实测，
+> 并在需要时把适配层改成显式字段名（那是一次应用代码改动，需另行排期，见 §8 未确认项）。
 
 | 融合方式 | 做法 | 评价 |
 | --- | --- | --- |
@@ -1268,7 +1388,7 @@ cat /home/opensearch/app/VERSION 2>/dev/null || ls -d /home/opensearch/app
 
 # ③ 解包新版本到 app-<新版本>/（★不要覆盖 app/，旧的要留着回滚）
 cd /home/opensearch
-tar -xvf /tmp/opensearch-<新版本>-linux-x64.tar.gz
+tar -xvf /home/opensearch/opensearch-<新版本>-linux-x64.tar.gz
 mv opensearch-<新版本> app-<新版本>
 ls -d /home/opensearch/app*        # 期望：app/ 与 app-<新版本>/ 并存
 ```
@@ -1353,6 +1473,10 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | 启动报权限错误：`AccessDeniedException` / 读不到 `config/opensearch.yml` | 属主或权限不对 | §3.4：`chown -R opensearch:opensearch`；`config/opensearch.yml` 644；`opensearch.keystore` 600；`plugins/opensearch-security/tools/*.sh` 755 |
 | 日志报 keystore 相关错误 | `config/opensearch.keystore` 缺失或权限不对 | `sudo -u opensearch /home/opensearch/app/bin/opensearch-keystore list` 看是否可读；必要时重建并用 systemd 环境变量注入敏感值 |
 | 日志报"没有证书 / 集群形成失败（`Transport client authentication no longer supported` 之类）" | 我们替换 `opensearch.yml` 时**把 transport 证书那几行丢了** | 对照 §3.5 与资产文件，把 `plugins.security.ssl.transport.*` 三行补回；证书文件在 `config/*.pem`，确认存在 |
+| 建索引报 `Unknown engine [nmslib]` / 引擎相关错误 | 3.x 上**不该再用 `nmslib`**（legacy/deprecated） | §5.2/§5.3：`method.engine` 改成 `lucene`（本方案默认）或 `faiss`；已有旧索引要重建 |
+| kNN 查询报解析错误 / 命中为空 | 查询体结构与版本不匹配：3.x 是 **`"knn": { "<字段名>": {...} }`**（字段名是第一层键） | 对照 §5.5 ①的 3.x 结构；用 `curl` 手工打一次最简查询（只要 `vector` + `k`）先确认能通，再加 `filter` |
+| 报 `k` 超出范围 / 要返回很多条 | 3.x 官方：`k` 合法区间 **[1, 10000]** | §5.5：本项目用 `k=50`（`RETRIEVAL_RECALL=50`），远在范围内；若有人手工调大，别超过 10000 |
+| 快照报"未知字段 / 400" | 请求体里混进了该 API 不支持的字段（例如早前版本误加的 `expand_wildcards`） | §12.7 + 脚本：请求体只允许 `indices`/`ignore_unavailable`/`include_global_state`/`partial` |
 | curl 报 SSL 错误（`wrong version number` / `certificate verify failed`） | REST 层 TLS 与请求协议不匹配：官方默认是 HTTPS，我们要 HTTP | 确认运行时 `config/opensearch.yml` 里是 `plugins.security.ssl.http.enabled: false`（§3.5 方案 A），改完 `systemctl restart opensearch` |
 | curl 用 HTTP 时报 `Empty reply from server` | 仍是 HTTPS 端口在应答 | 同上；先用 `curl -k https://127.0.0.1:9200/` 确认服务本身活着 |
 | 认证失败 `401 Unauthorized` | 用户名/口令不对 | `curl -u admin:'<口令>'` 单独验证；口令含特殊字符时**用单引号包住**；确认用的是本轮设的强口令（不是 demo 默认值） |
@@ -1370,11 +1494,11 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 
 | 序号 | 未确认项 | 影响 | 谁来确认 |
 | --- | --- | --- | --- |
-| 1 | **官方当前 tar 版本号与其 SHA512**（本文按 `2.19.1` 写，并已实测该版本的下载 URL 与 `.sha512` 可用；**换版本必须重新核对**） | 决定 §1 的下载/校验命令与文件名 | 你（在能联网的机器上核对官方下载页 + `.sha512`） |
+| 1 | **`3.1.0` 的 `.sha512` 需现场核对**（真机已在 `pdmsosgh` 下到 `opensearch-3.1.0-linux-x64.tar.gz` **1,000,330,285 字节** 与 `opensearch-dashboards-3.1.0-linux-x64.tar.gz` **385,456,866 字节**；但**校验和本轮无法联网核实**，上一版固化的上一代版本值已作废） | 决定 §1 的校验步骤能否通过；**校验不通过绝不安装** | 你（`curl -O …sha512` + `sha512sum -c`，见 §1.2/§1.4） |
 | 2 | **AI 能力服务（ai-backend）实际跑在哪台机器上** | 决定 §6.1 的 `OPENSEARCH_URL` 与 §2.5 的防火墙白名单 | 你 |
 | 3 | 磁盘类型与容量（本次给定 200GB；要确认 SSD/HDD、是否单盘） | HDD 上 kNN 检索延迟会明显变差；单盘则数据与快照抢 I/O | 你 / 平台方 |
 | 4 | 是否允许在业务网段使用内网 HTTP（§3.5 方案 A） | 若等保/合规要求传输加密，必须改走方案 B（自签 TLS + AI 侧信任策略） | 平台方（安全/合规） |
-| 5 | 是否需要 OpenSearch Dashboards | 要的话需额外下载 Dashboards 包（**版本必须与 OpenSearch 一致**）并给它一套 `opensearch_dashboards.yml` 与端口 | 你 |
+| 5 | ~~是否需要 OpenSearch Dashboards~~ **已确认需要**（见 §12），改为下列待定：Dashboards 的**只读账号与多租户策略** | 见第 17、18 条 | 你 |
 | 6 | 时间源（内网 NTP 服务器地址） | 时间不同步会让日志/快照时间戳不可比 | 平台方 |
 | 7 | 防火墙实现（firewalld / iptables；麒麟发行版差异） | 决定 §2.5 用哪段命令 | 你（`systemctl is-active firewalld`） |
 | 8 | 快照保留期与执行时间（本文默认每晚 02:30、留 7 天） | 影响备份盘容量与 RPO | 你 |
@@ -1388,6 +1512,8 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | 16 | **是否允许 5601 对内网运维网段/跳板机开放**（Dashboards） | 决定 §12 的防火墙规则；**不能对全网开放** | 你 / 平台方 |
 | 17 | **Dashboards 是否改用专用只读账号（而不是 `admin`）** | 用 `admin` 最省事但权限过大；只读账号更合规，需额外建角色与用户 | 你 / 平台方（安全） |
 | 18 | **是否需要多租户（`opensearch_security.multitenancy.enabled`）** | 开启后 saved objects 按租户隔离；官方示例 yml 明确写了它与 workspace 特性互斥 | 你 |
+| 19 | **Dashboards 系统索引的实际名字**（脚本按 `.opensearch_dashboards*` 与 `.opendistro_security` 写，点号前缀**未经真机确认**） | 若实际名字不同，快照会"成功但没备到 Dashboards 的安全配置"，恢复后表现为界面空白/权限回默认 | 你（`curl -u admin:'<口令>' 'http://127.0.0.1:9200/_cat/indices?v' \| grep -E 'dashboards\|security'`） |
+| 20 | **仓库适配层的 kNN 查询体是否要按 3.x 语法改写**（现状按 2.x 固定结构拼，字段名恰好为 `vector` 故语义正确，但未实测） | 决定"切换 `VEC_BACKEND=opensearch`"前是否要先做一次应用代码改动（不在本轮范围） | 你 / 开发方（先按 §6.2 ⑧ 做顺序对照，再决定） |
 
 > **已由本轮决定解决、故不再列为未确认**：部署形态（**tar + systemd，不用 Docker**）、节点数（**单节点**，§0.3）、
 > 第二台机器的作用（**冷备 + 演练机**，§6.4）、副本数（**0**，§5.1）、堆大小（**8g / 16GB 内存的 50%**，§3.3）、
@@ -1460,11 +1586,19 @@ curl -sS -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health?pretty    # �
 | 19 | **快照仓库位置** | 官方快照文档要求仓库 location 在 `path.repo` 之下 | 原方案把 `path.repo` 与宿主目录直接对应（容器语汇） | §7.2 明确 `path.repo: /home/opensearch/backup` 与脚本 `REPO_LOCATION=/home/opensearch/backup/fs-repo` 的**父子关系**，并给出 `repository_exception` 的排障行 |
 | 20 | **专用账号的建法（D 方案偏离官方）** | 官方 Tar 页给的是 `sudo adduser --system --shell /bin/bash -U --no-create-home opensearch`（**无家目录的系统账号**） | 上一版照官方写 | **D 方案要求部署根就是该账号的家目录**，所以改为 `sudo useradd -m -d /home/opensearch -s /bin/bash opensearch` + `sudo passwd -l opensearch`（**有家目录、锁登录**）。这是**有意偏离官方示例**，原因写在 §2.4 |
 | 21 | **`/home` 挂载前提** | 官方 tar 页只要求 `vm.max_map_count`/swap，**不规定安装路径**（"does not define a specific installation path"） | 上一版把部署根放在 `lhim` 家目录下，并要求 `chmod 711 /home/lhim` | 部署根改为 `opensearch` 自己的家目录 ⇒ **删掉 `chmod 711` 那条**；新增 **§2.4.2 `/home` 挂载前置检查**（`df -h /home`、`findmnt -no SOURCE,FSTYPE,OPTIONS /home`：确认本地盘/非 NFS/空间够，并给 `path.data` 退路；说明 **`nosuid`/`nodev` 无害**，只有 `noexec` 会挡路） |
-| 22 | **Dashboards 版本兼容** | 官方 Dashboards tar 页是独立页，**没有明写"必须与 OpenSearch 同版本"**；但官方版本矩阵与下载页都要求两者版本一致 | 上一版根本没提 Dashboards | §12.1 把"**三个数字都要一样**（`2.19.1`）"写成硬约束并给出下载 + `.sha512` 校验 + 归档 tar 到 `.111` |
+| 22 | **Dashboards 版本兼容** | 官方 Dashboards tar 页是独立页，**没有明写"必须与 OpenSearch 同版本"**；但官方版本矩阵与下载页都要求两者版本一致 | 上一版根本没提 Dashboards | §12.1 把"**三个数字都要一样**（`3.1.0`）"写成硬约束并给出下载 + `.sha512` 校验 + 归档 tar 到 `.111` |
 | 23 | **Dashboards 配置文件字段名** | 官方示例 `config/opensearch_dashboards.yml`：`server.host`（默认 `"localhost"`，"usually means remote machines will not be able to connect"）、`server.port`、`opensearch.hosts`、`opensearch.username/password`、`opensearch.requestHeadersWhitelist`（**已标 DEPRECATED**，新名 `opensearch.requestHeadersAllowlist`）、`opensearch.ssl.verificationMode`、`opensearch.memoryCircuitBreaker`；多租户键 `opensearch_security.multitenancy.enabled` 出现在安全插件文档与官方示例注释里 | 上一版没有 Dashboards 配置 | §12.2 逐项照官方字段名写进资产 `opensearch_dashboards.yml.example`：用**新名** `requestHeadersAllowlist`（并在注释里留旧名对照）、`server.host` 显式改内网 IP、`opensearch.hosts` 用 `http://`（与 §3.5 方案 A 绑定）、多租户项保留并注明"与 workspace 互斥" |
 | 24 | **Dashboards 的 systemd** | 官方 Dashboards tar 页**只给三步**（解包 → 改 yml → `./bin/opensearch-dashboards`），**没有 systemd 示例** | 上一版没有 | §12.5 + 资产 `opensearch-dashboards.service`：**骨架照官方 OpenSearch tar 页那份 unit**，按 Node.js 运行方式改 3 处并写明原因（`Type=simple` 而非 `forking`、`KillMode=mixed` 以收掉 Node 子进程、`Environment=NODE_OPTIONS=--max-old-space-size=1024`） |
 | 25 | **Dashboards 的 Node 堆默认值** | 官方 `config/node.options` 里给的示例是 **`--max-old-space-size=4096`**（默认 4GB 老生代）；官方示例 yml 提到 `opensearch.memoryCircuitBreaker` 的阈值基于该值 | 上一版没有 | §12.3 明确"默认 4GB、16GB 机器上必须封顶"，本方案在 unit 里压到 **1024MB**，并给出"官方支持两种设置方式（`config/node.options` 或 `NODE_OPTIONS`），我们选后者"的取舍 |
-| 26 | **快照默认不含系统索引（脚本级修正）** | 官方快照/恢复文档说明：恢复快照时不能包含全局状态、且**不恢复 `.opendistro_security`**（除非 admin 证书签名）⇒ 系统索引默认不在快照里 | 上一版脚本只备 `pm-ai-chunks` ⇒ 恢复后 Dashboards 空白、安全配置回默认 | §12.7 + 脚本：默认索引列表改为 `pm-ai-chunks,.opensearch_dashboards*,.opendistro_security`，并加 **`expand_wildcards: all`**；给出三条验证命令（快照后看 `indices`、恢复后看 `_cat/indices`、浏览器里看仪表盘） |
+| 26 | **快照默认不含系统索引（脚本级修正）** | 官方快照/恢复文档说明：恢复快照时不能包含全局状态、且**不恢复 `.opendistro_security`**（除非 admin 证书签名）⇒ 系统索引默认不在快照里 | 上一版脚本只备 `pm-ai-chunks` ⇒ 恢复后 Dashboards 空白、安全配置回默认 | §12.7 + 脚本：默认索引列表改为 `pm-ai-chunks,.opensearch_dashboards*,.opendistro_security`；给出三条验证命令（快照后看 `indices`、恢复后看 `_cat/indices`、浏览器里看仪表盘） |
+| 27 | **k-NN 引擎可用性（3.x）** | `docs/latest` 的 Methods and engines 页：引擎有 **Lucene / Faiss / NMSLIB（legacy，标注 "now deprecated"）/ JVector**；`engine` 省略时**默认 `faiss`**；Lucene 支持 `hnsw`（space：`l2`/`cosinesimil`/`innerproduct`），Faiss 支持 `hnsw`/`ivf`，其中 **`cosinesimil` 对 Faiss 是 2.19+**，且"Faiss 用 `cosinesimil` 时向量会被自动归一化 ⇒ 存储值与你输入的不同"；另有 **JVector（`disk_ann`，需单独插件 `opensearch-jvector`，不能与 opensearch-knn 同集群）** | 上一版把 `engine` 写成"可选 lucene/faiss"，并说"nmslib 需要额外参数"，没说清楚 3.x 的取舍 | §5.3 重写：**默认用 `lucene`**（与代码 `OpenSearchIndex` 一致、支持带过滤检索、官方定位"smaller deployments / <1000 万向量"）、`faiss` 作为可选并**明确写出归一化的副作用**、**3.x 新索引不要用 `nmslib`**、并登记 JVector 这条路（未采用，需额外插件） |
+| 28 | **k-NN mapping 的键名与默认值** | k-NN vector 页：`dimension` 合法区间 **[1, 16000]**；`data_type` 默认 `float`（可选 `binary`/`byte`/`float`/`half_float`）；`space_type` **既可写在字段层也可写在 `method` 内**（"This value can also be specified within the `method`"），默认 `l2`；`mode` 默认 **`in_memory`**（`on_disk` 为低成本路线，配合 `compression_level`，默认 `32x`、默认开启 rescore）；方法参数键名是 **`parameters`**（不是 `params`）；`m` 默认 **16**、`ef_construction` 默认 **100** | 上一版把 `space_type` 同时写在字段层与 `method` 内（两种写法混用），`ef_construction` 写 128 没说这是"偏离默认"，也没提 `dimension` 上限与 `mode` 默认值 | §5.2 改为：`space_type` **只写字段层**、`data_type: float` 显式写出、`method` 内只留 `name`/`engine`/`parameters`；§5.3 补 `dimension` 上限 16000（我们的 4096 合规）、`mode` 默认 `in_memory`（故不写）、`m`/`ef_construction` 与官方默认值的对照 |
+| 29 | **k-NN 查询语法（3.x）** | k-NN query 页的请求体结构：**`"knn": { "<vector_field>": { "vector": [...], "k": n, "filter": {...}, "method_parameters": {...}, "rescore": {...} } }`** —— **字段名直接是 `knn` 下第一层**；`filter` **只能配合 `faiss`/`lucene`**；`k` 合法区间 [1, 10000]；`method_parameters.ef_search` 对 **lucene** 的行为是"与 `k` 取较大者传给引擎" | 上一版按 2.x 的固定键结构写（`knn.vector.vector`），没有区分"结构里的 `vector` 是键名还是字段名" | §5.5 ① 加了 3.x 语法说明（`knn` 下第一层是**字段名**；我们字段名恰好也叫 `vector`），② 明确 `filter` 的引擎前提；并在 §5.5 末尾**如实登记一处不一致**：仓库适配层 `OpenSearchIndex.search()` 仍按 2.x 固定结构拼查询体，**因字段名巧合为 `vector` 而语义仍正确**，但上线前必须按"top-k 顺序与 local 一致"实测（改适配层属应用改动，登记在 §8） |
+| 30 | **快照请求体字段（3.x）** | Create Snapshot API 页：请求体字段**只有** `indices`（支持 `,` 列表与 `*` 通配与 `-` 排除，**"Don't put spaces between items"**）、`ignore_unavailable`（默认 false）、`include_global_state`（默认 true）、`partial`（默认 false）；**没有 `expand_wildcards`**。官方示例本身就用了通配 + 系统索引：`{"indices": "opensearch_dashboards*,my-index*,-my-index-2016", ...}` | 上一版脚本在请求体里加了 **`"expand_wildcards": "all"`**，并声称"通配符必须显式展开"——**这是错的**（该参数不属于这个 API） | 脚本**移除 `expand_wildcards`**（注释留档说明为什么不能加回来）；`indices` 直接用逗号 + `*`（官方原生支持）；文档 §12.7 同步改正 |
+| 31 | **安全插件键与 tar 安装脚本（3.x 是否仍存在）** | 3.x 的 Tar 页与 security-settings 页：`opensearch-tar-install.sh` **仍存在**（Step 3 Option 1 仍叫这个名字，且仍会"apply self-signed TLS certificates"并改 `config/opensearch.yml`）；`OPENSEARCH_INITIAL_ADMIN_PASSWORD` **仍是 2.12+ 的必需项**；口令四条要求（8~100 字符、四类字符各一、zxcvbn 达 strong 以上、不得与 admin 相似）在 3.x 文档里**未变**；`plugins.security.ssl.http.enabled`、transport 三个 `pem*_filepath`、`allow_unsafe_democertificates`、`allow_default_init_securityindex` 这些键**在 3.x 文档里都还在**（且 Tar 页的追加脚本仍然写 `plugins.security.allow_default_init_securityindex: true`） | 上一版已按 2.x 写对；但没说明"3.x 是否仍成立" | §3.2/§3.5 内容**不变**，在附录 B 这里登记"已按 3.x 复核、四项键与口令要求均未变" |
+| 32 | **heap 覆盖目录 `jvm.options.d/` 与自带 JDK（3.x）** | 3.x Tar 页：**"The tarball is a self-contained directory with everything needed to run OpenSearch, including an integrated Java Development Kit (JDK)"**；Step 4 给的是 `export OPENSEARCH_JAVA_HOME=/path/to/opensearch-<版本>/jdk`；调整堆的官方写法是**改 `config/jvm.options`**（页面未提 `jvm.options.d`） | 上一版声称 `jvm.options.d/` 是"官方支持的覆盖目录" | §3.3 保留 `jvm.options.d/heap.options` 做法，但**改口径**：把它写成"**我们的做法**（借 JVM 官方启动脚本会读取 `jvm.options.d/*.options` 的机制）"，并注明**官方 Tar 页只写了改 `config/jvm.options`**；同时写入 **3.x 自带 JDK**（`app/jdk`）与 `OPENSEARCH_JAVA_HOME` 的设置方式，明确"宿主不需要预装 Java" |
+| 33 | **systemd 示例（3.x 是否与 2.x 相同）** | 3.x Tar 页的 systemd 一节与 2.x **逐行相同**（`Type=forking`、`ExecStart=/opt/opensearch/bin/opensearch -d`、`User/Group`、`StandardOutput=journal`、`LimitNOFILE=65535`、`LimitNPROC/LimitAS/LimitFSIZE`、`TimeoutStopSec=0`、`KillSignal=SIGTERM`、`KillMode=process`、`SendSIGKILL=no`、`SuccessExitStatus=143`、`TimeoutStartSec=75`），并且**同样标注"只适合非生产、要 systemd 就用 RPM"**；Dashboards tar 页在 3.x **仍然只给三步、仍没有 systemd 示例** | 上一版已照该示例写 | **保持**（`opensearch.service` 不动逻辑），只在附录 B 登记"3.x 逐行相同"；Dashboards 的 unit 继续按"照官方 OpenSearch unit + 按 Node 运行方式改 3 处"的口径，并在 §12.5 与 unit 注释里标明"官方无示例" |
+| 34 | **Dashboards 的 yml 键与 Node 堆默认值（3.x）** | 3.x 官方示例 `config/opensearch_dashboards.yml`：`opensearch.requestHeadersWhitelist` **仍标注 DEPRECATED**（新名 `requestHeadersAllowlist`）、`opensearch_security.multitenancy.enabled` 仍存在且官方注释仍写"**workspace 与多租户互斥**"；`config/node.options` 的示例默认**仍是 `--max-old-space-size=4096`**（`--max-semi-space-size=64` 注释保留） | 上一版已按这套写 | **保持**，附录 B 登记"3.x 复核：键名/互斥关系/4096 默认值均未变" |
 
 ## 11. 变更记录
 
@@ -1472,7 +1606,8 @@ curl -sS -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health?pretty    # �
 | --- | --- | --- |
 | docs-1.6 | 2026-09-23 | 首版（**已被下方"修订二"取代**）：为两台新服务器出 OpenSearch 部署与接入文档 + 部署资产，当时定稿**单节点 + Docker（`docker load`）**路线 |
 | docs-1.6（修订二） | 2026-09-23 | **部署形态改为官方 `tar.gz` 解包 + systemd（不用 Docker）**（新机器没装 Docker）：删除全部 Docker 路线资产（compose / `.env.example` / `os.sh`），新增 `opensearch.yml.example` / `jvm.options.d/heap.options` / `opensearch.service` / `snapshot-backup.sh`；两处决策级修正：**架构 x86_64**、**按官方文档逐条对齐**（默认 REST 层是 HTTPS ⇒ 必须显式关 TLS；口令复杂度补 zxcvbn 与"不得与 admin 相似"；`DISABLE_INSTALL_DEMO_CONFIG=true` 会让节点起不来 ⇒ 改为让 demo 脚本正常跑；transport 证书不能漏；systemd unit 照官方示例并补 `LimitMEMLOCK`/`MAX_MAP_COUNT`；升级路径改为换程序目录 + 复制 `config/`）。逐条核对表见 **附录 B** |
-| docs-1.6（修订三） | 2026-09-23 | **部署根定为 `/home/opensearch/`（D 方案，= 专用账号 `opensearch` 自己的家目录），内部结构规范成"程序/配置/数据/日志/备份/Dashboards"分离；新增 OpenSearch Dashboards（§12）**。① **目录**：`app/`（当前程序）、`app-<旧版本>/`（回滚点）、`config/`（我们维护的 `opensearch.yml` + `jvm.options.d/heap.options` + `snapshot-backup.sh`）、`data/`、`logs/`、`backup/fs-repo/`、`dashboards/app/`。② **建账号方式改掉**：不用官方那种"系统账号 + `--no-create-home`"，改为 `useradd -m -d /home/opensearch -s /bin/bash opensearch` + `passwd -l`（有家目录、锁死登录）。③ **删掉上一版的 `/home/lhim` 穿透权限（`chmod 711`）那一节**（D 方案下不再需要，留着会误导），换成 **§2.4.1 家目录可用性检查**（`sudo -u opensearch ls/touch` 自证）。④ **新增 §2.4.2 `/home` 挂载前置检查**（`df -h /home`、`findmnt -no SOURCE,FSTYPE,OPTIONS /home` 确认本地盘、非 NFS/autofs、空间够；给出"只把 `path.data` 挪到 `/data/opensearch`"的既定退路；并说明 **`nosuid`/`nodev` 对本服务无害、不要为此改挂载参数**，真正会挡路的只有 `noexec`）。⑤ **升级流程**按新结构重写（解包到 `app-<版本>/` → 拷 `config/` 与证书/`opensearch-security/` → 停服 → 旧 `app/` 改名保留、新目录改名 `app/` → `chown -R` → 启动 → 验收；回滚即反操作）。⑥ **Dashboards（§12）**：版本必须与 OpenSearch 完全一致（`2.19.1`）、下载 + sha512 校验 + **归档 tar 到 `.111`**、解包到 `dashboards/app/`、`opensearch_dashboards.yml` 关键项逐条给依据（`server.host` 绑内网、`opensearch.hosts` 与 REST TLS 取舍绑定、只读账号优先、`requestHeadersAllowlist` 必须含 `authorization`、多租户与 workspace 互斥）、systemd unit（照官方 OpenSearch 那份示例改 3 处：`Type=simple`/`KillMode=mixed`/`NODE_OPTIONS` 堆上限）、内存预算（Node 约 0.6~1.2GB，标注估算）、5601 只放行运维网段、**冷备结论（不需要单独冷备）**，以及 **⚠️ 快照必须显式包含系统索引**（`snapshot-backup.sh` 默认列表已改为 `pm-ai-chunks,.opensearch_dashboards*,.opendistro_security`，并加 `expand_wildcards: all`）。⑦ 集群名 `pm-os` 与节点名 `os01` **保持不变** |
+| docs-1.6（修订三） | 2026-09-23 | **部署根定为 `/home/opensearch/`（D 方案，= 专用账号 `opensearch` 自己的家目录），内部结构规范成"程序/配置/数据/日志/备份/Dashboards"分离；新增 OpenSearch Dashboards（§12）**。① **目录**：`app/`（当前程序）、`app-<旧版本>/`（回滚点）、`config/`（我们维护的 `opensearch.yml` + `jvm.options.d/heap.options` + `snapshot-backup.sh`）、`data/`、`logs/`、`backup/fs-repo/`、`dashboards/app/`。② **建账号方式改掉**：不用官方那种"系统账号 + `--no-create-home`"，改为 `useradd -m -d /home/opensearch -s /bin/bash opensearch` + `passwd -l`（有家目录、锁死登录）。③ **删掉上一版的 `/home/lhim` 穿透权限（`chmod 711`）那一节**（D 方案下不再需要，留着会误导），换成 **§2.4.1 家目录可用性检查**（`sudo -u opensearch ls/touch` 自证）。④ **新增 §2.4.2 `/home` 挂载前置检查**（`df -h /home`、`findmnt -no SOURCE,FSTYPE,OPTIONS /home` 确认本地盘、非 NFS/autofs、空间够；给出"只把 `path.data` 挪到 `/data/opensearch`"的既定退路；并说明 **`nosuid`/`nodev` 对本服务无害、不要为此改挂载参数**，真正会挡路的只有 `noexec`）。⑤ **升级流程**按新结构重写（解包到 `app-<版本>/` → 拷 `config/` 与证书/`opensearch-security/` → 停服 → 旧 `app/` 改名保留、新目录改名 `app/` → `chown -R` → 启动 → 验收；回滚即反操作）。⑥ **Dashboards（§12）**：版本必须与 OpenSearch 完全一致（`3.1.0`）、下载 + sha512 校验 + **归档 tar 到 `.111`**、解包到 `dashboards/app/`、`opensearch_dashboards.yml` 关键项逐条给依据（`server.host` 绑内网、`opensearch.hosts` 与 REST TLS 取舍绑定、只读账号优先、`requestHeadersAllowlist` 必须含 `authorization`、多租户与 workspace 互斥）、systemd unit（照官方 OpenSearch 那份示例改 3 处：`Type=simple`/`KillMode=mixed`/`NODE_OPTIONS` 堆上限）、内存预算（Node 约 0.6~1.2GB，标注估算）、5601 只放行运维网段、**冷备结论（不需要单独冷备）**，以及 **⚠️ 快照必须显式包含系统索引**（`snapshot-backup.sh` 默认列表已改为 `pm-ai-chunks,.opensearch_dashboards*,.opendistro_security`）。⑦ 集群名 `pm-os` 与节点名 `os01` **保持不变** |
+| docs-1.6（修订四） | 2026-09-23 | **版本升 3.1.0（按 3.x 官方文档重核，含 k-NN 引擎/查询语法变更）+ 安装包目录统一 `/home/opensearch/`**。① **版本**：全文版本号统一到 **`3.1.0`**（原为上一代版本）（OpenSearch 与 Dashboards 同版本），包名/体积按真机实际写（OpenSearch **1,000,330,285 字节**、Dashboards **385,456,866 字节**）；**上一版固化的上一代版本 SHA512 作废**，改为"**以现场 `.sha512` 为准**"（本轮无法联网核实 3.1.0 的校验和）。② **安装包目录**：`scp` 目标从 `/tmp` 统一到 **`/home/opensearch/`**，并把**跨用户/跨家目录拷贝**写成显式前置（新增 §1.3：为什么 `lhim` 直接 `scp` 会 `Permission denied`；做法 A `usermod -aG opensearch lhim` + `chmod 2775`（setgid 继承组）并写明代价；做法 B `install -o opensearch -g opensearch -m 644`；并提醒**不要** `sudo -u opensearch cp /home/lhim/…`）；**解压后必须 `chown -R opensearch:opensearch`**；新增 **§1.6 占用与清理**（两包合计 ≈1.32 GiB；验收通过后 `.110` 可删、`.111` 留归档）。③ **3.x 重核**（附录 B 新增第 27~33 条）：**k-NN 引擎**（3.x 不要用 `nmslib`；`engine` 省略时默认 `faiss`；`cosinesimil` 对 lucene 一直支持、对 faiss 是 2.19+；维度上限 16000；`method.parameters` 而非 `params`；`mode` 默认 `in_memory`）、**查询语法**（3.x 是 `"knn": { "<字段名>": {...} }`，并如实登记"仓库适配层按 2.x 固定结构拼查询体、因字段名恰好叫 `vector` 语义仍正确但需实测"）、**快照请求体**（官方 Create Snapshot API **没有 `expand_wildcards`**，已从脚本移除；`indices` 原生支持 `*`）、安全插件键与 tar 安装脚本/口令四条要求**在 3.x 未变**、`jvm.options.d` 机制仍受支持、自带 JDK 由包内提供、systemd 示例 3.x 与 2.x 相同、Dashboards 的 yml 键与 `node.options` 默认 4096 **在 3.x 仍成立** |
 
 ## 12. OpenSearch Dashboards（可视化，与 OpenSearch 同机 · `10.254.212.110:5601`）
 
@@ -1485,26 +1620,30 @@ curl -sS -u admin:'<口令>' http://127.0.0.1:9200/_cluster/health?pretty    # �
 
 | 项 | 值/规则 |
 | --- | --- |
-| **版本必须与 OpenSearch 完全一致** | 本方案 pin **`2.19.1`** ⇒ Dashboards 用 **`opensearch-dashboards-2.19.1-linux-x64.tar.gz`**（**三个数字都要一样**，不能 2.19.0 配 2.19.1） |
+| **版本必须与 OpenSearch 完全一致** | 本方案 pin **`3.1.0`** ⇒ Dashboards 用 **`opensearch-dashboards-3.1.0-linux-x64.tar.gz`**（**三个数字都要一样**，不能 3.0.0 配 3.1.0） |
 | 下载地址形式 | `https://artifacts.opensearch.org/releases/bundle/opensearch-dashboards/<版本>/opensearch-dashboards-<版本>-linux-x64.tar.gz` |
-| 校验和 | 同目录的 `.sha512`（与 OpenSearch 同一套校验命令；**校验不通过绝不安装**） |
+| 体积 | **385,456,866 字节 ≈ 368 MiB**（真机实际大小） |
+| 校验和 | 同目录的 `.sha512`（与 OpenSearch 同一套校验命令；**校验不通过绝不安装**）。⚠️ 该值**以现场取到的 `.sha512` 为准**，本文件不固化（原因见 §1.1） |
 | 架构 | **x86_64**（`linux-x64`）；与 OpenSearch 两台机器一致 |
 | 归档 | 安装包**同时归档一份到 `.111`**（`/home/opensearch/backup/dist/`）——离线环境里"能重建"的前提是"包还在" |
 
+> **传文件的权限前提与 OpenSearch 包完全相同**（跨用户拷贝那一套）：见 **§1.3** 的做法 A（`2775` + 组）或做法 B（`install -o opensearch -g opensearch`）。
+> 这里不重复贴，避免两份写法漂移。
+
 ```bash
 # ① 在【有外网】的机器上下载（与 §1 同一套路）
-VER=2.19.1
+VER=3.1.0
 URL=https://artifacts.opensearch.org/releases/bundle/opensearch-dashboards
 curl -fL --retry 3 -O "$URL/$VER/opensearch-dashboards-$VER-linux-x64.tar.gz"
 curl -fL --retry 3 -O "$URL/$VER/opensearch-dashboards-$VER-linux-x64.tar.gz.sha512"
 sha512sum -c "opensearch-dashboards-$VER-linux-x64.tar.gz.sha512"
-# 期望：opensearch-dashboards-2.19.1-linux-x64.tar.gz: OK
+# 期望：opensearch-dashboards-3.1.0-linux-x64.tar.gz: OK
 
-# ② 传到 OpenSearch 那台
-scp opensearch-dashboards-2.19.1-linux-x64.tar.gz* lhim@10.254.212.110:/tmp/
+# ② 传到 OpenSearch 那台（目标统一 /home/opensearch/，权限前提见 §1.3）
+scp opensearch-dashboards-3.1.0-linux-x64.tar.gz* lhim@10.254.212.110:/home/opensearch/
 # ③ 归档一份到冷备/演练机（★离线时能重建，见 §12.6 的冷备结论）
 ssh lhim@10.254.212.111 'mkdir -p /home/opensearch/backup/dist'
-scp opensearch-dashboards-2.19.1-linux-x64.tar.gz* lhim@10.254.212.111:/home/opensearch/backup/dist/
+scp opensearch-dashboards-3.1.0-linux-x64.tar.gz* lhim@10.254.212.111:/home/opensearch/backup/dist/
 ```
 
 ### 12.2 安装（解包 + 配置 + 只读账号）
@@ -1513,16 +1652,18 @@ scp opensearch-dashboards-2.19.1-linux-x64.tar.gz* lhim@10.254.212.111:/home/ope
 # ① 解包到 dashboards/app（与 OpenSearch 同属主 opensearch，非 root 运行）
 sudo -u opensearch mkdir -p /home/opensearch/dashboards
 cd /home/opensearch/dashboards
-tar -zxf /tmp/opensearch-dashboards-2.19.1-linux-x64.tar.gz
-mv opensearch-dashboards-2.19.1 app
+tar -zxf /home/opensearch/opensearch-dashboards-3.1.0-linux-x64.tar.gz
+mv opensearch-dashboards-3.1.0 app
 ls /home/opensearch/dashboards/app        # 期望看到 bin/ config/ node/ plugins/ src/ …
+# ★解压后同样把属主归位（用 lhim 解压会让 app/ 混入 lhim 属主）
+sudo chown -R opensearch:opensearch /home/opensearch/dashboards
 ```
 
 **配置文件（官方规定的位置就是解包目录下的 `config/opensearch_dashboards.yml`）**
 
 ```bash
 # ② 放行我们的配置（资产：deploy/opensearch/opensearch_dashboards.yml.example）
-sudo -u opensearch cp /tmp/opensearch_dashboards.yml.example \
+sudo -u opensearch cp deploy/opensearch/opensearch_dashboards.yml.example \
                        /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
 sudo -u opensearch vi /home/opensearch/dashboards/app/config/opensearch_dashboards.yml
 #   ★必改两处：server.host 改成 10.254.212.110；opensearch.password 填只读账号口令
@@ -1639,7 +1780,7 @@ curl -m 3 -sS -o /dev/null -w '%{http_code}\n' http://10.254.212.110:5601/ ; ech
 
 ```bash
 # ① 装 unit（资产：deploy/opensearch/opensearch-dashboards.service）
-sudo cp /tmp/opensearch-dashboards.service /etc/systemd/system/opensearch-dashboards.service
+sudo cp /home/opensearch/config/opensearch-dashboards.service /etc/systemd/system/opensearch-dashboards.service
 sudo chmod 644 /etc/systemd/system/opensearch-dashboards.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now opensearch-dashboards
@@ -1692,9 +1833,15 @@ systemctl is-enabled opensearch-dashboards ; systemctl is-active opensearch-dash
 pm-ai-chunks,.opensearch_dashboards*,.opendistro_security
 ```
 
-它由脚本里的 `INDEX` 配置项控制（也可用环境变量 `INDEX=` 覆盖），
-并且请求体里带了 **`"expand_wildcards": "all"`** —— 否则 `*` 通配符展开不到系统索引，
-会出现"快照成功但内容不全"这种最难查的假成功。
+它由脚本里的 `INDEX` 配置项控制（也可用环境变量 `INDEX=` 覆盖）。
+**通配符不需要任何额外参数**——官方 Create Snapshot API 的 `indices` 字段原文就写着
+"You can use `,` to create a list of indexes, `*` to specify an index pattern, and `-` to exclude certain indexes"，
+官方示例本身就是 `{"indices": "opensearch_dashboards*,my-index*,-my-index-2016", "ignore_unavailable": true, ...}`。
+
+> ⚠️ **一条已被纠正的错误做法（留档，别改回去）**：本脚本早期版本在请求体里加过 `"expand_wildcards": "all"`，
+> 理由是"通配符需要显式展开"。**这是错的**：该 API 的请求体字段只有
+> `indices` / `ignore_unavailable` / `include_global_state` / `partial` 四个，**没有 `expand_wildcards`**。
+> 现已移除。索引名的点号前缀（`.opensearch_dashboards*`）**以现场 `_cat/indices?v` 的实际名字为准**。
 
 ```bash
 # ① 看脚本当前要快照哪些索引（默认就是上面那串）
@@ -1705,7 +1852,7 @@ bash /home/opensearch/config/snapshot-backup.sh snapshot
 curl -sS -u admin:'<强口令>' \
   'http://127.0.0.1:9200/_snapshot/os-backup/nightly-'$(date +%F)'?pretty' | grep -E '"indices"|\.opensearch_dashboards|\.opendistro_security' | head -20
 # 期望：indices 列表里能看到 .opensearch_dashboards* 与 .opendistro_security
-#   只有 pm-ai-chunks ⇒ 说明索引列表被改过或没带 expand_wildcards，回上面检查
+#   只有 pm-ai-chunks ⇒ 索引列表被改过（或系统索引名与本文件不一致，用 _cat/indices?v 核对实际名字）
 ```
 ```bash
 # ③ 恢复演练时的验证（在 .111 上；步骤见 §6.4 七步）

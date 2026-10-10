@@ -9,15 +9,16 @@
 # ⚠️ 【config/ 与 tarball 自带 config/ 的关系 —— 全方案只有一种做法，别搞成两套】
 #   ① 我们【维护的唯一副本】放在 /home/opensearch/config/：
 #        config/opensearch.yml             ← 本文件的落地副本（每台机器只改 network.host / node.name）
-#        config/jvm.options.d/heap.options ← 堆大小（官方支持的 jvm.options.d 覆盖目录）
+#        config/jvm.options.d/heap.options ← 堆大小（本项目采用 jvm.options.d 覆盖，口径见该文件）
 #   ② 安装与每次升级时，把它【拷贝】进程序目录：
 #        cp /home/opensearch/config/opensearch.yml        /home/opensearch/app/config/opensearch.yml
 #        cp /home/opensearch/config/jvm.options.d/heap.options /home/opensearch/app/config/jvm.options.d/heap.options
 #      —— 用【拷贝】不用软链：软链在 chown -R / 备份 / 权限排查时容易变成隐形坑，且官方不保证支持。
 #   ③ 于是"运行时真正生效的配置"永远是 app/config/ 下那份；config/ 下的副本是它的源头，
 #      升级换 app/ 时不用重新配（照 ② 再拷一次即可）。
-#   ④ 为什么 heap.options 必须放 app/config/jvm.options.d/：官方升级时 app/config/jvm.options 会被新版本覆盖，
-#      而 jvm.options.d/*.options 是官方支持的覆盖目录，不会被冲掉（但 app/ 整个换掉时文件也没了 ⇒ 靠 ② 再拷）。
+#   ④ 为什么 heap.options 必须放 app/config/jvm.options.d/：官方 Tar 页给的做法是直接改 `config/jvm.options`
+#      （升级时会被新版本覆盖）；`jvm.options.d/*.options` 是【本项目采用的做法】（借 OpenSearch 自带 JVM 启动
+#      脚本会读取该目录的机制），好处是升级时不丢，但 app/ 整个换掉后仍要按 ② 再拷一次。详见 heap.options 里的口径澄清。
 #
 # ⚠️ 替换时机很重要：必须【在跑完官方 opensearch-tar-install.sh 之后】再覆盖，
 #    否则 demo 安全脚本会把它的 TLS 设置写回来。顺序见文档 §3。
@@ -39,7 +40,7 @@
 #     start the service."（2 节点集群的 quorum 问题见文档 §0.3）
 #   · network.host —— 官方 Tar 页 Step 4 推荐项：把节点绑到具体网卡（默认不绑任何网络接口，外部访问不到）
 #   · path.data / path.logs —— 放在【程序目录 app/ 之外】，这样升级（换 app/）不会碰到数据与日志
-#   · heap 不写在这里，写在 config/jvm.options.d/heap.options（官方支持 jvm.options.d 覆盖目录）
+#   · heap 不写在这里，写在 config/jvm.options.d/heap.options（本项目的做法，口径见该文件里的澄清）
 # ============================================================
 
 # ── 集群与节点 ──

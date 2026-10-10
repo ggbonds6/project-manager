@@ -66,7 +66,11 @@ LimitMEMLOCK=infinity
 # 绑定到所有网卡需要内核允许足够的映射数（官方 configuring-opensearch）：
 #   "If you're using systemd... you must also add MAX_MAP_COUNT=262144"
 Environment=MAX_MAP_COUNT=262144
-# 官方 Tar 页 Step 4：让服务用自带的 JDK
+# 官方 Tar 页 Step 4：让服务用自带的 JDK。3.x 的 tar 包是自包含的
+#   （官方原话："The tarball is a self-contained directory with everything needed to run OpenSearch,
+#     including an integrated Java Development Kit (JDK)"）⇒ **宿主不需要预装 Java**，
+#   JDK 就在 /home/opensearch/app/jdk。需要显式指定时（例如手工跑 hash.sh / securityadmin.sh）用：
+#     export OPENSEARCH_JAVA_HOME=/home/opensearch/app/jdk
 Environment=OPENSEARCH_HOME=/home/opensearch/app
 
 # 停服与重启行为（官方示例保留；Restart 是本项目加固项，

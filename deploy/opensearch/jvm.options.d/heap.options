@@ -15,8 +15,17 @@
 #             /home/opensearch/app/config/jvm.options.d/heap.options
 #
 # 为什么放在 jvm.options.d/ 而不是直接改 config/jvm.options：
-#   官方 Tar 页的做法是让你去改 config/jvm.options 里的 -Xms/-Xmx；而 jvm.options.d/*.options
-#   是官方支持的覆盖目录（升级时 config/jvm.options 会被新版本覆盖，我们的自定义项不会被冲掉）。
+#   ★口径澄清（3.x 复核后改的）：官方 Tar 页 Step 4 给的做法是**直接改 `config/jvm.options` 里的 -Xms/-Xmx**
+#      （该页没有提 `jvm.options.d`）。用 `jvm.options.d/*.options` 是【本项目的做法】——它依赖 OpenSearch
+#      自带的 JVM 启动脚本会读取 `jvm.options.d/` 目录这一机制；好处是**升级时 `config/jvm.options` 会被
+#      新版本覆盖，而我们这个文件不会被冲掉**（但 `app/` 整个换掉时文件也没了 ⇒ 靠上面的"再拷一次"补回）。
+#      如果你更愿意完全照官方：把 -Xms8g/-Xmx8g 写进 `app/config/jvm.options`，并**在每次升级后重新确认一遍**
+#      （因为那个文件会被新版本覆盖）。本方案选前者，只为少踩"升级后堆悄悄变回默认值"的坑。
+#
+# 关于 Java 从哪来（3.x）：
+#   官方 Tar 页明确："The tarball is a self-contained directory with everything needed to run OpenSearch,
+#   including an integrated Java Development Kit (JDK)." ⇒ **宿主不需要预装 Java**，
+#   自带 JDK 在 `app/jdk`，需要时按官方写法设置：export OPENSEARCH_JAVA_HOME=/home/opensearch/app/jdk
 #
 # 为什么是 8g（16GB 的 50%），而不是"把内存都给 JVM"：
 #   ① 官方 Tar 页原话："As a starting point, you should set these values to half of the available system memory."

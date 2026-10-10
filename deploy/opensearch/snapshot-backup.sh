@@ -51,7 +51,14 @@ DEF_REPO_LOCATION="/home/opensearch/backup/fs-repo"
 #     ① 业务：pm-ai-chunks
 #     ② Dashboards：.opensearch_dashboards*（含 .opensearch_dashboards_config）
 #     ③ 安全插件：.opendistro_security（若你们改过用户/角色/租户，就必须带上它）
-#   ⚠️ 用通配符（`*`）要求请求里带 "expand_wildcards"，见 take_snapshot 里的请求体。
+#   ✅ 依据：官方 Create Snapshot API 的 `indices` 字段原文——
+#      "You can use `,` to create a list of indexes, `*` to specify an index pattern, and `-` to exclude
+#       certain indexes. Don't put spaces between items."
+#      官方示例本身就同时用了通配符与系统索引：
+#      {"indices": "opensearch_dashboards*,my-index*,-my-index-2016", "ignore_unavailable": true, ...}
+#   ⚠️ 该 API 的请求体字段**只有** indices / ignore_unavailable / include_global_state / partial —
+#      **没有 expand_wildcards**（那是 _search / _cat 一类接口的参数，加到这里无意义甚至可能被拒）。
+#   ⚠️ 索引名的点号前缀（`.opensearch_dashboards*`）以现场 `_cat/indices?v` 看到的实际名字为准。
 DEF_INDEX="pm-ai-chunks,.opensearch_dashboards*,.opendistro_security"
 DEF_KEEP_DAYS="7"
 DEF_REMOTE="lhim@10.254.212.111:/home/opensearch/backup/"
@@ -267,10 +274,11 @@ ensure_repo() {
 take_snapshot() {
   local name="$1" body st i
   step "2/4" "打快照：${name}（异步发起，之后轮询状态）"
-  # expand_wildcards=all：索引列表里有 .opensearch_dashboards* 这样的通配符，必须显式展开，
-  # 否则通配符匹配不到（尤其系统索引默认不在 open 之外的通配范围里）⇒ 快照会"成功"但内容不全。
-  # include_global_state=false：不备份集群全局状态（模板/设置等），与本方案的"只要数据"口径一致。
-  body="{\"indices\":\"$(cfg_index)\",\"ignore_unavailable\":true,\"expand_wildcards\":\"all\",\"include_global_state\":false}"
+  # 请求体只用官方 Create Snapshot API 支持的四个字段：
+  #   indices（支持逗号列表与 * 通配）、ignore_unavailable、include_global_state、partial。
+  # ⚠️ 这里【没有】expand_wildcards：它不是该 API 的字段（早期版本的本脚本曾误加，已移除）。
+  # include_global_state=false：不备份集群全局状态（模板/集群设置等），与本方案"只要数据"的口径一致。
+  body="{\"indices\":\"$(cfg_index)\",\"ignore_unavailable\":true,\"include_global_state\":false}"
   if ! api PUT "/_snapshot/$(cfg_repo)/${name}?wait_for_completion=false" "$body"; then
     fail "发起快照失败：OpenSearch 不可达"
     return 1
