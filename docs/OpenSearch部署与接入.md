@@ -273,7 +273,15 @@ sudo chown -R opensearch:opensearch /home/opensearch/app
 > 🔴 **危险动作（命令块正上方，务必看）**：`chmod` **只允许作用在运行期目录 `config` / `data` / `logs` / `backup`**。
 > **绝对不要**对 `/home/opensearch` 整个递归，更**不要对 `app/`（程序目录）或 `dashboards/app/` 套用 `chmod 664`** ——
 > 那会**抹掉程序与自带 JDK 的执行位**（`app/bin/opensearch`、`app/jdk/bin/*`、`app/jdk/lib/jspawnhelper`、`app/plugins/**/tools/*.sh`），
-> 结果是 **`systemd` 报 `status=203/EXEC` 且应用日志为空**（应用根本没被启动）。恢复命令见 **§4.5**。
+> 结果是 **`systemd` 报 `status=203/EXEC`（OpenSearch）或 `status=126/n/a`（Dashboards，`use_node: cannot execute`），且应用日志为空**（应用根本没被启动）。
+> 恢复命令：OpenSearch ⇒ **§4.5**；Dashboards ⇒ **步骤 17 恢复块 A**。
+>
+> **一条命令核对两棵程序树（四个文件都必须带 `x`）**：
+> ```bash
+> ls -l /home/opensearch/app/bin/opensearch /home/opensearch/app/jdk/bin/java \
+>       /home/opensearch/dashboards/app/bin/use_node /home/opensearch/dashboards/app/node/bin/node
+> # 期望：四条都是 -rwxr-x---（只要有一条不带 x ⇒ 按上面的恢复命令修）
+> ```
 ① 执行
 
 
@@ -861,8 +869,32 @@ systemctl is-enabled opensearch-dashboards                                # 期�
 
 **③ ✅ 完成判据**：服务 `running` + `5601` 返回 `200/302` + 用浏览器打开能看到登录页。
 **④ ✗ 失败了怎么办**
-`status=203/EXEC` ⇒ 检查 `dashboards/app/bin/opensearch-dashboards` 与 `node/bin/node` 是否带 `x`（不带就 `chmod 750` 后重启）；
+`status=126/n/a` 且日志 `bin/use_node: cannot execute: Permission denied` ⇒ **`use_node` / `node` 缺 `x`**（全量 `chmod 664` 波及了 `dashboards/` 树）⇒ 用下面的**恢复块 A**；
+`status=203/EXEC` ⇒ 同样是权限位问题（**`126` 与 `203` 修法一致**）⇒ 恢复块 A；
 `5601` 连不上 ⇒ 回**步骤 8**（`5601` 白名单）；日志报连不上 9200 ⇒ 检查 yml 里 `opensearch.hosts` 是 `http://127.0.0.1:9200` 且口令正确。
+
+#### 恢复块 A · Dashboards 程序树执行位恢复（`status=126` 或 `203/EXEC` 时用）
+
+> 触发条件：`opensearch-dashboards.service` 起不来，journald 报 `bin/use_node: cannot execute: Permission denied`
+> （`status=126/n/a`）或 `status=203/EXEC`。
+> 根因：**`dashboards/app/` 下的执行位被抹掉**（例如对 `/home/opensearch` 整个跑过 `chmod 664`）。
+
+```bash
+sudo find /home/opensearch/dashboards/app/bin -type f -exec chmod 750 {} +
+sudo find /home/opensearch/dashboards/app/node/bin -type f -exec chmod 750 {} +
+sudo find /home/opensearch/dashboards/app -name '*.sh' -exec chmod 750 {} +
+
+# 核对（两个都必须带 x ⇒ -rwxr-x---）
+ls -l /home/opensearch/dashboards/app/bin/use_node /home/opensearch/dashboards/app/node/bin/node
+
+# 重启（先 reset-failed 清掉重启计数，否则 systemd 可能仍卡在 start-limit 里）
+sudo systemctl reset-failed opensearch-dashboards && sudo systemctl restart opensearch-dashboards
+sudo systemctl status opensearch-dashboards --no-pager | head -10
+```
+
+**② 期望输出**：两条 `ls -l` 都是 `-rwxr-x---`；`status` 显示 `Active: active (running)`。
+**③ ✅ 完成判据**：`curl -sS -o /dev/null -w '%{http_code}\n' http://10.254.212.110:5601/` 返回 `200` 或 `302`。
+**④ ✗ 失败**：仍报 `126/203` ⇒ 用 `ls -l` 逐个确认上面三条 `find` 覆盖到的路径都带 `x`；仍不行 ⇒ 参考 B · 常见故障。
 
 > **内存说明**：Dashboards 是 Node.js 进程，本方案在 unit 里把老生代封顶到 `1024MB`（官方 `config/node.options` 默认是 4096）。
 
@@ -1210,7 +1242,8 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | --- | --- | --- |
 | 启动即退出，日志 `max virtual memory areas vm.max_map_count [65530] is too low` | 内核参数没设或没持久化（重启后丢了） | 步骤 4 全做一遍；**进程内改不了**，必须在宿主设 |
 | 直接拒绝启动并提示不能以 root 运行 | 用 root（或 root 的 unit）拉起来了 | unit 里 `User=opensearch` / `Group=opensearch`（资产已设）；手工调试也要 `sudo -u opensearch …` |
-| **`status=203/EXEC`**（`Control process exited, code=exited, status=203/EXEC`，且 `logs/` 里**什么都没有**） | **systemd 在 exec 阶段就没能启动程序** ⇒ 应用根本没跑起来，所以应用日志为空，**别在 `logs/` 里找原因**。四类原因：① **`app/` 下文件被执行位被抹掉**（例如对整个 `/home/opensearch` 跑过 `chmod 664`，本项目**实际发生过**）；② `/home` 挂载带 **`noexec`**；③ 路径/属主问题导致服务账号 `opensearch` **穿不过某一级目录**；④ **SELinux / 麒麟 kysec 拒绝 exec** | ① 先看 `systemctl status opensearch -l` 与 `systemctl cat opensearch`（核对 `ExecStart` 路径）；② **手工以服务账号执行**，这一步能看到真实原因：`sudo -u opensearch /home/opensearch/app/bin/opensearch`；③ 按原因处置：**执行位** ⇒ §4.5 三条命令恢复后重启；**noexec** ⇒ `findmnt -no OPTIONS /home` 确认后把部署根挪到非 noexec 的盘；**属主/路径** ⇒ 步骤 4/步骤 10 复核（`sudo -u opensearch ls /home/opensearch/app/bin/opensearch`）；**SELinux/kysec** ⇒ `getenforce`、`ls -Z /home/opensearch/app/bin/opensearch`、`sudo ausearch -m avc -ts recent` / `journalctl -k` |
+| **`status=126/n/a`** 且日志 **`bin/use_node: cannot execute: Permission denied`**（Dashboards） | **Dashboards 程序树的执行位被抹掉**：`dashboards/app/bin/use_node`、`dashboards/app/node/bin/node` 缺 `x`（全量 `chmod 664` 波及 `dashboards/` 树）。这同样属于 **exec 阶段失败 ⇒ 应用日志通常也是空的** | 用 **步骤 17 的恢复块 A**：三条 `chmod 750` + `systemctl reset-failed opensearch-dashboards` + `restart`；核对 `ls -l …/bin/use_node …/node/bin/node` 均为 `-rwxr-x---` |
+| **`status=203/EXEC`**（`Control process exited, code=exited, status=203/EXEC`，且 `logs/` 里什么都没有） | **systemd 在 exec 阶段就没能启动程序**（OpenSearch 或 Dashboards 都可能）⇒ 应用根本没跑起来，所以应用日志为空，**别在 `logs/` 里找原因**。**`126` 与 `203` 都是权限位问题，修法一致**。四类原因：① 程序树文件缺 `x`（OpenSearch ⇒ §4.5；Dashboards ⇒ 步骤 17 恢复块 A）；② `/home` 挂载带 `noexec`；③ 路径/属主问题导致服务账号穿不过某一级目录；④ SELinux / 麒麟 kysec 拒绝 exec | ① `systemctl status <服务> -l` 与 `systemctl cat <服务>`（核对 `ExecStart` 路径）；② **手工以服务账号执行**看真实原因：`sudo -u opensearch /home/opensearch/app/bin/opensearch` 或 `sudo -u opensearch /home/opensearch/dashboards/app/bin/opensearch-dashboards`；③ 按原因处置：执行位 ⇒ §4.5 / 步骤 17 恢复块 A；`noexec` ⇒ `findmnt -no OPTIONS /home`；属主/路径 ⇒ 步骤 4 与步骤 10；SELinux/kysec ⇒ `getenforce`、`ls -Z`、`sudo ausearch -m avc -ts recent`、`journalctl -k` |
 | **systemd 启动失败，日志报权限不足 / `status=200/CHDIR` / 找不到 `/home/opensearch/app/bin/opensearch`** | 属主或权限不对（D 方案下**不再**是家目录穿透问题：部署根就是 `opensearch` 自己的家目录） | **步骤 4 / 步骤 10**：`sudo -u opensearch ls -d /home/opensearch` 与 `sudo -u opensearch ls /home/opensearch/app/bin/opensearch`；不对就 `sudo chown -R opensearch:opensearch /home/opensearch`。若仍报错且系统开了 SELinux，看 `ls -Z /home/opensearch` 与 `sudo ausearch -m avc -ts recent` |
 | 启动失败：`/home/opensearch` 所在盘不可写 / 数据目录报错 | `/home` 是 NFS/autofs，或空间不足 | 步骤 7：`df -h /home`、`findmnt -no SOURCE,FSTYPE,OPTIONS /home`；按"退路"把 `path.data` 指到本地盘 |
 | 启动失败：`Permission denied` 且 `/home` 挂载选项里有 **`noexec`** | `noexec` 会导致 JVM/`bin/opensearch` 无法执行 | 把部署根挪到非 `noexec` 的盘（或让平台方去掉 `noexec`；**`nosuid`/`nodev` 无需处理**，见 步骤 7） |
@@ -1834,6 +1867,7 @@ curl -sS -u "$AUTH" "$OS/pm-ai-chunks/_count"      # 期望 {"count":<N>,"_shard
 | docs-1.6（修订七） | 2026-09-23 | **按"先收暴露面、再起服务"调顺序 + 去强调词**：① **防火墙从运维章末提前到宿主准备章**（现为 步骤 8），步骤 1.6 跨机可达与 步骤 1 自检都引用它，并加"顺序原则"说明；② 步骤 12 标题去掉"唯一"字样，正文里"唯一写法/唯一口径/唯一路径"等**强调词全部去除**（靠内容表达）；③ 步骤 4 的衔接说明写明确：**要覆盖已存在的配置文件时，在终端工具里先删除再上传**（目录组可写 ⇒ 能删），然后重跑 步骤 10 收回 `640`，并指路 **附录 B.2「以服务账号干活」**；④ **附录 B 新增 B.2「以服务账号干活」**（原 B.2~B.6 顺延为 B.3~B.7）；⑤ 步骤 15 单节点故障演练**保留在主线、按必做**（新装无数据，停机成本为零，是验证"重启能自愈"的唯一手段）；⑥ `snapshot-backup.env` 保留（"用不到就别建"是事实陈述） |
 | docs-1.6（修订八） | 2026-09-23 | **修一条范围写错的命令（真故障）**：上机时 `systemctl start opensearch` 连续失败，`journalctl` 报 `Control process exited, code=exited, **status=203/EXEC**`。**根因是文档的错**：步骤 4 原文 `sudo find /home/opensearch -type f -exec chmod 664 {} +` **递归抹掉了程序目录的执行位**（`app/bin/opensearch`、`app/jdk/bin/*`、`app/jdk/lib/jspawnhelper`、`app/plugins/**/tools/*.sh`），JVM 与启动脚本无法执行。① **步骤 4 改为"只作用于运行期目录"**（`config`/`data`/`logs`/`backup`），并**明确禁止**对 `app/` 或 `dashboards/app/` 套用 `chmod 664`；② **新增 §4.5「程序目录可执行位恢复」**（三条 `chmod 750` + `daemon-reload` + `restart` + 四条复核，含"从 tar 包重新解压程序目录"的更稳替代）；③ **步骤 19 新增 `status=203/EXEC` 排障条目**（含义：systemd 在 exec 阶段就失败 ⇒ 应用日志为空，别在 `logs/` 里找；四处日志 + 四类原因与判据）；④ **步骤 10 ⑤ 核对新增"`app/bin/opensearch` 与 `jdk/bin/java` 必须带 `x`"**；⑤ **参考 A · 容量与分片 加同款红线**（不要对 `dashboards/app/` 套 `chmod 664`）；⑥ **附录 B.1 的递归 `find` 限定到运行期目录**；⑦ 资产 `opensearch.yml.example` 顶部加"权限红线"注释、`opensearch.service` 去掉已废弃的 `chmod 711 /home/lhim` 历史注释、`opensearch_dashboards.yml.example` 的示例权限由 `644` 改 `640` |
 | docs-1.6（修订九） | 2026-09-23 | **由"部署记录"改写为傻瓜式部署手册**（用户意见：这是部署文档，不是部署记录，要能照着从零部署成功）。① **删除全部状态标注与既成事实**（`（已完成）`/`（待执行）`/`（当前状态）`/"已解压完成"等）；② **新增 §1 前置条件（开始前必须具备）**：机器/架构/内存/磁盘/Docker 检查、**专用账号 `opensearch` 的从零建立命令**（`useradd -m -d /home/opensearch -s /bin/bash` + `passwd -l` + `chown` + `usermod -aG`）、目录结构建立、两个安装包位置、资产位置、端口与网络前置，**每条都有"怎么达成"的命令**；③ **"解压 tarball 到 `app/`"恢复为正式步骤**（步骤 3：`sudo -u opensearch tar -zxf … ` + `mv … app` + `chown -R` + 期望输出）；④ **主线 20 步全部改为四件套**：① 执行（可直接复制的命令块）② 期望输出（逐字给出 `"status":"green"`、`-rwxr-x---` 等）③ ✅ 完成判据 ④ ✗ 失败了怎么办（指向 §4.5 或参考 B · 常见故障的具体条目），并给出**耗时估计**；⑤ 顶部新增 **"怎么用这份文档"（3 条）+ 总步骤清单（可勾选，20 步 + 耗时）**；⑥ 危险动作（递归 `chmod`、防火墙、停机演练）在命令块紧邻处加 🔴 警告；⑦ 删除主线回溯性文字（"本项目已实际踩过这个坑"、"用户真机现状"、"本次部署不做校验"等），仅保留在附录/变更记录里；⑧ 参考章节去编号改为 **参考 B · 运维与排障 / 参考 C · 未确认项 / 附录 D · 结论与前提 / 附录 E · 索引与检索设计**，`附录 A`（3 节点）`附录 B`（变更项）`附录 C`（官方 35 条）与**变更记录**保留不动。**每步只依赖它前面的步骤**，新机器可从零照做 |
+| docs-1.6（修订十） | 2026-09-23 | **补 Dashboards 侧的同源漏洞**：上机时 `opensearch-dashboards.service` 启动失败，journald 报 `bin/use_node: cannot execute: Permission denied` → `Main process exited, code=exited, status=126/n/a`（重启计数 22）。根因与修订八同源：**之前那次全量 `chmod 664` 也波及了 `dashboards/` 树**，而手册只给了 OpenSearch `app/` 的执行位恢复。① **步骤 17 新增「恢复块 A · Dashboards 程序树执行位恢复」**（`dashboards/app/bin` + `node/bin` 与 `*.sh` 三条 `chmod 750` → 核对 `use_node`/`node` 为 `-rwxr-x---` → **`systemctl reset-failed` + `restart`**），并在失败指引里加 `126`；② **排障表新增 `status=126/n/a` 与 `status=203/EXEC` 两行**，写明 **exec 阶段失败 ⇒ 应用日志为空**、四处取证与**四类原因**，并注明"**`126` 与 `203` 都是权限位问题、修法一致**"；③ **步骤 4 权限红线扩写**：`chmod 664` 只作用于 `config`/`data`/`logs`/`backup`；**`app/` 与 `dashboards/app/` 两棵程序树都不得递归**，并给出**一次核对两棵树的四文件判据**（`app/bin/opensearch`、`app/jdk/bin/java`、`dashboards/app/bin/use_node`、`dashboards/app/node/bin/node` 必须都带 `x`） |
 
 
 
