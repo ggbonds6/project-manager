@@ -1,7 +1,7 @@
 # OpenSearch 部署与接入（本机 pdmsosgh / 10.254.212.110 · OpenSearch 3.1.0 + Dashboards 3.1.0 · tar.gz + systemd）
 
 > **文档性质：操作手册（SOP），风格与 [`部署与发布全流程手册.md`](部署与发布全流程手册.md) §0 一致** ——
-> **§0~§10 是"唯一一条路"**：每步都标了状态（**（当前状态：已完成）** / **（待执行）** / **（将来执行）**），
+> **§0~§10 是一条路走到底**：每步都标了状态（**（当前状态：已完成）** / **（待执行）** / **（将来执行）**），
 > 命令可直接复制；正文里**没有分支选项**。要"另一个做法/将来加固"，看 **附录 B（变更项）**。
 >
 > **本机事实（照此写，不需要你再判断）**：`pdmsosgh`（`10.254.212.110`），**x86_64**，**无 Docker**；
@@ -53,7 +53,7 @@
 | 索引 | `pm-ai-chunks`，**主分片 1 + 副本 0**（见 §6.1） |
 | 端口 | `9200`（REST）**只放行两台应用服务器**；`9300`（transport）本方案单节点不需对外；**9200 绝不对外** |
 | 监听 | `network.host: <本机内网IP>`（不用 `0.0.0.0`） |
-| 安全 | **内网 HTTP + basic auth（强口令）**：显式关掉 REST 层 TLS（§3.5）；transport 层 TLS 保持开启 |
+| 安全 | **内网 HTTP + basic auth（强口令）**：显式关掉 REST 层 TLS（§4.4）；transport 层 TLS 保持开启 |
 | 数据/日志/快照 | `/home/opensearch/{data,logs,backup}`（**在程序目录 `app/` 之外**，升级换 `app/` 不碰数据） |
 | 部署根 | **`/home/opensearch/`** = **专用账号 `opensearch` 自己的家目录**（`useradd -m -d /home/opensearch …` + `passwd -l` 锁登录），见 §2.4 |
 | Dashboards | **OpenSearch Dashboards 3.1.0 与 OpenSearch 同机**（`10.254.212.110:5601`，单独 systemd 服务），见 **§7** |
@@ -171,10 +171,10 @@ sudo passwd -S opensearch | awk '{print "口令状态:", $2}'   # 期望：L（l
 ```
 
 
-## 2. 权限模型与资产落位（**唯一一套命令，照抄**）　（待执行）
+## 2. 权限模型与资产落位（**照抄即可**）　（待执行）
 
 > 本机采用**权限共享**：让 `lhim` 能用终端工具直接把文件传进 `/home/opensearch` 的**任意子目录**，
-> 也让服务账号 `opensearch` 正常读写。**下面 5 条命令就是全部权限设置**，没有别的写法。
+> 也让服务账号 `opensearch` 正常读写。**下面 5 条命令就是全部权限设置。**
 > 代价（如实写在这里，不再重复）：服务目录对 `lhim` 可写 ⇒ 一次手滑（尤其批量删除）可以直接毁掉数据；
 > 若将来要收紧，见 **附录 B**（不属于本次部署步骤）。
 
@@ -209,8 +209,10 @@ umask                             # 期望：0002
 > 所以 ②③ 两条必须一起做。这两句话就是你需要的全部权限概念。
 >
 > **与本架构的衔接**：§2.2 落位的那 6 个文件都是**新建**（不是覆盖），所以只依赖目录的 `w`；
-> 落位后再由 §2.3 把它们收成 **配置 `640`**（比 664 更紧，不影响后续"覆盖上传"——
-> 需要再传时先 `rm` 再传即可，或临时 `chmod 664` 后恢复）。
+> 落位后再由 §2.3 把它们收成 **配置 `640`**。
+> **将来要"覆盖"一个已存在的配置文件时**：在终端工具里**先删除、再上传**（目录组可写 ⇒ 你有权删；
+> 删除只需要目录的 `w`，不需要文件本身的 `w`），然后重跑 §2.3 第 ① 步把它收回 `640`。
+> 更省事的做法见 **附录 B.2「以服务账号干活」**。
 
 ### 2.2 资产落位（表一：仓库 `deploy/opensearch/` 下的 6 个文件）　（待执行）
 
@@ -273,7 +275,7 @@ sudo chown -R opensearch:opensearch /home/opensearch/data /home/opensearch/logs 
 
 | 目标 | 用途 | 属主:组 | 权限 |
 | --- | --- | --- | --- |
-| `/home/opensearch/data` | `path.data`（索引数据：唯一的有状态目录） | `opensearch:opensearch` | `2775`（§2.1 ② 已含；**收紧见附录 C**） |
+| `/home/opensearch/data` | `path.data`（索引数据：唯一的有状态目录） | `opensearch:opensearch` | `2775`（§2.1 ② 已含；**收紧见附录 B.1）** |
 | `/home/opensearch/logs` 与 `logs/*.log` | `path.logs`（文件日志） | `opensearch:opensearch` | 目录 `2775`／文件 `664`（`umask 002` 保证新文件如此） |
 | `/home/opensearch/backup` 与 `backup/fs-repo` | `path.repo`（快照仓库） | `opensearch:opensearch` | 目录 `2775` |
 | `/home/opensearch/app/config/opensearch.keystore` | 安全插件密钥库（**首次安装由 demo 脚本生成**） | `opensearch:opensearch` | **`600`** |
@@ -391,7 +393,47 @@ sudo chmod 2775 /data/opensearch
 #   curl -sS -u admin:'<强口令>' 'http://127.0.0.1:9200/_nodes?filter_path=nodes.*.settings.path.data&pretty'
 ```
 
-### 3.5 时间同步　（待执行）
+### 3.5 防火墙（**firewalld；9200 绝不对外**）　（待执行）
+
+> **顺序原则：先收暴露面，再起服务** —— 这一步在 §5 启动服务之前完成，所以"服务一上线就只在白名单里可见"。
+
+| 端口 | 放行来源 | 用途 |
+| --- | --- | --- |
+| `9200/tcp` | **应用/AI 服务器**（逐个写死 IP） | REST（kNN 检索、`_bulk`、快照管理） |
+| `5601/tcp` | **运维网段 / 跳板机** | Dashboards（给人看的 UI） |
+| `9300/tcp` | **不放行**（单节点不需要对外） | 节点间 transport |
+| `9600/tcp` | **不放行** | Performance Analyzer |
+
+```bash
+# ① 确认 firewalld 在跑
+sudo systemctl enable --now firewalld
+sudo firewall-cmd --state                    # 期望 running
+
+# ② 把需要放行的来源逐个写成富规则（★把 <…> 换成真实 IP/网段，不要写 0.0.0.0/0）
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<应用/AI 服务器 IP>" port port="9200" protocol="tcp" accept'
+sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<运维网段或跳板机 IP>" port port="5601" protocol="tcp" accept'
+sudo firewall-cmd --reload
+sudo firewall-cmd --list-rich-rules          # 复核
+
+# ③ 关掉默认 zone 里可能已有的 9200/5601 全局开放（有则删，没有会提示 not present）
+sudo firewall-cmd --permanent --remove-port=9200/tcp 2>/dev/null || true
+sudo firewall-cmd --permanent --remove-port=5601/tcp 2>/dev/null || true
+sudo firewall-cmd --reload
+
+# 若本机确实没有 firewalld（只有 iptables），等价命令（仅作等价说明，不需要执行）：
+#   sudo iptables -I INPUT -p tcp -s <应用/AI 服务器 IP> -m tcp --dport 9200 -j ACCEPT
+#   sudo iptables -I INPUT -p tcp -s <运维网段> -m tcp --dport 5601 -j ACCEPT
+#   sudo iptables -A INPUT -p tcp --dport 9200 -j DROP
+#   sudo iptables -A INPUT -p tcp --dport 5601 -j DROP
+#   （持久化按平台方口径做；本机既定用 firewalld。）
+```
+
+```bash
+# ④ 自检：从【不在白名单】的机器验证它确实不通（期望超时/拒绝，绝不能是 200）
+curl -m 3 -sS -o /dev/null -w '%{http_code}\n' http://10.254.212.110:9200/ ; echo "exit=$?"
+```
+
+### 3.6 时间同步　（待执行）
 
 ```bash
 timedatectl                      # 期望 System clock synchronized: yes
@@ -401,7 +443,9 @@ date
 # 内网 NTP 源地址由平台方给（见 §10）
 ```
 
-### 3.6 从应用/AI 服务器侧确认可达　（待执行）
+### 3.7 从应用/AI 服务器侧确认可达　（待执行）
+
+> 前提：**§3.5 的防火墙已配好**（先收暴露面、再起服务）。
 
 ```bash
 # 在【应用/AI 服务器】上执行（不是在本机）
@@ -409,19 +453,22 @@ curl -sS -m 5 -o /dev/null -w '%{http_code}\n' http://10.254.212.110:9200/
 # 期望：401（说明网络通了、且要求认证 —— 这正是我们要的）
 ```
 
-### 3.7 宿主准备自检　（待执行）
+### 3.8 宿主准备自检　（待执行）
 
 ```bash
 cat /proc/sys/vm/max_map_count        # 262144
 ulimit -n                             # ≥65536（重登后 65536）
 swapon --show                         # 无输出
 findmnt -no OPTIONS /home             # 无 noexec
+sudo firewall-cmd --state             # running
+sudo firewall-cmd --list-rich-rules   # 只有 9200/5601 两条白名单
+sudo ss -lntp | grep -E ':(9200|9300|9600|5601)'   # 此时应【没有任何监听】（服务还没起）
 timedatectl | head -3                 # synchronized: yes
 uname -m                              # x86_64
 ```
 
 
-## 4. 安装（本项目唯一路径）　（待执行）
+## 4. 安装　（待执行）
 
 ### 4.1 程序目录现状　（当前状态：已完成）
 
@@ -496,7 +543,7 @@ sudo -u opensearch grep -nE '^(cluster\.name|node\.name|discovery\.type|network\
 sudo -u opensearch cat /home/opensearch/app/config/jvm.options.d/heap.options   # 期望 -Xms8g / -Xmx8g
 ```
 
-### 4.4 安全模式（**本机唯一写法：HTTP + basic auth**）
+### 4.4 安全模式（HTTP + basic auth）
 
 - `plugins.security.ssl.http.enabled: false` —— 9200 走明文 HTTP（§2.2 的 `config/opensearch.yml` 里已写好）；
 - **basic auth 仍然生效**（安全插件照旧要求 `admin` + §6.2 那个强口令）；
@@ -1157,7 +1204,7 @@ bash /home/opensearch/config/snapshot-backup.sh status
 而 `/etc/opensearch-backup.pass` 是 **`root:root 600`** —— 也就是说**非 root 的 cron 用户读不到它**，
 于是脚本在 `require_pass` 阶段就退出，**每天 2:30 静默失败**（没有快照，而你毫不知情）。
 
-**本方案唯一口径**：cron 装到 **`root`** 的 crontab，口令文件 `/etc/opensearch-backup.pass` 保持
+**cron 装到 `root` 的 crontab**，口令文件 `/etc/opensearch-backup.pass` 保持
 **`root:root 600`** —— 三者天然自洽（root 读写 `backup/`、`logs/` 不受限，口令也最安全）。
 
 ```bash
@@ -1327,48 +1374,9 @@ curl -sS -u admin:'<强口令>' http://127.0.0.1:9200/_cluster/health | head -3 
 | 首次检索特别慢（几十秒~分钟级） | **惰性向量化在问答路径上**（§9.2 现状） | 按 §9.2 先灌满索引再切 `VEC_BACKEND`；临时手段是重复发几次同样的提问 |
 | 快照失败 `repository_exception` / 报目录不可写 | 仓库目录属主不对或不在 `path.repo` 之下 | `sudo chown -R opensearch:opensearch /home/opensearch/backup`；核对 `path.repo` 与脚本 `REPO_LOCATION` 的父子关系 |
 | `snapshot-backup.sh` 报无法免密 ssh | `rsync` 到 `.111` 需要免密 | `ssh-copy-id lhim@10.254.212.111`；或临时 `SKIP_REMOTE=1`（但**别长期跳过**，否则没有异地副本） |
-| AI 日志"集群不可达（http://…）" | 网络/防火墙/`network.host` 三者之一 | 在 AI 那台跑 §3.6 与 §5.2 A6；核对 `network.host` 与 §8.6 白名单 |
+| AI 日志"集群不可达（http://…）" | 网络/防火墙/`network.host` 三者之一 | 在 AI 那台跑 §3.6 与 §5.2 A6；核对 `network.host` 与 §3.5 白名单 |
 
 ---
-
-### 8.6 防火墙（**firewalld；9200 绝不对外**）　（待执行）
-
-| 端口 | 放行来源 | 用途 |
-| --- | --- | --- |
-| `9200/tcp` | **应用/AI 服务器**（逐个写死 IP） | REST（kNN 检索、`_bulk`、快照管理） |
-| `5601/tcp` | **运维网段 / 跳板机** | Dashboards（给人看的 UI） |
-| `9300/tcp` | **不放行**（本方案是单节点，不需要对外） | 节点间 transport |
-| `9600/tcp` | **不放行** | Performance Analyzer |
-
-```bash
-# ① 确认 firewalld 在跑
-sudo systemctl enable --now firewalld
-sudo firewall-cmd --state                    # 期望 running
-
-# ② 把需要放行的来源逐个写成富规则（★把 <…> 换成真实 IP/网段，不要写 0.0.0.0/0）
-sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<应用/AI 服务器 IP>" port port="9200" protocol="tcp" accept'
-sudo firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="<运维网段或跳板机 IP>" port port="5601" protocol="tcp" accept'
-sudo firewall-cmd --reload
-sudo firewall-cmd --list-rich-rules          # 复核
-
-# ③ 关掉默认 zone 里可能已有的 9200/5601 全局开放（有则删，没有会提示 not present）
-sudo firewall-cmd --permanent --remove-port=9200/tcp 2>/dev/null || true
-sudo firewall-cmd --permanent --remove-port=5601/tcp 2>/dev/null || true
-sudo firewall-cmd --reload
-
-# 若本机确实没有 firewalld（只有 iptables），等价命令（仅作等价说明，不需要执行）：
-#   sudo iptables -I INPUT -p tcp -s <应用/AI 服务器 IP> -m tcp --dport 9200 -j ACCEPT
-#   sudo iptables -I INPUT -p tcp -s <运维网段> -m tcp --dport 5601 -j ACCEPT
-#   sudo iptables -A INPUT -p tcp --dport 9200 -j DROP
-#   sudo iptables -A INPUT -p tcp --dport 5601 -j DROP
-#   （持久化按平台方口径做；本机既定用 firewalld。）
-```
-
-```bash
-# ④ 自检：从【不在白名单】的机器验证它确实不通（期望超时/拒绝，绝不能是 200）
-curl -m 3 -sS -o /dev/null -w '%{http_code}\n' http://10.254.212.110:9200/ ; echo "exit=$?"
-```
-
 
 ## 9. AI 服务接入与切换/回滚　（待执行）
 
@@ -1569,7 +1577,7 @@ sudo systemctl stop opensearch
 | 3 | **现网真实文档数与切片总数**（§9.1 规模表按 30 切片/份估算） | 决定"要不要现在就上"以及 §9.2 的重建耗时 | 你（`/documents` 或自检页） |
 | 4 | **"切片带项目/密级元数据"的落地排期**（`project_id`/`security_level` 目前无人写入） | 不做这一步，"先过滤再检索"只是**能力就绪**、不是**功能可用** | 你 / 开发方 |
 | 5 | **平台是否真的不支持降维**（本仓库实测传 `dimensions` → HTTP 400） | 决定 `VEC_EMBED_DIMENSIONS` 永远为 0（本文按"不传"写） | 平台方 |
-| 6 | **AI 能力服务实际跑在哪台机器上**、其容器是否设 `-Xmx` | 决定 §9.1 的 `OPENSEARCH_URL` 与 §8.6 的防火墙白名单 | 你 |
+| 6 | **AI 能力服务实际跑在哪台机器上**、其容器是否设 `-Xmx` | 决定 §9.1 的 `OPENSEARCH_URL` 与 §3.5 的防火墙白名单 | 你 |
 | 7 | **是否要上监控/告警栈**（Prometheus / Grafana / OpenSearch 告警插件） | §9.4 的指标目前只能手工巡检 | 你 |
 | 8 | **`.111` 演练机的 ssh 免密是否允许配置**（`snapshot-backup.sh` 的 rsync 需要） | 不配就只能 `SKIP_REMOTE=1`，等价于没有异地副本 | 你 |
 | 9 | **Dashboards 系统索引的实际名字**（脚本按 `.opensearch_dashboards*` 与 `.opendistro_security` 写，点号前缀未经真机确认） | 若实际名字不同，快照会"成功但没备到"，恢复后表现为界面空白/权限回默认 | 你（`_cat/indices?v` 看一眼，见 §7.5） |
@@ -1639,13 +1647,36 @@ sudo -u opensearch -s      # 进去后用普通 cp 落位，属主天然是 open
 ```
 **代价**：`lhim` 不能再用终端工具直传；每次落位都要 `sudo` 或切账号。
 
-### B.2 单独收紧 `data/`（保留共享，但防误删索引数据）
+### B.2 以服务账号干活（不动任何权限，落位最省事）
+
+**什么时候考虑**：不想为了传文件而开组写；或落位动作频繁（改配置、补证书、换版本）。
+**做法**：把资产交给服务账号，然后**以它的身份**操作——所有 `cp`/`mkdir`/`chmod` 都在它自己的家目录里完成，**不需要 `sudo`**。
+
+```bash
+sudo cp -r <你的资产目录>/deploy /home/opensearch/
+sudo chown -R opensearch:opensearch /home/opensearch/deploy
+sudo -u opensearch -s                      # 之后所有文件操作都以 opensearch 身份进行
+# （进去后）
+cd /home/opensearch
+cp deploy/opensearch/opensearch.yml.example config/opensearch.yml
+mkdir -p config/jvm.options.d
+cp deploy/opensearch/jvm.options.d/heap.options config/jvm.options.d/
+cp deploy/opensearch/snapshot-backup.sh config/ && chmod 750 config/snapshot-backup.sh
+cp config/opensearch.yml app/config/opensearch.yml
+mkdir -p app/config/jvm.options.d && cp config/jvm.options.d/heap.options app/config/jvm.options.d/
+exit
+```
+
+**两个必须记住的点**：
+1. 两个 systemd unit **仍必须 root 落位**：`sudo install -D -o root -g root -m 644 <源> /etc/systemd/system/<unit>`；
+2. `cp` 会保留源权限位 —— 若源是 `644`，进去后补一条 `chmod 640`（或直接用 `install -m 640`）。
+### B.3 单独收紧 `data/`（保留共享，但防误删索引数据）
 
 **什么时候考虑**：仍用权限共享，但不想让 `lhim` 误删/误覆盖索引数据。
 **要改什么**：`sudo chmod -R 2750 /home/opensearch/data`（**只这一个目录**，其余仍按 §2.1 共享）。
 **注意**：做完后 `lhim` 不能再往 `data/` 传文件；备份/恢复走 §9 的快照流程，不需要人工往 `data/` 放东西。
 
-### B.3 给 Dashboards 改用专用只读账号（不用 `admin`）
+### B.4 给 Dashboards 改用专用只读账号（不用 `admin`）
 
 **什么时候考虑**：安全基线要求"服务账号最小权限"。
 **要改什么**：在 `app/config/opensearch-security/` 下加内部用户与角色
@@ -1655,7 +1686,7 @@ sudo -u opensearch -s      # 进去后用普通 cp 落位，属主天然是 open
 `dashboards/app/config/opensearch_dashboards.yml` 的 `opensearch.username/password`。
 **注意**：`securityadmin.sh` 的证书路径以 `app/config/*.pem` 实际文件名为准（§6.2 生成的那套）。
 
-### B.4 REST 层改走自签 TLS（等保要求传输加密时）
+### B.5 REST 层改走自签 TLS（等保要求传输加密时）
 
 **什么时候考虑**：合规明确要求"管理面传输加密"。
 **要改什么**：把 `config/opensearch.yml` 的 `plugins.security.ssl.http.enabled` 改成 `true`，
@@ -1665,13 +1696,13 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 `opensearch.ssl.verificationMode`。
 **代价**：自签证书有有效期，到期不换会全线连不上；证书轮换要重启服务。
 
-### B.5 日志轮转交给平台方统一采集
+### B.6 日志轮转交给平台方统一采集
 
 **什么时候考虑**：机房已有统一日志平台（集中采集 + 轮转）。
 **要改什么**：删掉本机自建的 `/etc/logrotate.d/opensearch`（§9.3），改由平台方采集。
 **验收口径不变**：`du -sh /home/opensearch/logs` 不单调增长，`df -h /home` 有足够余量。
 
-### B.6 加第 3 台 → 3 节点集群
+### B.7 加第 3 台 → 3 节点集群
 
 见 **附录 A**（只改两个参数）。
 
@@ -1684,7 +1715,7 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 
 | # | 项 | 官方怎么说 | 我们原来怎么写 | 现在改成什么 |
 | --- | --- | --- | --- | --- |
-| 1 | **默认 REST 层是 HTTPS** | Tar 页 Step 3 的验证命令是 `curl -X GET https://localhost:9200 -u 'admin:<password>' --insecure`；demo 脚本"applies self-signed TLS certificates" | 写的是"内网 HTTP + basic auth"，**没有显式处理 TLS** | **第四章 §4.4** 定为唯一写法：**HTTP + basic auth**，在配置资产里**显式写下** `plugins.security.ssl.http.enabled: false`（自签 TLS 的改法移到**附录 B**，不在部署步骤里） |
+| 1 | **默认 REST 层是 HTTPS** | Tar 页 Step 3 的验证命令是 `curl -X GET https://localhost:9200 -u 'admin:<password>' --insecure`；demo 脚本"applies self-signed TLS certificates" | 写的是"内网 HTTP + basic auth"，**没有显式处理 TLS** | **第四章 §4.4** 定为写法：**HTTP + basic auth**，在配置资产里**显式写下** `plugins.security.ssl.http.enabled: false`（自签 TLS 的改法移到**附录 B**，不在部署步骤里） |
 | 2 | **口令复杂度** | demo 配置页四条：8~100 字符；四类字符各至少一个；**zxcvbn 达 strong 或以上**；**不得与用户名 admin 相似** | 只写了">=8 位 + 四类字符齐全" | **§4.2** 按官方**四条**逐字写全，并说明"四类字符齐全也可能被拒" |
 | 3 | **`DISABLE_INSTALL_DEMO_CONFIG=true` 的后果** | 镜像/安装脚本 README 的 Scenario 3：跳过 demo 脚本 ⇒ **没有证书与安全配置**，安全插件开着就会**启动失败** | Docker 编排里设了 `DISABLE_INSTALL_DEMO_CONFIG: "true"` 且同时启用安全插件 —— **这是错的，会起不来** | **删掉 Docker 路线**；tar 路线改为"**让 demo 脚本正常跑**（拿到证书与 admin 用户），用强口令保证口令安全"，并在 §3.2/§3.3 讲清顺序 |
 | 4 | **`OPENSEARCH_INITIAL_ADMIN_PASSWORD` 的用法** | tar 路线：先 `export OPENSEARCH_INITIAL_ADMIN_PASSWORD=<强口令>`，再 `./opensearch-tar-install.sh`；2.12 起不设会失败 | 把它当成 Docker 的环境变量写在 compose 里 | 改为 **§4.2** 的 `export` + 脚本（tar 语汇），并说明它只在**首次**生效 |
@@ -1694,7 +1725,7 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 | 8 | **systemd unit 示例** | 官方给了完整示例：`Type=forking`、`ExecStart=/opt/opensearch/bin/opensearch -d`、`User/Group=opensearch`、`StandardOutput=journal`、`LimitNOFILE=65535`、`LimitNPROC/LimitAS/LimitFSIZE`、`TimeoutStopSec=0`、`KillSignal=SIGTERM`、`KillMode=process`、`SendSIGKILL=no`、`SuccessExitStatus=143`、`TimeoutStartSec=75`；并提醒 **tar + systemd 非生产推荐**（要 systemd 就用 RPM） | 原来用 Docker，**没有 unit** | 资产 [`opensearch.service`](../deploy/opensearch/opensearch.service) **照官方示例改写**，只改三处：路径→`/home/opensearch/app`、保留 User/Group 语义、**补 `LimitMEMLOCK=infinity` + `Environment=MAX_MAP_COUNT=262144`**，并保留官方的"非生产推荐"提醒；unit 由 **§2.2** 落位、**§5.1** 启动 |
 | 9 | **memlock 与 `MAX_MAP_COUNT`** | 官方 configuring-opensearch：systemd 托管且开 `bootstrap.memory_lock` 时，需要放开 memlock 并设 `MAX_MAP_COUNT=262144` | 原 compose 用 `ulimits.memlock: -1`（容器语汇） | 改为 unit 的 `LimitMEMLOCK=infinity` + `Environment=MAX_MAP_COUNT=262144`，并在 §2.2/§1.2 A4 给出验证命令 |
 | 10 | **专用非 root 用户** | Tar 页：`sudo adduser --system --shell /bin/bash -U --no-create-home opensearch`；`sudo usermod -aG opensearch $USER`；`sudo chown -R opensearch /opt/opensearch/`；OpenSearch 不能以 root 运行 | 原方案靠容器内 uid 1000（宿主 `chown 1000:1000`） | §2.4/§3.4 全部改为**系统用户 `opensearch` + `chown -R opensearch:opensearch`**，并给"权限不对"的排障行 |
-| 11 | **端口 9600** | 官方（Docker 与 tar）都提 `9200`（REST）与 `9600`（Performance Analyzer） | 原来只讨论 9200，9600 未表态 | **§8.6** 明确：**9600 不放行**（本方案不用 Performance Analyzer） |
+| 11 | **端口 9600** | 官方（Docker 与 tar）都提 `9200`（REST）与 `9600`（Performance Analyzer） | 原来只讨论 9200，9600 未表态 | **§3.5** 明确：**9600 不放行**（本方案不用 Performance Analyzer） |
 | 12 | **数据/日志/备份路径与属主** | 官方 tar 路线不规定安装路径（"The tarball installation does not define a specific installation path, users, roles, or permissions"），但要自己保证权限正确；官方示例把 `data` 放在安装目录下 | 原来绑定宿主目录 `1000:1000`（容器语汇） | §0.2/§2.4 定稿 `/home/opensearch/{app,config,data,logs,backup}`，**data/logs 放在安装目录之外**（升级不碰数据），属主 `opensearch:opensearch`、权限 750（文件 644 / keystore 600） |
 | 13 | **升级与"复制 config"** | 官方 tar 升级思路是"换程序目录、带上你自己的 `config/`"（安全配置与证书都要自己接管） | 原来是 `docker load` 换 tag；升级段只写了"把证书/`opensearch-security/`/keystore 也带过去"，**没有属主与权限** | §8.3 改为 stop → 解包新目录 → **复制 `config/opensearch.yml` + `jvm.options.d/` + demo 生成的证书与 `opensearch-security/`** → **⑥ 明确属主与权限（`*.pem`/`opensearch-security/*.yml` = `640`、`keystore` = `600`、`tools/*.sh` = `750`，一律 `opensearch:opensearch`）** → chown/chmod → 换目录 → start；旧目录留作回滚。**升级后最常见的 644/640 事故就发生在这里** |
 | 14 | **`plugins.security.ssl.http.enabled` 的默认值** | 安全设置页：该设置 "Default is `false`"，但 demo 脚本会把它设成 **true**（所以 quickstart 用 HTTPS） | 原来只有"TLS 可选"一句，说不清默认到底是什么 | **§4.4** 明确：字段默认 false，但 demo 配置会改成 true，因此我们**必须显式写 false** |
@@ -1718,7 +1749,7 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 | 32 | **heap 覆盖目录 `jvm.options.d/` 与自带 JDK（3.x）** | 3.x Tar 页：**"The tarball is a self-contained directory with everything needed to run OpenSearch, including an integrated Java Development Kit (JDK)"**；Step 4 给的是 `export OPENSEARCH_JAVA_HOME=/path/to/opensearch-<版本>/jdk`；调整堆的官方写法是**改 `config/jvm.options`**（页面未提 `jvm.options.d`） | 上一版声称 `jvm.options.d/` 是"官方支持的覆盖目录" | §3.3 保留 `jvm.options.d/heap.options` 做法，但**改口径**：把它写成"**我们的做法**（借 JVM 官方启动脚本会读取 `jvm.options.d/*.options` 的机制）"，并注明**官方 Tar 页只写了改 `config/jvm.options`**；同时写入 **3.x 自带 JDK**（`app/jdk`）与 `OPENSEARCH_JAVA_HOME` 的设置方式，明确"宿主不需要预装 Java" |
 | 33 | **systemd 示例（3.x 是否与 2.x 相同）** | 3.x Tar 页的 systemd 一节与 2.x **逐行相同**（`Type=forking`、`ExecStart=/opt/opensearch/bin/opensearch -d`、`User/Group`、`StandardOutput=journal`、`LimitNOFILE=65535`、`LimitNPROC/LimitAS/LimitFSIZE`、`TimeoutStopSec=0`、`KillSignal=SIGTERM`、`KillMode=process`、`SendSIGKILL=no`、`SuccessExitStatus=143`、`TimeoutStartSec=75`），并且**同样标注"只适合非生产、要 systemd 就用 RPM"**；Dashboards tar 页在 3.x **仍然只给三步、仍没有 systemd 示例** | 上一版已照该示例写 | **保持**（`opensearch.service` 不动逻辑），只在附录 B 登记"3.x 逐行相同"；Dashboards 的 unit 继续按"照官方 OpenSearch unit + 按 Node 运行方式改 3 处"的口径，并在 §7.4 与 unit 注释里标明"官方无示例" |
 | 34 | **Dashboards 的 yml 键与 Node 堆默认值（3.x）** | 3.x 官方示例 `config/opensearch_dashboards.yml`：`opensearch.requestHeadersWhitelist` **仍标注 DEPRECATED**（新名 `requestHeadersAllowlist`）、`opensearch_security.multitenancy.enabled` 仍存在且官方注释仍写"**workspace 与多租户互斥**"；`config/node.options` 的示例默认**仍是 `--max-old-space-size=4096`**（`--max-semi-space-size=64` 注释保留） | 上一版已按这套写 | **保持**，附录 B 登记"3.x 复核：键名/互斥关系/4096 默认值均未变" |
-| 35 | **资产落位与权限（官方未覆盖，属本项目运维约定）** | 官方 Tar 页只说"不定义安装路径/用户/权限，要自己保证正确"；安全插件文档要求配置不得"组/其他人可写"；systemd 要求 unit 属主为 root | 前几版把落位/属主/权限散落多处，**出现两套说法**（`644` 与 `640` 混用；旧版还写了服务器上不存在的相对路径 `deploy/…`） | **§2 收敛为唯一一套**：`deploy/opensearch/` 下 6 个资产的落位表（目标路径 + 属主:组 + 权限）、运行期落位表（含 keystore `600`、`tools/*.sh` `750`、口令文件 `600`）、**7 条核对命令**；权限按本机采用的**共享模型**：目录 `2775` / 文件 `664` / 私钥 `640`；两个 unit 仍 `root:root 644` |
+| 35 | **资产落位与权限（官方未覆盖，属本项目运维约定）** | 官方 Tar 页只说"不定义安装路径/用户/权限，要自己保证正确"；安全插件文档要求配置不得"组/其他人可写"；systemd 要求 unit 属主为 root | 前几版把落位/属主/权限散落多处，**出现两套说法**（`644` 与 `640` 混用；旧版还写了服务器上不存在的相对路径 `deploy/…`） | **§2 收敛为一套**：`deploy/opensearch/` 下 6 个资产的落位表（目标路径 + 属主:组 + 权限）、运行期落位表（含 keystore `600`、`tools/*.sh` `750`、口令文件 `600`）、**7 条核对命令**；权限按本机采用的**共享模型**：目录 `2775` / 文件 `664` / 私钥 `640`；两个 unit 仍 `root:root 644` |
 
 ## 11. 变更记录
 
@@ -1731,6 +1762,7 @@ Dashboards 的 `opensearch.hosts` 同步改 `https://`，并配 `opensearch.ssl.
 | docs-1.6（修订五） | 2026-09-23 | **补"仓库资产落位对照表"（属主/权限/`install` 命令 + 两条省事路径）**：真机上卡在"父目录能写、`config` 不能写、`cp` 进去属主变 `lhim`"——新增落位表（源→目标→属主:组→权限，6 个资产）、三条纪律、核对命令、两条省事路径（不动权限的"以服务账号干活" / 权限共享），并写明权限共享的代价；权限统一到 **配置 `640` / 脚本 `750` / unit `root:root 644`** |
 | docs-1.6（修订五·补） | 2026-09-23 | 补齐 7 处"文件落位"缺口：**Dashboards 配置节的仓库相对路径错误修正**、`dashboards/app/` 属主、`backup/fs-repo` 进表、`snapshot-backup.env`（`600`）、`tools/*.sh` 的 `x` 位、**升级段补证书/keystore 的属主与权限**、`/etc` 两处进表；并加"目录 `w` vs 文件 `w`"的最小权限解释 |
 | docs-1.6（修订五·收口） | 2026-09-23 | 收口 4 条：**cron 落位与口令自洽**（新增 cron 子节：三者必须对齐，否则备份每天静默失败）、`opensearch.keystore`（`600`）与 `opensearch-security/` 目录（`750`）进表、**日志轮转（logrotate）**建议与"磁盘满"排障交叉引用、`backup/dist/` 一行 |
-| docs-1.6（修订六） | 2026-09-23 | **主线去分支，按真机现状写成唯一路径**（本次）。① **删除"校验"整块**：`sha512sum -c`、`.sha512`、Windows `Get-FileHash` 那套全部移出主线（官方 URL 口径只在附录 C 留档，且不指向主线步骤）。② **删除"过程性/搬运"叙述**：浏览器下载 → `/home/lhim/software` → 复制到 `/home/opensearch` 的链路、`scp`、跨用户拷贝、`/tmp` 中转、`install -D`/`chown` 的"怎么搬进去"全部删除；**主线直接从现状开始**（"两个安装包已在 `/home/opensearch/`，`app/` 已解压完成"）。③ **每步状态标注**：（当前状态：已完成）/（待执行）/（将来执行）。④ **权限改为唯一写法**：本机采用**权限共享**（`find -type d 2775` / `-type f 664` / `*.pem 640` / `umask 002` / 断连重连），删掉"路线一/二"与"data/ 建议收紧"等并列说法（收紧移到附录 B）。⑤ **安全模式唯一**：HTTP + basic auth（自签 TLS 移到附录 B）。⑥ **Dashboards 账号用 `admin`**（只读账号移到附录 B）。⑦ **备份 cron 唯一口径**：`root` 的 crontab + `/etc/opensearch-backup.pass`（`root:root 600`）。⑧ **logrotate 本机自建**（平台方统一采集移到附录 B）。⑨ **防火墙以 firewalld 为主线**，iptables 仅作为同一代码块内的注释。⑩ **章节重排**：现状 → 权限 → 宿主准备 → 落位 → 安装 → systemd 验收 → 索引与检索 → Dashboards → 运维（含快照/cron/防火墙）→ AI 接入 → 未确认项；**附录 A（3 节点）/ 附录 B（变更项，原"将来加固"内容）/ 附录 C（官方逐条核对 35 条）**。全文 2261 → 约 1720 行 |
+| docs-1.6（修订六） | 2026-09-23 | **主线去分支，按真机现状写成一条路**（本次）。① **删除"校验"整块**：`sha512sum -c`、`.sha512`、Windows `Get-FileHash` 那套全部移出主线（官方 URL 口径只在附录 C 留档，且不指向主线步骤）。② **删除"过程性/搬运"叙述**：浏览器下载 → `/home/lhim/software` → 复制到 `/home/opensearch` 的链路、`scp`、跨用户拷贝、`/tmp` 中转、`install -D`/`chown` 的"怎么搬进去"全部删除；**主线直接从现状开始**（"两个安装包已在 `/home/opensearch/`，`app/` 已解压完成"）。③ **每步状态标注**：（当前状态：已完成）/（待执行）/（将来执行）。④ **权限改为写法**：本机采用**权限共享**（`find -type d 2775` / `-type f 664` / `*.pem 640` / `umask 002` / 断连重连），删掉"路线一/二"与"data/ 建议收紧"等并列说法（收紧移到附录 B）。⑤ **安全模式唯一**：HTTP + basic auth（自签 TLS 移到附录 B）。⑥ **Dashboards 账号用 `admin`**（只读账号移到附录 B）。⑦ **备份 cron 口径**：`root` 的 crontab + `/etc/opensearch-backup.pass`（`root:root 600`）。⑧ **logrotate 本机自建**（平台方统一采集移到附录 B）。⑨ **防火墙以 firewalld 为主线**，iptables 仅作为同一代码块内的注释。⑩ **章节重排**：现状 → 权限 → 宿主准备 → 落位 → 安装 → systemd 验收 → 索引与检索 → Dashboards → 运维（含快照/cron/防火墙）→ AI 接入 → 未确认项；**附录 A（3 节点）/ 附录 B（变更项，原"将来加固"内容）/ 附录 C（官方逐条核对 35 条）**。全文 2261 → 约 1720 行 |
+| docs-1.6（修订七） | 2026-09-23 | **按"先收暴露面、再起服务"调顺序 + 去强调词**：① **防火墙从运维章末提前到宿主准备章**（现为 §3.5），§3.7 跨机可达与 §3.8 自检都引用它，并加"顺序原则"说明；② §4.4 标题去掉"唯一"字样，正文里"唯一写法/唯一口径/唯一路径"等**强调词全部去除**（靠内容表达）；③ §2.1 的衔接说明写明确：**要覆盖已存在的配置文件时，在终端工具里先删除再上传**（目录组可写 ⇒ 能删），然后重跑 §2.3 收回 `640`，并指路 **附录 B.2「以服务账号干活」**；④ **附录 B 新增 B.2「以服务账号干活」**（原 B.2~B.6 顺延为 B.3~B.7）；⑤ §5.4 单节点故障演练**保留在主线、按必做**（新装无数据，停机成本为零，是验证"重启能自愈"的唯一手段）；⑥ `snapshot-backup.env` 保留（"用不到就别建"是事实陈述） |
 
 
