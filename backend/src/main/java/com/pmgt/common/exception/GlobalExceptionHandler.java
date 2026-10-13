@@ -41,6 +41,21 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(e.getStatus()).body(R.fail(e.getStatus(), e.getMessage()));
     }
 
+    /**
+     * AI 服务流水线回写（{@code /api/ai/pipeline/**}）的拒绝——同样<b>原样返回真实 HTTP 状态码</b>。
+     *
+     * <p>与 {@link AiQueryException} 同一条理由（调用方是 AI 服务而非浏览器前端），
+     * 只是语义不同：这里是"写"，所以多出 409（租约失效/状态冲突，AI 应停止并放回）
+     * 与 404（run 不存在，或队列为空没有领到）。
+     *
+     * <p>只处理这一个新类型，其它异常路径（含 {@code BizException}）行为一字未改。
+     */
+    @ExceptionHandler(com.pmgt.module.ai.pipeline.AiPipelineException.class)
+    public ResponseEntity<R<Void>> handleAiPipeline(com.pmgt.module.ai.pipeline.AiPipelineException e) {
+        log.warn("[ai-pipeline] 拒绝 HTTP {}：{}", e.getStatus(), e.getMessage());
+        return ResponseEntity.status(e.getStatus()).body(R.fail(e.getStatus(), e.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public R<Void> handleValid(MethodArgumentNotValidException e) {
         String msg = e.getBindingResult().getFieldErrors().stream()
@@ -63,12 +78,23 @@ public class GlobalExceptionHandler {
             return ResponseEntity.status(400).body(R.fail(400,
                     "请求体格式错误：必须是 {\"filters\": {...}, \"limit\": 20}；filters 只能是对象"));
         }
+        if (isAiPipelinePath(request)) {
+            // 同上：AI 服务写流水线时，请求体坏掉必须是真实 400（别让它当成"服务端故障"去重试）
+            return ResponseEntity.status(400).body(R.fail(400,
+                    "请求体格式错误：必须是 snake_case 字段的 JSON 对象（如 "
+                            + "{\"status\":\"DONE\",\"item_count\":12}），且 Content-Type 为 application/json"));
+        }
         return ResponseEntity.ok(R.fail(400, "请求体格式错误"));
     }
 
     private static boolean isAiQueryPath(HttpServletRequest request) {
         String uri = request == null ? null : request.getRequestURI();
         return uri != null && uri.startsWith(com.pmgt.module.ai.query.ScopeTokenFilter.PATH_PREFIX);
+    }
+
+    private static boolean isAiPipelinePath(HttpServletRequest request) {
+        String uri = request == null ? null : request.getRequestURI();
+        return com.pmgt.common.security.ApiPaths.isServicePipeline(uri);
     }
 
     @ExceptionHandler(NoResourceFoundException.class)

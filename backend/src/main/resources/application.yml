@@ -93,6 +93,33 @@ pm:
     #             ⇒ token 取 300s（= nginx 上限，最宽松仍不越界）。
     # 上限写死在代码里（ScopeTokenService.MAX_TTL_SECONDS=300）：配大了会被夹回，只能配小。
     scope-token-ttl-seconds: ${PM_AI_SCOPE_TOKEN_TTL_SECONDS:300}
+    # ── 解析流水线回写（AI 服务 → 主系统，/api/ai/pipeline/**）────────────────
+    # 契约见 docs/RAG流水线设计与并发管理.md §4.4.3 方案 B（AI 不直连库，回调主系统）。
+    pipeline:
+      # 【入站】服务间令牌：AI 服务在 X-AI-Service-Token 头里携带。
+      # 与上面的 pm.ai.token 是**同一个环境变量**（一个令牌两个方向，运维只配一次）：
+      # 出站主系统把它发出去，入站主系统拿它校验回来的人。
+      # ⚠️ 留空 = /api/ai/pipeline/** 全部 401（fail closed）：宁可部署时立刻看到 401，
+      # 也不要在一个"忘了配"的环境里留一个无人鉴权的写接口。
+      service-token: ${AI_SERVICE_TOKEN:}
+      # 领取租约（秒）：AI 侧每 30s 心跳续约；过期视为可重新领取（T7 stale claim recovery）。
+      # 夹在 [15, 3600] 内（写错也不至于让任务永不回收）。
+      lease-seconds: ${PM_AI_PIPELINE_LEASE_SECONDS:90}
+      # 投影兜底阈值（秒）：详情里某阶段仍 RUNNING 且超时无上报 ⇒ 只在展示层标 STALE，
+      # **不改数据库状态**（只读兜底，见设计文档 §4.4.3 方案 C）。
+      stale-running-seconds: ${PM_AI_PIPELINE_STALE_RUNNING_SECONDS:300}
+      # 流水线版本串：幂等键 task_key = sha1(content_hash + pipeline_rev) 的一半。
+      # 任一段变化即视为"需要重建"；embed 那一段由 AI 侧在 /finish 上报里带。
+      pipeline-rev: ${PM_AI_PIPELINE_REV:parse=1,clean=0,chunk=0}
+      # 清洗规则版本（V15 clean_rev）：0 = 未经过清洗（存量行语义）。
+      clean-rev: ${PM_AI_PIPELINE_CLEAN_REV:0}
+      # 优先级（数值越大越优先，抢占式领取按 priority DESC 取）：
+      # 交互式 = 用户在界面点「解析 / 重试」；批量 = 上传成功后自动触发（用户在等的是上传）。
+      interactive-priority: ${PM_AI_PIPELINE_PRIORITY_INTERACTIVE:10}
+      batch-priority: ${PM_AI_PIPELINE_PRIORITY_BATCH:0}
+      # 产物摘要上限（字符）：与 V15 的 content_json VARCHAR(4000 CHAR) 对齐，
+      # 超长截断并把真实长度记进 char_count（全文留在 AI 服务 work/）。
+      max-artifact-content-chars: ${PM_AI_PIPELINE_MAX_ARTIFACT_CHARS:4000}
 
 logging:
   level:

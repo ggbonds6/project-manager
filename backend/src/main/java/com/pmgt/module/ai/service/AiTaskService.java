@@ -11,8 +11,9 @@ import com.pmgt.module.ai.dto.AiPageVO;
 import com.pmgt.module.ai.dto.AiTaskVO;
 import com.pmgt.module.ai.entity.AttachmentAiTask;
 import com.pmgt.module.ai.mapper.AttachmentAiTaskMapper;
+import com.pmgt.module.ai.pipeline.AiPipelineKeys;
+import com.pmgt.module.ai.pipeline.service.AiPipelineClaimService;
 import com.pmgt.module.attach.entity.Attachment;
-import com.pmgt.module.attach.mapper.AttachmentMapper;
 import com.pmgt.module.log.service.OperationLogService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +22,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.io.InputStream;
+import java.security.DigestInputStream;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -54,25 +56,28 @@ public class AiTaskService {
     private final AiProperties props;
     private final AiServiceClient ai;
     private final AttachmentAiTaskMapper taskMapper;
-    private final AttachmentMapper attachmentMapper;
     private final AttachmentStorage attachmentStorage;
     private final AiScopeResolver scopeResolver;
     private final OperationLogService operationLogService;
+    private final AiAttachmentIndexWriter indexWriter;
+    private final AiPipelineClaimService pipeline;
 
     public AiTaskService(AiProperties props,
                          AiServiceClient ai,
                          AttachmentAiTaskMapper taskMapper,
-                         AttachmentMapper attachmentMapper,
                          AttachmentStorage attachmentStorage,
                          AiScopeResolver scopeResolver,
-                         OperationLogService operationLogService) {
+                         OperationLogService operationLogService,
+                         AiAttachmentIndexWriter indexWriter,
+                         AiPipelineClaimService pipeline) {
         this.props = props;
         this.ai = ai;
         this.taskMapper = taskMapper;
-        this.attachmentMapper = attachmentMapper;
         this.attachmentStorage = attachmentStorage;
         this.scopeResolver = scopeResolver;
         this.operationLogService = operationLogService;
+        this.indexWriter = indexWriter;
+        this.pipeline = pipeline;
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -147,15 +152,21 @@ public class AiTaskService {
         task.setFilename(att.getFileName());
         task.setStatus(AttachmentAiTask.QUEUED);
         task.setProgress(0);
+        // V15 的流水线列：分类 / 优先级 / 版本串（幂等键 task_key 由 content_hash + pipeline_rev 派生）。
+        // 由 claim 服务统一填：领取时要用它们排序与派生 task_key，"填"与"用"必须同一处口径。
+        pipeline.decorateNewTask(task, action);
         taskMapper.insert(task);
 
         // 先把附件标记为「解析中」：前端附件列表立刻能看到标签变化，
         // 不必等第一次对账（对账最短也要等用户下次轮询）
         updateAttachmentIndex(att.getId(), AiScopeResolver.STATUS_PARSING, null, null);
 
-        try (InputStream in = attachmentStorage.open(att.getFilePath())) {
+        try (InputStream raw = attachmentStorage.open(att.getFilePath())) {
+            // 边推边算 sha1：不为了拿指纹把 500MB 的文件读两遍，也不整份读进内存
+            DigestInputStream in = AiPipelineKeys.sha1Stream(raw);
             Map<String, Object> submitted = ai.submitParse(
                     att.getFileName(), AiServiceClient.contentTypeOf(att.getFileName()), in);
+            task.setContentHash(AiPipelineKeys.digestHex(in));
             task.setAiTaskId(AiJson.nullableText(submitted, "task_id"));
             task.setStatus(translateStatus(AiJson.text(submitted, "status")));
             task.setProgress((int) Math.round(AiJson.doubleValue(submitted, "percent", 0.0)));
@@ -164,7 +175,6 @@ public class AiTaskService {
             taskMapper.updateById(task);
             logTrigger(task.getProjectId(), action,
                     "触发 AI 解析附件「" + att.getFileName() + "」(taskId=" + task.getId() + ")", operatorUserId);
-            return task;
         } catch (RuntimeException e) {
             // 提交失败必须落状态：否则任务永远停在 QUEUED，用户看不到失败原因也没法重试
             markSubmitFailed(task, att, e);
@@ -174,6 +184,15 @@ public class AiTaskService {
             markSubmitFailed(task, att, e);
             throw new BizException(500, "读取附件内容失败：" + e.getMessage());
         }
+
+        // 文件已经交到 AI 手里了：登记"这次任务归属谁"（§4.4.1 的 T1 事件 + T2 领取）。
+        // 用的是与 AI 侧 claim 完全同一把锁（status=QUEUED + 租约未被占用，受影响行数=1 才算领到），
+        // 所以 AI 侧来 claim 时领不到这一行 —— 这就是"推送模式与拉取模式互斥"的落点。
+        // 失败不吞：同一事务内回滚（任务行一起回滚），宁可让用户看到 500 重试一次，
+        // 也不要留下"AI 在跑、主系统没有任务记录"的静默错位。
+        pipeline.recordSubmit(task, action);
+        pipeline.registerPushedClaim(task);
+        return task;
     }
 
     /**
@@ -364,31 +383,15 @@ public class AiTaskService {
         }
     }
 
-    /** 回写 attachment 的 AI 索引列（用 LambdaUpdateWrapper 以便把 doc_id 置回 NULL）。 */
+    /**
+     * 回写 attachment 的 AI 索引列。
+     *
+     * <p>实现搬到了 {@link AiAttachmentIndexWriter}：流水线终态回调（{@code AiPipelineReportService.finish}）
+     * 也要写同一组列，两处各写一份 SQL 迟早漂移（例如一边忘了把 doc_id 置回 NULL）。
+     * 这里保留同名私有方法，只是为了不改动本类里既有的 5 处调用点。
+     */
     private void updateAttachmentIndex(Long attachmentId, String status, String docId, LocalDateTime indexedAt) {
-        if (attachmentId == null) {
-            return;
-        }
-        Attachment update = new Attachment();
-        update.setId(attachmentId);
-        update.setAiIndexStatus(status);
-        update.setAiDocId(docId);
-        update.setAiIndexedAt(indexedAt);
-        // updateById 忽略 null：doc_id/indexed_at 需要能"清空"，
-        // 所以当它们为 null 时用 wrapper 显式置 NULL
-        attachmentMapper.updateById(update);
-        if (docId == null) {
-            attachmentMapper.update(null,
-                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Attachment>()
-                            .eq(Attachment::getId, attachmentId)
-                            .set(Attachment::getAiDocId, null));
-        }
-        if (indexedAt == null) {
-            attachmentMapper.update(null,
-                    new com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper<Attachment>()
-                            .eq(Attachment::getId, attachmentId)
-                            .set(Attachment::getAiIndexedAt, null));
-        }
+        indexWriter.write(attachmentId, status, docId, indexedAt);
     }
 
     private AiTaskVO toVO(AttachmentAiTask t) {
@@ -409,6 +412,14 @@ public class AiTaskService {
         vo.setError(t.getErrorMsg());
         vo.setCreatedAt(t.getCreateTime() == null ? null : TS.format(t.getCreateTime()));
         vo.setUpdatedAt(t.getUpdateTime() == null ? null : TS.format(t.getUpdateTime()));
+        // V15 的任务流字段（只增）：任务队列那一行直接显示"卡在哪一步、多久"
+        vo.setTaskType(t.getTaskType());
+        vo.setStageKey(t.getStageKey());
+        vo.setStage(t.getStage());
+        vo.setStageDone(t.getStageDone());
+        vo.setStageTotal(t.getStageTotal());
+        vo.setElapsedMs(t.getElapsedMs());
+        vo.setAttempts(t.getAttempts());
         return vo;
     }
 

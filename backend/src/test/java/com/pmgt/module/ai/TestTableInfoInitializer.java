@@ -4,6 +4,9 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.pmgt.module.ai.entity.AiAskLog;
 import com.pmgt.module.ai.entity.AttachmentAiTask;
+import com.pmgt.module.ai.pipeline.entity.AiPipelineArtifact;
+import com.pmgt.module.ai.pipeline.entity.AiPipelineEvent;
+import com.pmgt.module.ai.pipeline.entity.AiPipelineStage;
 import com.pmgt.module.attach.entity.Attachment;
 import com.pmgt.module.project.entity.Contract;
 import com.pmgt.module.project.entity.Payment;
@@ -38,6 +41,11 @@ public final class TestTableInfoInitializer {
         TableInfoHelper.initTableInfo(assistant, Attachment.class);
         TableInfoHelper.initTableInfo(assistant, AttachmentAiTask.class);
         TableInfoHelper.initTableInfo(assistant, AiAskLog.class);
+        // V15 的三张流水线表（阶段/产物/事件）：产物与事件表**没有 update_time**，
+        // 所以它们不继承 BaseEntity——这里登记时顺带验证了这一点（字段映射不对会直接抛错）。
+        TableInfoHelper.initTableInfo(assistant, AiPipelineStage.class);
+        TableInfoHelper.initTableInfo(assistant, AiPipelineArtifact.class);
+        TableInfoHelper.initTableInfo(assistant, AiPipelineEvent.class);
         TableInfoHelper.initTableInfo(assistant, Project.class);
         TableInfoHelper.initTableInfo(assistant, ProjectPhase.class);
         TableInfoHelper.initTableInfo(assistant, Contract.class);

@@ -10,6 +10,14 @@ import com.pmgt.module.ai.dto.AiPageVO;
 import com.pmgt.module.ai.dto.AiTaskVO;
 import com.pmgt.module.ai.entity.AttachmentAiTask;
 import com.pmgt.module.ai.mapper.AttachmentAiTaskMapper;
+import com.pmgt.module.ai.pipeline.AiPipelineKeys;
+import com.pmgt.module.ai.pipeline.AiPipelineProperties;
+import com.pmgt.module.ai.pipeline.entity.AiPipelineEvent;
+import com.pmgt.module.ai.pipeline.mapper.AiPipelineEventMapper;
+import com.pmgt.module.ai.pipeline.service.AiPipelineClaimService;
+import com.pmgt.module.ai.pipeline.service.AiPipelineEventWriter;
+import com.pmgt.module.ai.pipeline.service.AiPipelineRunLookup;
+import com.pmgt.module.ai.pipeline.service.AiPipelineTokenService;
 import com.pmgt.module.attach.entity.Attachment;
 import com.pmgt.module.attach.mapper.AttachmentMapper;
 import com.pmgt.module.log.service.OperationLogService;
@@ -23,14 +31,18 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -48,6 +60,7 @@ class AiTaskServiceTest {
     private AttachmentMapper attachmentMapper;
     private AttachmentStorage storage;
     private AiScopeResolver scopeResolver;
+    private AiPipelineEventMapper eventMapper;
     private AiTaskService taskService;
 
     @BeforeEach
@@ -62,8 +75,25 @@ class AiTaskServiceTest {
         attachmentMapper = mock(AttachmentMapper.class);
         storage = mock(AttachmentStorage.class);
         scopeResolver = mock(AiScopeResolver.class);
-        taskService = new AiTaskService(props, ai, taskMapper, attachmentMapper, storage,
-                scopeResolver, mock(OperationLogService.class));
+        eventMapper = mock(AiPipelineEventMapper.class);
+        // 真实的 insert 会回填自增主键；领取决议需要 id（run_id 由 task_id 派生），
+        // 所以桩也必须把 id 填上，否则测出来的是"没有 id 的任务"这条不存在的路径
+        when(taskMapper.insert(any(AttachmentAiTask.class))).thenAnswer(inv -> {
+            inv.getArgument(0, AttachmentAiTask.class).setId(100L);
+            return 1;
+        });
+        // 用**真实**的领取服务（只把 Mapper 换成桩）：这样"提交后登记领取"这条新链路
+        // 在既有用例里也真的被执行，而不是被一个 mock 悄悄跳过
+        AiPipelineClaimService pipeline = new AiPipelineClaimService(
+                taskMapper,
+                new AiPipelineEventWriter(eventMapper),
+                new AiPipelineProperties(),
+                new AiPipelineTokenService("unit-test-secret-0123456789abcdefghijklmnopqrstuvwxyz"),
+                new AiPipelineRunLookup(taskMapper),
+                new AiAttachmentIndexWriter(attachmentMapper));
+        taskService = new AiTaskService(props, ai, taskMapper, storage,
+                scopeResolver, mock(OperationLogService.class),
+                new AiAttachmentIndexWriter(attachmentMapper), pipeline);
     }
 
     private static Attachment attachment() {
@@ -139,6 +169,9 @@ class AiTaskServiceTest {
 
         AttachmentAiTask task = taskService.parse(11L);
 
+        // 内存里的这个对象是「AI 提交响应」的快照：AI 说 QUEUED 就是 QUEUED（既有行为一字未改）。
+        // 注意它不是数据库行的状态——提交成功后主系统会用条件 UPDATE 把这一行登记为 RUNNING（T2 领取），
+        // 见下面的「提交解析时写入流水线列并登记领取」
         assertEquals("QUEUED", task.getStatus());
         assertEquals("ai-task-1", task.getAiTaskId());
         // 附件要立刻显示"解析中"，用户不用等下一轮对账
@@ -146,6 +179,109 @@ class AiTaskServiceTest {
         verify(attachmentMapper).updateById(captor.capture());
         assertEquals("PARSING", captor.getValue().getAiIndexStatus());
         verify(taskMapper).insert(any(AttachmentAiTask.class));
+    }
+
+    @Test
+    void 提交解析时写入流水线列并登记领取() throws Exception {
+        when(scopeResolver.requireAccessible(11L)).thenReturn(attachment());
+        when(scopeResolver.projectIdOf(any())).thenReturn(1L);
+        when(taskMapper.selectList(any())).thenReturn(List.of());
+        when(storage.open(anyString())).thenReturn(new ByteArrayInputStream("pdf".getBytes()));
+        Map<String, Object> submitted = new LinkedHashMap<>();
+        submitted.put("task_id", "ai-task-9");
+        submitted.put("status", "PARSING");
+        submitted.put("percent", 5.0);
+        // 真实的 submitParse 会把 InputStream 读完（multipart 发出去）——桩也必须读，
+        // 否则摘要算的是"空内容"，content_hash 就成了一条永远对不上的假指纹
+        when(ai.submitParse(any(), anyString(), any())).thenAnswer(inv -> {
+            java.io.InputStream in = inv.getArgument(2);
+            in.readAllBytes();
+            return submitted;
+        });
+        // 领取的条件 UPDATE 命中（受影响行数 = 1）
+        when(taskMapper.update(isNull(), any())).thenReturn(1);
+
+        AttachmentAiTask task = taskService.parse(11L);
+
+        // ① V15 的流水线列：内容指纹 + 版本串（幂等键 task_key 的两半）+ 分类 + 优先级
+        assertEquals(AiPipelineKeys.sha1Hex("pdf".getBytes()), task.getContentHash(),
+                "content_hash 必须是附件字节的 sha1（边推给 AI 边算，不重复读文件）");
+        assertEquals("parse=1,clean=0,chunk=0", task.getPipelineRev());
+        assertEquals(0, task.getCleanRev());
+        assertEquals(AttachmentAiTask.TYPE_PARSE, task.getTaskType());
+        assertEquals(10, task.getPriority(), "手动点击解析是交互式任务");
+        // ② 领取登记：claimed_by/租约写进这一行（与 AI 侧 claim 互斥的落点）
+        assertNotNull(task.getClaimedBy(), "提交后主系统必须登记领取，否则 AI 侧可能再领一次");
+        assertNotNull(task.getClaimExpiresAt());
+        // ③ 审计：T1（提交）+ T2（领取）两条事件
+        ArgumentCaptor<AiPipelineEvent> events = ArgumentCaptor.forClass(AiPipelineEvent.class);
+        verify(eventMapper, times(2)).insert(events.capture());
+        assertEquals("SUBMIT:PARSE", events.getAllValues().get(0).getReason());
+        assertTrue(events.getAllValues().get(1).getReason().startsWith("CLAIM:"),
+                events.getAllValues().get(1).getReason());
+        // ④ 领取走的是"条件 UPDATE + 受影响行数"，不是"先查再改"
+        verify(taskMapper, atLeastOnce()).update(isNull(), any());
+    }
+
+    @Test
+    void 任务列表把V15阶段字段只增给前端() {
+        // 存量任务（stage_key/stage 为 null）仍要能列出来：前端显示"历史任务（无阶段明细）"
+        AttachmentAiTask legacy = new AttachmentAiTask();
+        legacy.setId(5L);
+        legacy.setAttachmentId(11L);
+        legacy.setStatus(AttachmentAiTask.RUNNING);
+        legacy.setAiTaskId("ai-task-1");
+        when(taskMapper.selectList(any())).thenReturn(List.of(legacy));
+        when(ai.listTasks()).thenReturn(List.of());
+
+        AiPageVO<AiTaskVO> page = taskService.list(null, null, 1, 20);
+
+        AiTaskVO vo = page.getRecords().get(0);
+        assertEquals(null, vo.getStageKey(), "存量行没有阶段明细，不能编一个");
+        assertEquals(null, vo.getStage());
+        assertEquals(null, vo.getAttempts());
+    }
+
+    @Test
+    void 任务列表带出当前阶段与阶段进度() {
+        AttachmentAiTask running = new AttachmentAiTask();
+        running.setId(5L);
+        running.setAttachmentId(11L);
+        running.setStatus(AttachmentAiTask.RUNNING);
+        running.setAiTaskId("ai-task-1");
+        running.setTaskType(AttachmentAiTask.TYPE_PARSE);
+        running.setStageKey("PARSE");
+        running.setStage("识别");
+        running.setStageDone(20);
+        running.setStageTotal(0);
+        running.setElapsedMs(8400L);
+        running.setAttempts(1);
+        when(taskMapper.selectList(any())).thenReturn(List.of(running));
+        when(ai.listTasks()).thenReturn(List.of());
+
+        AiTaskVO vo = taskService.list(null, null, 1, 20).getRecords().get(0);
+
+        assertEquals("PARSE", vo.getStageKey());
+        assertEquals("识别", vo.getStage());
+        assertEquals(20, vo.getStageDone());
+        assertEquals(0, vo.getStageTotal());
+        assertEquals(8400L, vo.getElapsedMs());
+        assertEquals(1, vo.getAttempts());
+        assertEquals(AttachmentAiTask.TYPE_PARSE, vo.getTaskType());
+    }
+
+    @Test
+    void 自动触发的任务是批量优先级() throws Exception {
+        when(scopeResolver.requireAccessible(11L)).thenReturn(attachment());
+        when(scopeResolver.projectIdOf(any())).thenReturn(1L);
+        when(taskMapper.selectList(any())).thenReturn(List.of());
+        when(storage.open(anyString())).thenReturn(new ByteArrayInputStream("pdf".getBytes()));
+        when(ai.submitParse(any(), anyString(), any())).thenReturn(Map.of("task_id", "ai-1", "status", "QUEUED"));
+
+        AttachmentAiTask task = taskService.autoParse(11L, 9L);
+
+        assertEquals(AttachmentAiTask.TYPE_PARSE, task.getTaskType());
+        assertEquals(0, task.getPriority(), "上传后自动触发是批量（用户在等的是上传，不是解析）");
     }
 
     @Test
@@ -190,8 +326,9 @@ class AiTaskServiceTest {
     void AI关闭时触发解析直接报错() {
         AiProperties off = new AiProperties();
         off.setEnabled(false);
-        AiTaskService disabled = new AiTaskService(off, ai, taskMapper, attachmentMapper, storage,
-                scopeResolver, mock(OperationLogService.class));
+        AiTaskService disabled = new AiTaskService(off, ai, taskMapper, storage,
+                scopeResolver, mock(OperationLogService.class),
+                new AiAttachmentIndexWriter(attachmentMapper), mock(AiPipelineClaimService.class));
 
         BizException e = assertThrows(BizException.class, () -> disabled.parse(11L));
 
