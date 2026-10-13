@@ -54,6 +54,60 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | `WORK_DIR` | ./work | 临时文件、文档库、向量缓存、`doc-meta.json` |
 | `BIZ_QUERY_TIMEOUT` | 20 | P2 受控查询回调主系统 `/api/ai/query/{entity}` 的超时（秒）。**回调地址与 `scope_token` 不在这里配**：由主系统在每次 `/chat` 的 `biz_query` 里现给（§11.1 反向回调），不传就不注册 `query_business_data` 工具 |
 
+### L1 业务并发闸门 `ai.gate.*`（设计 §5；**改这些数字前先读依据**）
+
+> 与上面 `ai.limits.*`（L2 每模型信号量）的分工是**两层、单向**：**先 L1 后 L2，且 L1 的 permit 全程持有**。
+> 三条防死锁硬规则：**H1** 顺序统一（先 L1 后 L2）、**H2** 排队不嵌套（L1 在任务开始前、L2 在单次调用前）、
+> **H3** 优先级只在 L1（L2 永远是公平信号量）。顺序写反时 `ModelRegistry` 会**立刻抛错**而不是静默死锁
+> （`ai.model.h1.violations` 可观测，正常恒为 0）。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AI_GATE_ENABLED` | true | 是否启用 L1。`false` = 直接放行（只用于灰度对照/排障），不建队列不排队 |
+| `AI_GATE_INTERACTIVE_MAX` | 4 | 交互式在飞上限。取 `LLM_CHAT_CONCURRENCY`（平台 4 个对话副本）；**给更大只会让多出来的请求在 L2 排队、指标误导** |
+| `AI_GATE_INTERACTIVE_QUEUE` | **0** | 交互式队列上限。刻意是 0：`/chat` 的纪律是"要么 1.5s 内开始、要么 503"，一个"能进但等不到"的队列只会制造假象 |
+| `AI_GATE_INTERACTIVE_WAIT_MS` | 1500 | 交互式等待上限（沿用 `MODEL_ACQUIRE_TIMEOUT_MS`）⇒ **503 快速失败**，绝不排队到前端 180s |
+| `AI_GATE_BATCH_PARSE_MAX` | 4 | 批量解析在飞上限（= 既有 `uploadTaskExecutor` 的 maxPoolSize 4，接入 L1 不改变既有行为） |
+| `AI_GATE_BATCH_PARSE_QUEUE` | 100 | 批量解析队列上限（= 既有线程池队列容量 100） |
+| `AI_GATE_BATCH_PARSE_PER_PROJECT_MAX` | 4 | 每项目在飞上限（设计 §5.3 建议 `ceil(max/2)`~4） |
+| `AI_GATE_BATCH_REINDEX_MAX` | 1 | 重建索引串行（现状 `ReindexService` 单 job，这里把该语义显式化） |
+| `AI_GATE_BATCH_EMBED_MAX` | 4 | 批量向量化通道上限。**不是 L2 的 8**：向量化是"批内并行"，每个文档在 L2 内部已把 embed 打满，L1 再放 8 个进来只会在 L2 排队 |
+| `AI_GATE_BATCH_EVAL_MAX` | 1 | 评测跑批（最低优先级，无人在等） |
+| `AI_GATE_PAUSE_BATCH_WHEN_INTERACTIVE` | true | **软闸门**：交互式队列非空时暂停派发新的 `BATCH.PARSE`（**只影响新任务，绝不踢掉在跑的批量**；这是设计里唯一需要"抢占"语义的地方） |
+| `AI_GATE_PER_PROJECT_MAX` | 4 | 未单独配置时的每项目在飞上限兜底 |
+| `AI_GATE_AGING_STEP_SECONDS` / `AI_GATE_AGING_BONUS_PER_STEP` / `AI_GATE_AGING_BONUS_MAX` | 30 / 2 / 40 | 老化：每等满 30s 加 2 分、上限 40（**防饥饿**；`effective_priority = 任务优先级 + 通道权重 + 老化`） |
+
+**通道类型权重**（`effective_priority` 的第二项，设计 §5.2）：
+`INTERACTIVE=100` / `BATCH.PARSE=20` / `BATCH.REINDEX=10` / `BATCH.EMBED=5` / `BATCH.EVAL=0`。
+**诚实失败**：拒绝永远带 `reason`（`full` 队列满 / `timeout` 等超时 / `paused` 被软闸门压住）+ 当前深度 + 上限 + 建议，
+**绝不出现"接受了但永远不跑"**（0 条永久 QUEUED、0 个 `work/tmp` 残留）。
+
+启动日志会打印 L1 通道一览并做 **L1↔L2 交叉校验**（`ΣL1 上限 ≤ ΣL2 上限`，设计 §5.10.2 第 6 条），超了只 WARN 不退出。
+
+### 阶段上报（主系统流水线）`ai.pipeline.*`（设计 §4）
+
+> AI 服务不直连库：阶段/产物/事件一律**回调主系统** `POST /api/ai/pipeline/**`，
+> 鉴权头 `X-AI-Service-Token`（= `AI_SERVICE_TOKEN`，**只从环境变量/.env 读，绝不进仓库/日志/异常/指标/自检**）。
+> JSON 用 **snake_case**（兼容 camelCase），响应体 `{code,message,data}`，真实 HTTP 状态码。
+> **上报失败不影响主流程**（best-effort：只 WARN + 计数），**只有终态会重试**。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AI_SERVICE_TOKEN` | — | 上报令牌（`X-AI-Service-Token`）。**不配 = 不上报**（解析照常，只是任务流视图没有阶段行）。与 `AI_PIPELINE_BASE_URL` 一起才是"启用" |
+| `AI_PIPELINE_ENABLED` | false | 上报总开关（默认 false：没配地址/令牌时不做任何外呼，行为与接入前一致） |
+| `AI_PIPELINE_BASE_URL` | — | **主系统**基地址（如 `http://10.254.208.36:8080`）。注意这是"AI 回调主系统"，与 `LLM_BASE_URL`（平台网关）不是一回事 |
+| `AI_PIPELINE_TIMEOUT` | 3 | 单次上报超时（秒）。取小值：上报是 best-effort，**不能拖慢主流程** |
+| `AI_PIPELINE_FINISH_RETRIES` | 2 | **终态**上报的额外重试次数（共 3 次尝试）。终态丢失会让任务永远停在 `RUNNING`（终态以主系统为准） |
+| `AI_PIPELINE_HEARTBEAT_SECONDS` / `AI_PIPELINE_LEASE_SECONDS` | 30 / 90 | 领取租约与心跳间隔（契约里的 `lease_seconds`；**409 表示租约被抢 ⇒ 立即停止该任务并放回**） |
+| `AI_PIPELINE_MDC` | true | 是否把 `run_id` 写进日志 MDC（排障时按一次任务过滤日志） |
+| `AI_PIPELINE_CHUNK_KEY_FORMAT` | `legacy` | 切片键形态。`legacy`=三段（**与接入前逐字节一致，升级不使既有索引/缓存失效**）；`rev`=`d=<docId>:p=<pageNo>:h=<sha1>:c=<cleanRev>:k=<chunkRev>`（清洗/切片规则变更即换键，需跑一次 `POST /admin/reindex` 统一）。解析器两种都认 |
+| `AI_PIPELINE_PARSE_REV` / `AI_PIPELINE_CLEAN_REV` / `AI_PIPELINE_CHUNK_REV` | 1 / **0** / 0 | 流水线版本段。`clean_rev=0` = **本轮尚无清洗阶段**（CLEAN 阶段如实上报 `SKIPPED`，原因写在 `error_msg`）。规则清单/开关/阈值任一变化即 +1 ⇒ 向量缓存整体失效重算（`work/vectors/*.json` 头部记 `clean_rev/chunk_rev`） |
+
+`pipeline_rev = parse=<n>,clean=<n>,chunk=<n>,embed=<sha1(embed_model+dimensions)[0:8]>`；
+任务级幂等键 `task_key = sha1(内容 sha1 + pipeline_rev)`。
+**五阶段边界**：`PARSE` → `CLEAN`（本批 `SKIPPED`）→ `CHUNK` → `EMBED` → `INDEX`，随后 `/finish` 报终态
+（`DONE`/`PARTIAL`（有页级失败时）/`FAILED`/`CANCELLED`）；`RETRIEVE`/`GENERATE` 是在线阶段，不落阶段行。
+
 ## 四条链路（与主系统**同一套形状**）
 
 > 主系统的对应链路见 [`../deploy/README.md`](../deploy/README.md) 与 [`../docs/部署与发布全流程手册.md`](../docs/部署与发布全流程手册.md)；
@@ -119,10 +173,11 @@ curl "http://127.0.0.1:8100/health?with_ocr=true&with_vec=true"     # 期望 cod
 | GET | `/admin/reindex[/{jobId}]` | 重建进度（`processed_docs`/`total_docs`/`failed_docs`/`skipped_docs`/`written_chunks`/**`eta_seconds`**） |
 | POST | `/admin/reindex/{jobId}/cancel` | 中断重建（协作式，在文档边界生效；已写入的切片不回滚，下次续跑会跳过） |
 | POST/GET/DELETE | `/upload-tasks[/{id}]` | 上传解析任务（先返回、后台解析、轮询进度；**解析阶段就完成向量化入库**）。队列满时返回 **429** 且任务标 `FAILED`（不再出现"永久 QUEUED"与 `work/tmp` 残留） |
-| POST | `/chat` | 文档问答（工具调用：检索 → 读页 → 计算；带 `biz_query` 时**多一个** `query_business_data`）。请求 `{question, doc_ids, scope?, history, biz_query?}`（`docIds`/`bizQuery` 亦接受）；**`scope` 是检索的硬上界**：`{doc_ids?, attachment_ids?, project_ids?, security_levels?}`，与模型在工具里给的 `doc_id` **取交集**，越界直接返回 `scope_violation`（**不退回更大范围**）——不传时行为与本版本前完全一致。`biz_query = {url, scope_token, entities}` 是主系统给的**受控查询通道**（P2，契约见 [`../docs/AI前端与集成方案.md`](../docs/AI前端与集成方案.md) §11）——**不传时行为与本版本前完全一致**。响应 `data.answer` 正文用 `[1][2]` 标注出处，`data.citations` 给出结构化出处 `[{index,doc_id,filename,page_no,snippet,score}]`——**前端"点引用跳原文第 N 页"就靠它**，无引用时为 `[]`；系统数据查询照常进 `data.trace`（名称/参数摘要/耗时/命中数） |
+| POST | `/chat` | 文档问答（工具调用：检索 → 读页 → 计算；带 `biz_query` 时**多一个** `query_business_data`）。请求 `{question, doc_ids, scope?, history, biz_query?}`（`docIds`/`bizQuery` 亦接受）；**`scope` 是检索的硬上界**：`{doc_ids?, attachment_ids?, project_ids?, security_levels?}`，与模型在工具里给的 `doc_id` **取交集**，越界直接返回 `scope_violation`（**不退回更大范围**）——不传时行为与本版本前完全一致。`biz_query = {url, scope_token, entities}` 是主系统给的**受控查询通道**（P2，契约见 [`../docs/AI前端与集成方案.md`](../docs/AI前端与集成方案.md) §11）——**不传时行为与本版本前完全一致**。响应 `data.answer` 正文用 `[1][2]` 标注出处，`data.citations` 给出结构化出处 `[{index,doc_id,filename,page_no,snippet,score}]`——**前端"点引用跳原文第 N 页"就靠它**，无引用时为 `[]`；系统数据查询照常进 `data.trace`（名称/参数摘要/耗时/命中数）。**L1 交互式准入**：1.5s 内拿不到许可就 **503 快速失败**（不排队到 180s） |
 
 成功响应 `{"code":0,"data":{...}}`；失败为 HTTP 状态码 + `{"detail":"..."}`（与 Python 版一致）。
-其中 **503 = 向量后端不可用 / 模型繁忙**（可重试），**429 = 解析队列已满**（可重试），两者都带明确原因。
+其中 **503 = 向量后端不可用 / 模型繁忙 / 交互式繁忙（L1 满）**（可重试），
+**429 = 解析队列已满**（可重试），两者都带明确原因（L1 的拒绝还带深度/上限/原因/建议）。
 
 ## 指标（P0-6；依赖 `spring-boot-starter-actuator` + micrometer）
 
@@ -147,6 +202,29 @@ curl -s 'http://127.0.0.1:8100/health?with_metrics=true'
 `ai.vector.lazy_backfill`（查询侧补算切片数，**正常应为 0**）、
 `ai.retrieval.scope.filtered`（被硬作用域过滤掉的切片数）、`ai.opensearch.retries`、
 `ai.opensearch.requests`（HTTP 出口请求数：与"线程数不随请求数线性增长"配对，验收连接复用）。
+
+### L1 业务闸门与阶段上报的指标（设计 §5.5 + §4）
+
+```bash
+# L1 队列深度 / 在途 / 上限（按 queue=interactive|batch.parse|batch.reindex|batch.embed|batch.eval 分标签）
+curl -s 'http://127.0.0.1:8100/actuator/metrics/ai.gate.depth'
+curl -s 'http://127.0.0.1:8100/actuator/metrics/ai.gate.inflight'
+curl -s 'http://127.0.0.1:8100/actuator/metrics/ai.gate.limit'
+# 准入 / 拒绝（拒绝带 reason=full|timeout|paused）/ 等待时长分位 / 老化补偿
+curl -s 'http://127.0.0.1:8100/actuator/metrics/ai.gate.admitted'
+curl -s 'http://127.0.0.1:8100/actuator/metrics/ai.gate.rejected'
+curl -s 'http://127.0.0.1:8100/actuator/metrics/ai.gate.waiting_ms'
+curl -s 'http://127.0.0.1:8100/actuator/metrics/ai.gate.aging.bonus'
+# 每项目公平性（V3 的判据）与 H1 顺序违规（正常恒 0）
+curl -s 'http://127.0.0.1:8100/actuator/metrics/ai.gate.fairness.per_project'
+# 聚合视图（含 gate + pipeline 两段）
+curl -s 'http://127.0.0.1:8100/health?with_metrics=true'
+```
+
+`ai.gate.*` 共 10 项（与设计 §5.5 逐条对应）：`depth` / `inflight` / `limit` / `admitted` / `rejected` /
+`waiting_ms` / `fairness.per_project` / `aging.bonus`，另加 `per_project.inflight.max` 与 `aging.bonus.awarded`；
+上报侧：`ai.pipeline.report_failed`（best-effort 失败计数，**持续 >0 说明主系统接口或令牌有问题**）、
+`ai.pipeline.report_sent`、`ai.pipeline.report_latency{call=...}`（claim/heartbeat/release/stage/artifact/event/finish）。
 
 ## 重建索引（可中断、可续跑）
 
