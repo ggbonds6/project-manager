@@ -385,7 +385,7 @@
 | 断行合并 / 连字符修复 | ① 行尾无标点且下一行小写 → 合并；② 连字符去断行；③ 段落重排 | **无** | 仅在切片时按"空行/换行"分段（`DocStore.java:214-229`），不合并 | 整段缺失 | OCR 出的硬换行会让"完整句子"被切成两段，语义向量质量下降 | **P1** |
 | 表格与正文分离 | ① 表格区域独立成块；② 正文与表格分别切片；③ 表格标记不参与正文语义 | **无** | 只有页头标记（`PageText.java:114-128`） | 整段缺失 | 表格行与正文混在同一 500 字块里，检索精度下降 | **P1** |
 | 去重（段落 / 文档级） | ① 段级 simhash/MinHash；② 文档级内容指纹避免重复入库；③ 索引侧 `_id` 去重 | **无** | `DocStore.save` 每次新 UUID（`DocStore.java:90-100`）；无内容指纹 | 整段缺失 | 重解析产生重复切片占候选位、`work/` 无界增长 | **P1** |
-| 编码与空白归一 | ① 统一 UTF-8；② 全角/半角归一；③ 空白与不可见字符清理 | **部分** | 仅 `\r\n`→`\n`（PDF 文本层路径，`PdfReader.java:229-234`）+ 空白页归一（`:225`）+ 切片 `strip()`（`DocStore.java:209,216,224`） | 只做了一半且**只在文本层路径** | OCR 路径的 `\r`/全角空白会进切片与提示词 | **P2** |
+| 编码与空白归一 | ① 统一 UTF-8；② 全角/半角归一；③ 空白与不可见字符清理 | **部分** | 仅 `\r\n`→`\n`（PDF 文本层路径，`PdfReader.java:229-234`）+ 空白页归一（`:225`）+ 切片 `strip()`（`DocStore.java:209,216,224`） | 只做了一半且**只在文本层路径** | OCR 路径不做换行归一（`PlatformOcrClient.textOf` 不 strip），硬换行与行内全角空格保留；切片 `strip()` 只兜住行首尾 | **P2** |
 | 敏感信息处理 | ① 身份证/手机号/账号掩码；② 分级可配置；③ 审计留痕 | **无** | 无实现；`_eval` 里有"不得返回个人敏感信息"的负例题（`N-001-003`），但那是**提示词级**约束 | 整段缺失 | 与"审计可追溯"存在张力：要么脱敏要么全量可见，需明确策略 | **P2** |
 
 ### 3.3 切分
@@ -489,7 +489,7 @@
 | `PaddleOCR-VL` 6 DCU + 全进程 12 在飞 | **合理** | 并发语义已在 `ai-1.2.0` 修正为"共享池 + 动态批页"（`PlatformOcrClient.java:198-238`），与平台实测甜点（在飞 12 → 2.45 页/s）对齐 | 入库积压信号：`/actuator/metrics/ai.model.queue.depth`（model=ocr）持续 >0 且 `ai.upload.queue.depth` >20 → 把 `OCR_CONCURRENCY` 提到 16~24 并复测吞吐（平台上限 96 在飞 → 6.98 页/s） |
 | `Qwen3-VL-Embedding-8B` 单实例 4096 维 | **合理，但被 `local` 后端绑定** | 维度固定、不支持 MRL（`AiSettings.java:84-86` + 实测 400）；`local` 是进程内状态 ⇒ 单实例 | 见 §5.2 触发点 T1（切片数）与 T4（HA） |
 | `Reranker-8B` 单实例 | **勉强（当前第一瓶颈）** | 24 对/s；recall=50 → ≈150 对/问 → ≈0.16 QPS（实测口径，非估算） | 见 §5.2 触发点 T2；**先"降候选/改预取"，不要先加实例**——既有结论已给出 2.5× 的无成本收益路径 |
-| OpenSearch 3.1.0 **单节点** + HNSW lucene + `cosinesimil` + 1 分片 0 副本 | **勉强可接受** | 单节点的可用性明账已在《OpenSearch部署与接入》§0.3/§0.4 算清（快照兜底）；1 分片 0 副本是单机上的**正确**配置（副本无法分配只会 yellow 且白占盘，`OpenSearchIndex.java:54-55`） | 见 §5.2 触发点 T3（容量）与 T4（HA）：**分片数不可原地增加**，扩容即重建索引 |
+| OpenSearch 3.1.0 **单节点** + HNSW lucene + `cosinesimil` + 1 分片 0 副本 | **勉强可接受** | 单节点的可用性明账已在《OpenSearch部署与接入》§0.3/§0.4 算清（快照兜底）；1 分片 0 副本是单机上的**正确**配置（副本无法分配只会 yellow 且白占盘，`OpenSearchIndex.java:54-55`） | 见 §5.2 触发点 T3（容量，估算 30~50 万向量）与 T4（HA）：**分片数不可原地增加**，扩容即重建索引 |
 | `local` 进程内向量作为回滚后端 | **合理（但只能当回滚）** | 回滚路径必须具备；两条后端同时接业务会产生"同一问题两种召回"（`application.yml:76-78` 已写死纪律） | 一旦出现"需要在生产双跑对比"的需求，改为**离线**对比（`TopKCompareTool` 已是这个形态），而不是在线双接 |
 | `work/` 文件态存储（docs/vectors/doc-meta） | **勉强** | 单实例硬约束 + 每次检索全量读盘（量化见《AI模型调用与任务队列评估》§3.4）；但"可重建物不进主系统库"这条边界是对的 | 见 §5.2 触发点 T5（文档数）与 T4（第二个实例） |
 | `attachment_ai_task` 作为任务事实源 | **合理方向、当前未收敛** | 主系统表已建（V13），但 AI 侧 `work/tasks.json`（≤100 条）仍是影子记录，重启即在跑任务标 FAILED（`UploadTaskService.java:118-132`） | 双机 LB 或需要"重启自动续跑"时，按既有结论落 V15 六列 + 抢占式领取（复用 `attachment_ai_task`，不新建表） |
@@ -501,7 +501,7 @@
 | --- | --- | --- | --- |
 | **T1 切片数** | 切片 **≥4,000**（≈130 份 30 切片文档）时 `local` 给每次提问 **+1.0s**；**≥15,000** 时 **+3.8s** | `local` 只能作为回滚；生产必须 `VEC_BACKEND=opensearch`。**注意先修 G2**，否则换后端后每次检索多付一次全量 `_bulk` | 《AI模型调用与任务队列评估》§3.4 表（实测系数） |
 | **T2 重排吞吐** | 问答需求 >**0.16 QPS**（≈10 问答/分钟） | ① `RETRIEVAL_RECALL_MODE=low`（50→25，≈0.4 QPS，**前提是评测基线存在**，否则不许改默认）；② 检索改**服务端预取**（把 2 次检索/问降到 1 次）；③ 仍不够才考虑第二 rerank 实例 | 《AI模型调用与任务队列评估》§3.3/§6.1 P0-2；《AI工具集与检索编排评估》§4 P0-1 |
-| **T3 索引容量** | 向量数 >**约 50 万**（**估算（假设：4096 维 float = 16 KB/向量 + HNSW 图开销约 1.5×，1 分片单节点可用堆按 8 GB 估）**≈8 GB 量级）或 kNN P95 >**300 ms** | 必须**增加分片数并重建索引**（分片数不可原地改），并把 `number_of_replicas` 随节点数恢复 | `OpenSearchIndex.java:188-229`（1 分片 0 副本） |
+| **T3 索引容量** | 向量数 **约 30~50 万**（**估算（假设：4096 维 float = 16 KB/向量、HNSW 图开销约 1.5×、单节点 1 分片可用堆按 8 GB 估）**：30 万 ≈7.2 GB、50 万 ≈12 GB）或 kNN P95 >**300 ms** | 必须**增加分片数并重建索引**（分片数不可原地改），并把 `number_of_replicas` 随节点数恢复 | `OpenSearchIndex.java:188-229`（1 分片 0 副本）。**注**：`ITERATION.md` 的 `docs-1.6` 段里"切片 >50 万时再加第 3 台"是"何时加**机器**"的口径，本行 30~50 万是"单分片**堆水位**"的口径——一个讲机器数、一个讲分片数，两者不矛盾 |
 | **T4 可用性 / 水平扩展** | 出现"AI 服务要 2 个实例"的需求（HA 或吞吐） | **硬前置**：`local` 必须退场（进程内状态 + 本地卷）→ 先完成 OpenSearch 上线；之后 AI 侧才真正无状态可水平扩 | `ai-backend/README.md`:202-203 |
 | **T5 文档库规模** | 文档数 >**约 500**（**估算（假设：每份 30 切片、`work/docs` JSON + `work/vectors` 合计约 1.2 MB/份，500 份 ≈600 MB）**） | `work/` 全量读盘的固定开销开始明显（每次检索读全库 JSON）；要么把检索的"候选装载"改为按需（先查索引拿 `doc_id`，再按需读该文档），要么把文档文本移出文件态 | 《AI模型调用与任务队列评估》§3.4 + `RetrievalService.java:494-506` |
 | **T6 质量改动门禁** | **任何**切片/召回/提示词/降配改动之前 | 必须先有：① 9 道文档题页码标注；② 检索级 `recall@5`/MRR 基线。**没有这两样，改动一律不许进默认配置** | `eval/README.md`:65；《AI模型调用与任务队列评估》§6.1 P0-2 的"必须先有基线" |
@@ -542,7 +542,7 @@
 | 4 | 降维能力（平台是否支持 `dimensions`） | 决定 §6"降维推迟"是否要重新评估 | 在真实网关发一次带 `dimensions=1536` 的 `/embeddings` 请求，看是否仍 400 |
 | 5 | 生产当前是 `local` 还是 `opensearch`、`indexed_chunks` 多少、`work/docs` 多少份 | 决定 G2 的紧迫度与 §5.2 T1/T5 的落点 | 服务器上 `grep VEC_BACKEND ai/.env`；`curl 'http://127.0.0.1:8100/health?with_vec=true'` 看 `indexed_chunks`；`ls work/docs \| wc -l` |
 | 6 | 切片 500 字与 4096 维 embedding 的匹配度 | 决定 G11/G12 之外要不要动切片大小 | 补页码标注（G8）后，用离线检索评测对比 300/500/800 字三档的 recall@5（**必须先有 T6 的基线**） |
-| 7 | `SCANNED_CHAR_THRESHOLD` 这个环境变量是否真的失效 | 我按 Spring 的"环境变量 → `@ConfigurationProperties` 宽松绑定"规则判定：`.env` 里的裸键 `SCANNED_CHAR_THRESHOLD` 绑不到 `ai.ocr.scanned-char-threshold`（`application.yml` 里**没有** `${SCANNED_CHAR_THRESHOLD:...}`，全仓 grep 只命中 `.env.example:59` 与文档），故它**看起来是死配置**——但未实机验证 | 起服务时把该变量设成 200，`curl /health` 看 `config.scanned_char_threshold` 是否跟着变；不变即确认失效（修法：在 yml 里补 `${SCANNED_CHAR_THRESHOLD:50}`） |
+| 7 | `SCANNED_CHAR_THRESHOLD` 这个环境变量是否真的失效 | 我按 Spring 的"环境变量 → `@ConfigurationProperties` 宽松绑定"规则判定：`.env` 里的裸键 `SCANNED_CHAR_THRESHOLD` 绑不到 `ai.ocr.scanned-char-threshold`（`application.yml` 里**没有** `${SCANNED_CHAR_THRESHOLD:...}`；全仓 grep 该**环境变量名**只命中 `.env.example:59`，其余命中都是 Java 字段 `scannedCharThreshold`），故它**看起来是死配置**——但未实机验证 | 起服务时把该变量设成 200，`curl /health` 看 `config.scanned_char_threshold` 是否跟着变；不变即确认失效（修法：在 yml 里补 `${SCANNED_CHAR_THRESHOLD:50}`） |
 | 8 | 主系统附件白名单里哪些格式**实际会**进入 AI 解析队列（自动触发） | 决定 G5/G22 的真实影响面（是所有 docx 都失败，还是自动解析只对 PDF 开放） | 看 `backend` 侧 `AttachmentUploadAutoParse` 的触发条件与 FILE_TYPE 字典；或实测上传一个 xlsx 附件看任务队列状态 |
 | 9 | `OCR_CONCURRENCY=12` 在真实负载下的**实际在飞数** | 决定 T8 是否已经该提 | 压测 4 份 20 页扫描件时读 `/actuator/metrics/ai.model.inflight` 与 `ai.model.queue.depth`（model=ocr） |
 | 10 | 现网 `work/pages/` 是否有渲染残留、`work/tmp/` 是否有临时文件残留 | 反映"清理纪律"是否被破坏（`DocumentReader`/`UploadTaskService` 都有 finally 清理） | 服务器 `ls work/pages \| wc -l`、`ls work/tmp \| wc -l`，应为 0 |
