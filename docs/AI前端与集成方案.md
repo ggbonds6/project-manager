@@ -225,14 +225,20 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 | 8 | `GET /api/ai/attachments/status` | `attachmentIds=1,2,3`（逗号分隔，上限 200） | `[{attachmentId, indexStatus, progress, docId, error}]` | 登录 |
 | 9 | `POST /api/ai/chat` | `{question, projectId?, attachmentIds?, conversationId?, topK?}` | `{conversationId, answer, citations:[{index, docId, attachmentId, filename, pageNo, snippet, score}], systemData:[{label,value,unit,caliber,dataTime,scope}], toolTrace:[{name,summary,elapsedMs,hitCount}], degraded, notice, elapsedMs, logId}` | 登录（**作用域在主系统解析**） |
 | 10 | `GET /api/ai/ask-logs` | `page, size, userId, from, to` | `{total, records:[{logId, userId, userName, question, projectId, attachmentIds, answerDigest, citedCount, elapsedMs, degraded, createdAt}]}` | ADMIN（P1 使用） |
-| 11 | `GET /api/ai/pipeline/runs` | `attachment_id, status, page, size` | `{total, records:[{run_id, attachment_id, filename?, status, task_type, priority, stage_key?, stage?, stage_done, stage_total, elapsed_ms, error_msg, created_at, updated_at}]}` | 登录（**用户 JWT**） |
-| 12 | `GET /api/ai/pipeline/runs/{run_id}` | — | 任务字段 + `stages:[{stage_key, stage_name, seq, status, elapsed_ms, item_count, item_failed, counters, input_digest, output_digest, error_msg, attempts, started_at, finished_at}]` + `artifacts:[{artifact_type, artifact_rev, content, object_key, char_count, sha1, item_count, created_at}]` + `events:[{stage_key, from_status, to_status, reason, operator, created_at}]` + 可选 `projection_note` | 登录（**用户 JWT**） |
+| 11 | `GET /api/ai/pipeline/runs` | `attachment_id, status, page, size` | `{total, page, size, records:[{run_id, attachment_id, filename?, status, task_type, priority, stage_key?, stage?, stage_done, stage_total, elapsed_ms, error_msg, created_at, updated_at}]}` | **AI 服务令牌**（`X-AI-Service-Token`；服务间读取/对账用） |
+| 12 | `GET /api/ai/pipeline/runs/{run_id}` | — | 任务字段 + `stages:[{stage_key, stage_name, seq, status, display_status, stale, elapsed_ms, item_count, item_failed, counters, input_digest, output_digest, error_msg, attempts, started_at, finished_at}]` + `artifacts:[{artifact_type, artifact_rev, content, object_key, char_count, sha1, item_count, created_at}]` + `events:[{stage_key, from_status, to_status, reason, operator, created_at}]` + 可选 `projection_note` | **AI 服务令牌**（同上） |
 
-> **#11/#12 的字段命名例外（P0-β，`code-1.3`）**：本表 #1~#10 是 **camelCase**；流水线两接口按
-> [`RAG流水线设计与并发管理.md`](RAG流水线设计与并发管理.md) §4.3 的 DDL 与 §4.9 的任务冻结口径用 **snake_case**（`run_id`/`stage_done`/…）。
-> 前端在 `src/types/ai.ts` 的归一化函数里**兼容读取 camelCase**（`run_id` 与 `runId` 都认），后端将来统一风格不需要改页面。
+> **#11/#12 的字段命名例外（P0-β，`code-1.2`/`code-1.4`）**：本表 #1~#10 是 **camelCase**；流水线两接口按
+> [`RAG流水线设计与并发管理.md`](RAG流水线设计与并发管理.md) §4.3 的 DDL 与 §4.9 的任务冻结口径用 **snake_case**（`run_id`/`stage_done`/…），
+> **并同时给出 camelCase 别名**（后端 `PipelineVo` 统一补），前端两种写法都能读。
 > 清单只给**表头**（不含 `stages`/`artifacts`）：打开任务流抽屉时**必须按 `run_id` 再取一次全量**（§4.9.2⑥）。
 > 本轮后端**未提供**流水线级重试/取消端点，前端**只读展示**（待接位置见 `src/api/ai.ts` 末尾注释）。
+>
+> ⚠️ **浏览器要调的是"用户侧同形状入口"**（`code-1.4` 落地，详见下面 §12）：
+> `GET /api/ai/pipeline/**` 的前缀只认 `X-AI-Service-Token`（契约要求"用户 JWT 不能调该前缀"），
+> 所以前端把两处 path 换成 **`/api/ai/runs`** 与 **`/api/ai/runs/{run_id}/pipeline`** 即可，
+> **查询参数、响应字段、分页信封完全一致**（`run_id` 也是原样拿去用）。
+> 受影响位置：`frontend/src/api/ai.ts` 的 `pipelineRuns`（第 183 行）与 `pipelineRunDetail`（第 202 行）。
 
 **枚举取值（定死，前端直接映射中文标签）**：
 
@@ -357,3 +363,58 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 5. `ai_ask_log` 能查到该次问答用了几次系统查询、查了哪些 entity；
 6. 冒烟评测集（`eval/smoke-30.json` + `node scripts/eval-ai.mjs`）给出：引用命中率、数字一致率、工具选择正确率、拒答正确率、平均延迟。
 
+
+---
+
+## 12. 解析流水线回调契约（主系统侧，**冻结**：`code-1.4` 实现，AI 服务按此回调）
+
+> 来源：任务书"冻结的接口契约"与 [`RAG流水线设计与并发管理.md`](RAG流水线设计与并发管理.md) §4.4.3 的**方案 B**（AI 服务回调主系统，AI 不直连库）。
+> 实现位置：`backend/src/main/java/com/pmgt/module/ai/pipeline/**`；两侧的字段名核对过一次
+> （AI 侧 `ai-backend/.../module/pipeline/PipelineReportClient.java` 的请求体与本表逐字段一致）。
+
+**前缀与鉴权**：`/api/ai/pipeline/**`，**只认**请求头 `X-AI-Service-Token: <AI_SERVICE_TOKEN>`
+（主系统配置项 `pm.ai.pipeline.service-token`，与出站给 AI 服务的 `pm.ai.token` **同一个环境变量**）。
+
+- **用户 JWT 在这一前缀上不被接受**（`Authorization: Bearer <用户 JWT>` ⇒ 401）；
+- **AI 服务令牌也不能调用户接口**（它不是 `Authorization`，`AuthFilter` 照样 401）；
+- 令牌**未配置 ⇒ 该前缀全部 401（fail closed）**：宁可部署时立刻看到 401，也不留无人鉴权的写接口；
+- 可选头 `X-AI-Pipeline-Token`（claim 响应里的 `pipeline_token`）：**不带不校验**，带了就必须属于本 run（否则 403）。
+
+**响应体**仍是仓库统一信封 `{code,message,data}`，但**失败一律用真实 HTTP 状态码**（与受控查询 §11.6 同一取舍）：
+
+| 状态码 | 含义（调用方怎么处理） |
+| --- | --- |
+| 200 | 成功（`data` 见下表） |
+| 400 | 报文非法 / 非法状态迁移（**别重试**，按 message 改；迁移非法时 message 里带"允许的目标状态"） |
+| 401 | 服务间令牌缺失或不正确（先修配置） |
+| 403 | `pipeline_token` 无效或不属于本次 run（拒绝跨 run 写入） |
+| 404 | run/task 不存在；**`claim` 时表示"当前没有可领取的任务"**（正常情况，按退避再试） |
+| 409 | 租约已失效 / 状态被并发改写（**立即停止本次执行并放回**） |
+| 500 | 主系统内部错误 |
+
+**字段命名**：**snake_case 主名**（`run_id`/`stage_key`/`item_failed`…）**并同时给 camelCase 别名**；
+入参两种写法都收（`@JsonAlias`），避免"按文档发 snake_case 被静默忽略"那类事故。
+
+| # | 方法与路径 | 入参 | 返回 `data` |
+| --- | --- | --- | --- |
+| 1 | `POST /claim` | `{task_type?, limit?, claimed_by, lease_seconds?}`；`limit` **只支持 1**（>1 返回 400，不静默夹取） | `{run_id, task_id, attachment_id, task_key, pipeline_token, lease_expires_at, claimed_by, task_type, status, attempts, content_hash, pipeline_rev, clean_rev, priority, stage_key, stage_name, heartbeat_seconds}`；**无任务 ⇒ 404** |
+| 2 | `POST /runs/{run_id}/heartbeat` | `{claimed_by?, lease_seconds?}`（**`claimed_by` 可选**：带了必须是当前持有者；不带只校验"仍是 RUNNING 且租约未过期"） | `{run_id, status, lease_expires_at, lease_seconds, claimed_by, heartbeat_seconds}`；**租约失效 ⇒ 409** |
+| 3 | `POST /runs/{run_id}/release` | `{claimed_by?, reason?}` | `{run_id, status:"QUEUED", reason, released_by}`；已是 QUEUED 时幂等返回；已结束任务 ⇒ 400 |
+| 4 | `POST /runs/{run_id}/stages/{stage_key}` | `{status, item_count?, item_failed?, elapsed_ms?, counters?, input_digest?, output_digest?, error_msg?, doc_id?, stage_name?}`；`stage_key ∈ PARSE/CLEAN/CHUNK/EMBED/INDEX/RETRIEVE/GENERATE` | `{run_id, stage_key, stage_name, seq, status, attempts, item_count, item_failed, elapsed_ms}`；**同 `(run_id,stage_key)` 更新同一行、`attempts+1`** |
+| 5 | `POST /runs/{run_id}/artifacts` | `{artifact_type, content?, object_key?, char_count?, sha1?, item_count?, note?}`；五类：`page_digest/clean_diff/chunk_manifest/embed_batch/index_result` | `{id, run_id, stage_key, artifact_type, artifact_rev, object_key, char_count, item_count, sha1}`；**只 INSERT，`artifact_rev` 自增**；`note` 并入 `content_json`（无独立列） |
+| 6 | `POST /runs/{run_id}/events` | `{from_status?, to_status, reason?, operator?, stage_key?}` | `{id, run_id, stage_key, from_status, to_status, reason, operator, create_time}`；**只追加审计，不改任务状态** |
+| 7 | `POST /runs/{run_id}/finish` | `{status ∈ DONE/PARTIAL/FAILED/CANCELLED/DEAD, error_msg?, pipeline_rev?, clean_rev?, doc_id?}` | `{run_id, task_id, attachment_id, status, doc_id, attachment_index_status, elapsed_ms, note?}`；**任务终态以主系统为准**：非法迁移 400、状态被并发改写 409、同终态重复上报幂等 |
+| 8 | `GET /runs/{run_id}` | — | 同 §9 #12（含 `projection_note`/`stale_stage_keys`） |
+| 9 | `GET /runs?attachment_id=&status=&page=&size=` | — | `{total, page, size, records:[…]}` |
+
+**两条与 AI 侧直接相关的口径**：
+
+1. **`run_id` 形状 = `run-<taskId>`**（确定性派生，不落库）：claim 拿到的字符串**原样**用于后续所有路径，
+   不要试图与 `ai_task_id`（AI 服务自己的 upload-task id）互推——两者都能定位同一行任务，但**不是同一个字符串**。
+2. **`task_key` = `sha1(content_hash + pipeline_rev)`**（同样不落库、按需派生）：主系统在提交时按"附件字节 sha1 + 主系统侧 rev"算一次，
+   AI 侧若要在 `finish` 里上报自己那份 `pipeline_rev`（含 embed 段），主系统会**原样存下**并用于重建判定——
+   但**不会**用它去改 `task_key` 的历史值（幂等键一旦生成就不该变）。
+
+**前端侧路径迁移（1 处，2 行）**：见 §9 表下的提示——把 `frontend/src/api/ai.ts` 的
+`'/ai/pipeline/runs'` 改成 `'/ai/runs'`、`'/ai/pipeline/runs/{id}'` 改成 `'/ai/runs/{id}/pipeline'`。
+`GET /api/ai/pipeline/**` 仍然可用，但它是**服务间**入口（浏览器调会 401，这是契约要求，不是缺陷）。

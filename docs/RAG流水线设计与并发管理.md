@@ -894,6 +894,17 @@ CREATE INDEX idx_ai_pl_event_time  ON ai_pipeline_event (create_time);
 ② 新接口一律走 **主系统代理**（浏览器**永不直连 AI 服务**）；
 ③ 失败语义沿用：主系统侧 4xx/5xx + 明确原因；AI 服务不可达时 API-4/API-5 返回 **503 + "解析产物服务不可用"**（**不降级为"未找到"**）。
 
+**本轮（`code-1.4`）落地的读取路径与鉴权（两条路径、一套读逻辑）**：
+
+| 读者 | 路径 | 门票 | 说明 |
+| --- | --- | --- | --- |
+| AI 服务（回调/对账/投影） | `GET /api/ai/pipeline/runs`、`GET /api/ai/pipeline/runs/{run_id}` | `X-AI-Service-Token` | 与 §4.4.3 方案 B 的写入端点同前缀、同门票；**不接受用户 JWT** |
+| 浏览器（任务流视图/溯源） | `GET /api/ai/runs`、`GET /api/ai/runs/{run_id}/pipeline`（另有 `/api/ai/tasks/{taskId}/pipeline`、`/api/ai/attachments/{id}/pipeline[/runs]`、`.../artifacts[/{artifact_type}]`） | 用户 JWT | 与冻结契约**同形状**（`run_id` 原样可用、字段同名字段），走仓库既有登录链路 |
+
+> 为什么不能合成一条：契约同时要求"前缀用服务令牌"与"用户 JWT 不能调该前缀"，而任务流视图是浏览器在读——
+> 两个要求都成立时，只能"同一份读逻辑 + 两种门票"。因此用户侧提供**同形状**的等价路径，
+> 前端只需把两处调用的 path 换掉（见 `docs/AI前端与集成方案.md` §12 的迁移说明），字段与语义不变。
+
 ### 4.6 「解析质量」要看哪些指标（六项 + 阈值）
 
 | # | 指标 | 定义（数据来源） | 建议阈值/告警 | 为什么看它 |
@@ -1370,25 +1381,44 @@ effective_priority = task.priority (主系统写入，默认 0)
 | I3 | **密级成为作用域第四维**：`securityLevels` 参与本地过滤与 kNN filter（缺字段不算命中） | G17 / P0-α-2 | `SearchScope.matches/describe`、`OpenSearchIndex.clausesOf`（`security_level` terms 子句） | `ToolsScopePushdownTest.securityLevelDimensionMatchesStrictly` |
 | I4 | **OpenSearch 出口改单例共享** `HttpClient`（显式 `HTTP_1_1`、`followRedirects(NEVER)`、connectTimeout=`min(10s, 单请求超时)`），连接池与 keep-alive 才真正生效；新增 `ai.opensearch.requests` | §2.4 / P0-α-3 | `OpenSearchIndex`（`http` 字段 + `execute()` + `Machine`） | `OpenSearchIndexTest` 12 例全绿；`ai.opensearch.requests` 与"线程数不随请求数线性增长"配对人工验收（未做真集群压测） |
 | I5 | **V15 迁移落成真实 SQL 文件**（`attachment_ai_task` 扩 13 列 + 3 张流水线表） | §4.3 / §9.3-1（P0-β 的前置） | `backend/src/main/resources/db/migration-yashan/V15__ai_pipeline_flow.sql` | `mvn -o -f backend/pom.xml -DskipTests package` 通过，且 `jar tf` 确认 `BOOT-INF/classes/db/migration-yashan/V15__ai_pipeline_flow.sql` 已随包发布；**未在真实崖山库执行**（下次启动/部署由 `YashanMigrationRunner` 应用并登记 `schema_version`） |
-| I6 | **前端任务流视图 + 可溯源入口 + 轻量质量看板**（§4.8/§4.9 的交互落地）：`/ai` 页新增**「解析流水线」签 + 进行中角标**；**进行中/历史两段** + "只看失败" + 失败行红底；行内「详情」→ **任务流抽屉**（五段阶段条 `Steps` + 阶段卡片 + 产物抽屉）；列表 3s / 详情 1.5s 轮询，**打开抽屉即重取全量、终态与失败即停、页面不可见即暂停、连续 3 次失败自动停**；问答引用旁的**「溯源」**抽屉按 §4.5.1 六跳展示（`chunk_key` → 附件与页码 → `page_digest`/`clean_diff`/`chunk_manifest` 摘要 → 原文第 N 页），**缺哪一跳写"该环节未上报"**；顶部质量看板五项指标**只读后端字段**（缺字段显示"暂无数据"） | §4.8/§4.9 / §9.3-4 | `frontend/src/pages/ai/PipelineTab.tsx`、`frontend/src/components/ai/PipelineFlowDrawer.tsx`、`PipelineArtifactDrawer.tsx`、`PipelineQualityBoard.tsx`、`CitationTraceDrawer.tsx`、`useVisiblePolling.ts`、`usePipelineActiveCount.ts`、`pipelineFormat.ts`；`frontend/src/api/ai.ts`（`pipelineRuns`/`pipelineRunDetail`）、`frontend/src/types/ai.ts`（流水线类型 + snake_case 兼容归一化）、`frontend/src/pages/ai/AiPage.tsx`（新签 + 角标）、`frontend/src/components/ai/AiChatPanel.tsx`（引用「溯源」入口） | `cd frontend && npm run build` **0 错**；`node_modules\.bin\tsc.cmd --noEmit --noUnusedLocals --noUnusedParameters` **无输出**；**未在浏览器里跑过真实接口**（`/api/ai/pipeline/*` 由主系统侧并行实现，尚未落地 ⇒ 当前只能看到"读取失败/暂无数据"的降级外观） |
+| I6 | **前端任务流视图 + 可溯源入口 + 轻量质量看板**（§4.8/§4.9 的交互落地）：`/ai` 页新增**「解析流水线」签 + 进行中角标**；**进行中/历史两段** + "只看失败" + 失败行红底；行内「详情」→ **任务流抽屉**（五段阶段条 `Steps` + 阶段卡片 + 产物抽屉）；列表 3s / 详情 1.5s 轮询，**打开抽屉即重取全量、终态与失败即停、页面不可见即暂停、连续 3 次失败自动停**；问答引用旁的**「溯源」**抽屉按 §4.5.1 六跳展示（`chunk_key` → 附件与页码 → `page_digest`/`clean_diff`/`chunk_manifest` 摘要 → 原文第 N 页），**缺哪一跳写"该环节未上报"**；顶部质量看板五项指标**只读后端字段**（缺字段显示"暂无数据"） | §4.8/§4.9 / §9.3-4 | `frontend/src/pages/ai/PipelineTab.tsx`、`frontend/src/components/ai/PipelineFlowDrawer.tsx`、`PipelineArtifactDrawer.tsx`、`PipelineQualityBoard.tsx`、`CitationTraceDrawer.tsx`、`useVisiblePolling.ts`、`usePipelineActiveCount.ts`、`pipelineFormat.ts`；`frontend/src/api/ai.ts`（`pipelineRuns`/`pipelineRunDetail`）、`frontend/src/types/ai.ts`（流水线类型 + snake_case 兼容归一化）、`frontend/src/pages/ai/AiPage.tsx`（新签 + 角标）、`frontend/src/components/ai/AiChatPanel.tsx`（引用「溯源」入口） | `cd frontend && npm run build` **0 错**；`node_modules\.bin\tsc.cmd --noEmit --noUnusedLocals --noUnusedParameters` **无输出**；**未在浏览器里跑过真实接口**（`/api/ai/pipeline/*` 由主系统侧并行实现，尚未落地 ⇒ 当前只能看到"读取失败/暂无数据"的降级外观；**主系统侧已于 `code-1.4` 落地**，见 9.1-I7~I12） |
+| I7 | **主系统侧三张流水线表的实体 + Mapper + 回调写入服务**：阶段行「同键更新同一行 + `attempts+1`」、产物「只 INSERT + `artifact_rev` 自增（**没有任何 update 路径**）」、事件「只追加、不改状态」；`content_json` 超 4000 字符截断且 `char_count` 记真实长度；`note` 无独立列 ⇒ 并入 `content_json` 的 `_note` | §4.1 P3/P4、§4.4.2 / §9.3-2 | `backend/.../module/ai/pipeline/entity/{AiPipelineStage,AiPipelineArtifact,AiPipelineEvent}.java`、`.../mapper/*Mapper.java`、`.../service/AiPipelineReportService.java`、`AiPipelineEventWriter.java`（事件唯一写入口） | `AiPipelineReportServiceTest` **17 例全绿**：同阶段两次上报 ⇒ **1 行 + `attempts=2`**；同类型两次追加 ⇒ **2 行、rev=1/2** 且断言 `artifactMapper.updateById/update` **一次都没被调用**；截断用例断言 4000/5000 字符与 `char_count` 的关系；事件审计**不校验迁移合法性**但校验状态值 |
+| I8 | **任务级状态机强校验**（7 状态 + §4.4.1 的 T1~T11）：非法迁移 **400 并列出允许的目标状态**；`transitionRules()` 就是 11 条规则表，边表由它派生（**T9 一条规则两个来源 ⇒ 12 条边**） | §4.4.1 | `backend/.../pipeline/service/AiPipelineStateMachine.java` | `AiPipelineStateMachineTest` **9 例**：11 条规则逐条核对、`DONE → RUNNING`/`DONE → FAILED` 被拒且报错含「允许的目标状态：QUEUED」、`CANCELLED/DEAD` 无出边、同状态重复上报按幂等 |
+| I9 | **抢占式领取 + 心跳续约 + 释放 + 租约过期回收（T7）**：`UPDATE … WHERE status='QUEUED' AND (claim_expires_at IS NULL OR claim_expires_at < now)`，**受影响行数 = 1 才算领到**；领取热路径不返回给 AI 时也登记租约（推送模式） | §5.3/§5.4/§5.7 / §9.3-5（主系统侧的一半） | `backend/.../pipeline/service/AiPipelineClaimService.java`（`claim`/`claimNext`/`heartbeat`/`release`/`reclaimStaleClaims`/`registerPushedClaim`/`decorateNewTask`）、`.../controller/AiPipelineController.java` | `AiPipelineClaimServiceTest` **24 例**：**8 线程并发领同一行 ⇒ 恰好 1 个成功、7 个 404**（用 CAS 假 Mapper 模拟"受影响行数"语义）、心跳过期/非本持有者/任务已终态一律 **409 并给放回指引**、空队列 404（不是 500）、放回队列清租约且**已结束任务放回给 400 而不是把 DONE 排队**、过期 RUNNING 行回收记 `STALE_CLAIM` |
+| I10 | **AI 服务回写前缀的独立鉴权**：`/api/ai/pipeline/**` **只认** `X-AI-Service-Token`（常量时间比较、未配置即 fail closed 全拒），用户 JWT 与该前缀**双向不通用**；运行级 `pipeline_token` 只做纵深防御（带了必须属于本 run） | §4.4.3 方案 B（短时凭据保护的落地形态）/ §9.3-2 | `backend/.../pipeline/AiPipelineTokenFilter.java`、`AiPipelineTokenService.java`、`common/security/ApiPaths.java`（`SERVICE_PIPELINE_PREFIX`）、`AuthFilter`（旁路该前缀） | `AiPipelineAuthTest` **12 例**：缺/错令牌真实 401、未配置令牌全拒、合法用户 JWT 调该前缀仍 401、AI 令牌调用户接口进不了业务链、`pipeline_token` 当不了用户 JWT（claims 用途隔离）、令牌不属于本 run ⇒ 403 |
+| I11 | **投影兜底（只读展示层）**：详情里「阶段 `RUNNING` 且超过 `pm.ai.pipeline.stale-running-seconds` 无上报」⇒ `display_status=STALE` + `stale_stage_keys` + `projection_note`，**绝不改数据库状态** | §4.4.3 方案 C（只读形态） | `backend/.../pipeline/service/AiPipelineQueryService.java`（`isStale`/`detail`）、`.../dto/PipelineStageVO.java`（`display_status`/`stale`） | `AiPipelineQueryServiceTest` **11 例**：STALE 用例断言 4 个 Mapper 的**写方法全是 `never()`**；刚更新过的不标、终态再久也不标、顺序按 `stage_key` 而不是插入顺序 |
+| I12 | **主系统侧链路衔接 + 前端只读入口**：提交即写 `content_hash`（**边推给 AI 边算 sha1**）/`pipeline_rev`/`clean_rev`/`task_type`/`priority`，并用**与 AI 侧 claim 同一把锁**登记领取（推送模式与拉取模式互斥）；既有 `GET /api/ai/tasks` **只增**阶段字段；用户侧新增 `GET /api/ai/runs`、`GET /api/ai/runs/{run_id}/pipeline`（与冻结契约**同形状**、走用户 JWT） | §5.7 / §4.9.3「列表行字段」 / §9.3-2 | `backend/.../module/ai/service/AiTaskService.java`、`AiAttachmentIndexWriter.java`（索引回写抽成一处，对账与终态回调共用）、`.../pipeline/AiPipelineKeys.java`（`run_id=run-<taskId>`、`task_key=sha1(content_hash+pipeline_rev)`，**都不落库、不新增列**）、`.../controller/AiPipelineViewController.java` | `AiTaskServiceTest` **16 例**（含新增 3 例）+ `AiPipelineEndpointTest` **16 例**：`content_hash == sha1(附件字节)`（**单测抓到过一次"算了两遍 sha1"的真缺陷**，详见 §9.4）、提交后 `claimed_by`/租约已写、事件流有 `SUBMIT:*` + `CLAIM:*`；`GET /api/ai/runs` 只回表头、详情回 `stages/artifacts/events` 与 snake_case 字段名 |
 
-**验证证据**：① `mvn -o -f ai-backend/pom.xml test` → **Tests run: 189, Failures: 0, Errors: 0**（改造前 181，新增 8 例）；② `mvn -o -f backend/pom.xml -DskipTests package` 通过 + V15 随包发布（见 I5）；③ 前端：`cd frontend && npm run build` **0 错**、`tsc --noEmit --noUnusedLocals --noUnusedParameters` **无输出**（见 I6）。
-**未做**：① 真集群（`10.254.212.110:9200`）压测与 top-k 一致性验证（步骤 19 ①-3）——**I1 的写请求数=0、I4 的复用效果都需要在真集群上复测**；② **I6 的前端没有在浏览器里跑过真实数据**：`/api/ai/pipeline/*` 的后端实现是并行推进的，本轮前端只按冻结契约写完调用与类型，**"打开抽屉能看到五段阶段条/产物摘要"这件事尚未被实际验证**（构建与类型检查通过 ≠ 运行时正确）。
+**验证证据（`code-1.0` / `code-1.1` / `code-1.3`）**：① `mvn -o -f ai-backend/pom.xml test` → **Tests run: 189, Failures: 0, Errors: 0**（改造前 181，新增 8 例）；② `mvn -o -f backend/pom.xml -DskipTests package` 通过 + V15 随包发布（见 I5）；③ 前端：`cd frontend && npm run build` **0 错**、`tsc --noEmit --noUnusedLocals --noUnusedParameters` **无输出**（见 I6）。
+**未做（前几批）**：① 真集群（`10.254.212.110:9200`）压测与 top-k 一致性验证（步骤 19 ①-3）——**I1 的写请求数=0、I4 的复用效果都需要在真集群上复测**；② **I6 的前端没有在浏览器里跑过真实数据**（本轮主系统侧接口落地后，"打开抽屉能看到五段阶段条/产物摘要"才具备前提，仍需一次端到端人工验收）。
+
+**验证证据（`code-1.4`，主系统侧）**：`mvn -o -f backend/pom.xml test` → **Tests run: 245, Failures: 0, Errors: 0**（改造前 **147**，新增 **98** 例：`AiPipelineStateMachineTest` 9 + `AiPipelineClaimServiceTest` 24 + `AiPipelineReportServiceTest` 17 + `AiPipelineQueryServiceTest` 11 + `AiPipelineAuthTest` 12 + `AiPipelineContractTest` 5 + `AiPipelineEndpointTest` 16 + `AiTaskServiceTest` 新增 4）；`node scripts/check-docs.mjs` **0 问题**。**10 个端点的真实请求/响应样例**（含 401/400/404/409）由 `AiPipelineEndpointTest` 落盘到 `backend/target/pipeline-endpoint-samples.txt`（`target/` 不入库），报告直接引用该文件而不是手写预期。
+
+### 9.4 本轮抓到的真缺陷（值得记住）
+
+| # | 缺陷 | 怎么发现的 | 修法 |
+| --- | --- | --- | --- |
+| D1 | **`content_hash` 算了两遍 sha1**：`MessageDigest.digest()` 返回的是 20 字节摘要，我又把它交给 `AiPipelineKeys.sha1Hex(byte[])` ⇒ 存进库的指纹其实是 `sha1(sha1(内容))`，长度、形状都正常，但**与任何按"内容 sha1"算出来的值都对不上**（幂等键永远不命中，且不会报任何错） | `AiTaskServiceTest.提交解析时写入流水线列并登记领取` 断言 `content_hash == sha1(附件字节)` 时直接暴露（另一个坑：Mockito 桩若不真读流，摘要算的是"空内容"，所以桩必须 `readAllBytes()` 模拟真实发送） | 新增 `AiPipelineKeys.digestHex(DigestInputStream)` 作为"取流指纹"的**唯一入口**，并在注释里写清为什么不能转手给 `sha1Hex` |
+| D2 | **`getParamNameValuePairs()` 在 MyBatis-Plus 3.5.7 构造期是空的**：单测原本想用它区分"回收过期行"与"取候选行"两次 `selectList`，结果两条查询的 wrapper 都取不到参数 ⇒ 回收逻辑把刚插入的 QUEUED 行当成过期行，用例表现为"事件写了两条" | `AiPipelineClaimServiceTest` 的 `TooManyActualInvocations`（Wanted 1 but was 2） | 桩改用**连续返回值/状态位**区分；产品代码把"回收"与"领取"拆成两个方法（`claim` = 回收 + `claimNext`），让两者各自可测 |
 
 ### 9.2 未落地（仍为设计）
 
 | 章节 | 未落地的内容 | 为什么还没做 |
 | --- | --- | --- |
-| §3.2 | 七阶段契约与阶段行（PARSE/CLEAN/CHUNK/EMBED/INDEX 的"阶段"建模） | 表已就绪（§9.1-I5）、前端视图已就绪（§9.1-I6）；缺的是**阶段回调上报**（AI→主系统）与主系统侧读写实现（见 §4.4.3 的 B/C 方案） |
+| §3.2 | 七阶段契约与阶段行（PARSE/CLEAN/CHUNK/EMBED/INDEX 的"阶段"建模） | 表已就绪（I5）、主系统写入侧已就绪（I7~I12）、前端视图已就绪（I6）；缺的是 **AI 侧在 5 个阶段边界真实上报**（`ai-backend` 并行分支 `module/pipeline/**` 正在做，见 §9.3-3）与**一次端到端人工验收** |
 | §3.3 | **清洗阶段**（`TextCleaner` + C1~C8 + `clean_rev` 三层防护） | P1-α；前置是 G8 评测基线（页码标注 + recall@5/MRR） |
 | §3.4 | 切片改进（表格整块、重叠、结构感知、父子块、切片元数据补齐） | P1-α；前置同上 |
 | §3.5 | 混合型 PDF 逐页 OCR 回退、DOCX/XLSX 扩展、页级缓存 | P2 |
 | §3.6 | 查询改写、RRF、四类缓存、`/chat` 上下文预算、答案侧 `verification` | P2（作用域硬下推这一项**已落地**，见 9.1-I2） |
-| §4.3 | V15 迁移本身 | **已落地**（见 9.1-I5，`code-1.1`）；剩下的只是"在真实崖山库跑一次并由 `YashanMigrationRunner` 登记 `schema_version`" |
-| §4.4.3 | 阶段/产物/事件的**写入侧**：主系统实体 + Mapper + 阶段回调接口 + 投影兜底（C 方案） | 未落地；这是 `GET /api/ai/pipeline/runs*` 的数据来源，**I6 的前端要靠它才能显示真实内容** |
-| §4.5.2 | 溯源接口：API-3（两次解析对比）、**API-4（按 `chunk_key` 取切片全文）**、API-5（页级原文/清洗后对照）、API-6（质量看板聚合）、API-7（队列看板） | 未落地。I6 的溯源链因此**只用 `citations[]` + 详情里的产物摘要**：`chunk_key` 未回填时显示"该环节未上报"，`clean_diff` 等摘要缺失时逐个写明缺哪一类产物（**不伪造全文**） |
+| §4.3 | V15 迁移本身 | **已落地**（见 9.1-I5，`code-1.1`）；剩下的只是"在真实崖山库跑一次并由 `YashanMigrationRunner` 登记 `schema_version`"——**本轮同样没有连库执行** |
+| §4.4.3 | **C 方案的另一半：主系统读 AI 任务详情时的"补投影"**（把 AI 侧 `stages/summary` 投影成阶段行，幂等 upsert）。本轮只落地了**只读兜底**（STALE 标记，见 I11） | 补投影需要主系统按 `ai_task_id` 反查 AI 服务并对"投影来的行"与"回调来的行"去重（同一 `(run_id,stage_key)` 两个写入者），取舍与冲突口径尚未定稿；且它的价值在"回调全丢"的场景，而回调链（I7+I10）刚落地，先观察真实丢失率更划算 |
+| §4.5.2 | 溯源接口：API-3（两次解析对比，产物已有 `artifact_rev` 但无 compare 接口）、**API-4（按 `chunk_key` 取切片全文）**、API-5（页级原文/清洗后对照）、API-6（质量看板聚合）、API-7（队列看板） | 未落地。本轮给出了"按 run 取产物与切片清单"的读取入口（`GET /api/ai/tasks/{taskId}/pipeline/artifacts[/{artifact_type}]`，`chunk_manifest` 的 content 即切片清单），**但没有"主系统代理取 `work/` 全文"**——切片全文/清洗前后对照仍在 AI 服务侧（403/503 语义未定义，故不擅自开）。I6 的溯源链因此只用 `citations[]` + 产物摘要：缺哪一跳写"该环节未上报" |
+| §4.6 | 质量看板聚合（API-6：按项目/时间窗的 Q1~Q6 聚合） | 单文档口径已随阶段/产物落库（`counters_json`/`page_digest`/`chunk_manifest` 等），聚合接口未做（P1） |
+| §4.7 | 保留与清理作业（180/90 天逻辑删除）、`chunk_manifest` 永久保留 | 未做（P1；体量估算见 §4.2，不急） |
 | §4.8/§4.9 | 前端任务流视图与溯源交互 | **已落地**（见 9.1-I6，`code-1.3`）；`§4.9.3` 里"阶段卡片加『只重试本阶段』"仍属 P2（需 §3.3.3 的 rev 校验 + 后端重试端点） |
-| §5 | **统一并发管理**（L1 `PipelineGate`、优先级/公平/背压、抢占式领取） | P1-β；与 V15 的 `claimed_by`/`claim_expires_at` 一起做 |
+| §4.9.3 | 阶段卡片「只重试本阶段」（需 §3.3.3 的 rev 校验 + 后端重试端点） | P2 |
+| §5 | **统一并发管理**：L1 `PipelineGate` 的公平调度/优先级老化/背压/指标 `/queue/status`（AI 服务内）；主系统侧**只落地了领取协议**（I9） | P1-β。主系统侧的部分已可用（`task_type`/`priority` 已落库、claim 按 `priority DESC` 取），但**按项目公平轮转**与**批量/交互式分流**未做（AI 侧 `common/gate/**` 并行分支在做） |
+| §5.4 | 队列上限与诚实拒绝（429 + 深度/上限/原因）、退避与死信（`attempts>=3 ⇒ DEAD` 的自动判定） | 状态机允许 `FAILED → DEAD`（T10）与 `attempts` 落库，但**判定与自动流转未实现**（谁会去数 attempts、判定放在哪个节点尚未定）；本轮不擅自加一个"只跑在某个节点上"的调度器 |
 | §6 | P0-β / P1-α / P1-β / P2 的其余条目 | 见各自分期 |
 
 ### 9.3 下一批建议（顺序即依赖）
@@ -1396,10 +1426,11 @@ effective_priority = task.priority (主系统写入，默认 0)
 | 顺序 | 内容 | 前置 | 验收 |
 | --- | --- | --- | --- |
 | 1 | **V15 迁移**（§4.3 的 DDL 落成 `backend/src/main/resources/db/migration-yashan/V15__ai_pipeline_flow.sql`） | 无 | ✅ **已落地**（`code-1.1`，见 9.1-I5）：迁移在库外评审通过；`YashanMigrationRunner` 按文件名登记；存量行零影响。**待做**：在真实崖山库执行一次 |
-| 2 | 主系统侧阶段/产物/事件表实体 + Mapper + 阶段回调接口 + **`GET /api/ai/pipeline/runs`（列表/详情）** | 1 | 单测覆盖"回调幂等 upsert"与"投影兜底"；列表只回表头、详情回 `stages[]/artifacts[]/events[]` 与 snake_case 字段名 |
-| 3 | AI 侧在 5 个阶段边界上报 + `run_id` 贯穿 | 2 | 每份新解析文档 5 条阶段行；`SUM(阶段耗时)/任务耗时 ≥ 0.9` |
-| 4 | 前端任务流视图（阶段条 + 阶段卡片 + 产物抽屉；交互参照 data-classification，见 §4.9.3） | 3 | ✅ **已落地**（`code-1.3`，见 9.1-I6）：`npm run build` 0 错；能回答"卡在哪一步/多久/为什么失败"。**待做**：接上第 2/3 项后做一次端到端人工验收（当前未连真实接口） |
-| 5 | L1 `PipelineGate` + 双机抢占式领取 | 1 | §5.8 的 V1~V8 |
+| 2 | 主系统侧阶段/产物/事件表实体 + Mapper + 阶段回调接口 + **`GET /api/ai/pipeline/runs`（列表/详情）** + 抢占式领取 + 服务间鉴权 | 1 | ✅ **已落地**（`code-1.4`，见 9.1-I7~I12）：单测覆盖"回调幂等 upsert"（1 行 + attempts=2）、"产物只 INSERT + rev 自增"、"8 线程只领到一次"、"心跳过期 409"、"投影兜底不改库"、"双向鉴权"；列表只回表头、详情回 `stages[]/artifacts[]/events[]` 与 snake_case 字段名（+ camelCase 别名）。**待做**：真实崖山库执行（V15）与一次真机端到端 |
+| 3 | AI 侧在 5 个阶段边界上报 + `run_id` 贯穿 | 2 | 每份新解析文档 5 条阶段行；`SUM(阶段耗时)/任务耗时 ≥ 0.9`。**AI 侧并行分支已就绪**（`ai-backend/.../module/pipeline/**` 的 `PipelineReportClient`/`StageReport`/`ArtifactType`，逐字段与本轮契约核对过），**但两侧尚未在真机联调** |
+| 4 | 前端任务流视图（阶段条 + 阶段卡片 + 产物抽屉；交互参照 data-classification，见 §4.9.3） | 3 | ✅ **已落地**（`code-1.3`，见 9.1-I6）。**待做两件**：① 前端把两处路径从 `/ai/pipeline/runs*` 改到用户侧同形状入口（`/ai/runs`、`/ai/runs/{run_id}/pipeline`，见 §4.5.2 的说明与 `docs/AI前端与集成方案.md` §12）；② 接上第 2/3 项后做一次端到端人工验收 |
+| 5 | L1 `PipelineGate` + 双机抢占式领取 | 1 | §5.8 的 V1~V8。**主系统侧的领取协议已落地**（9.1-I9：条件 UPDATE + 心跳 + T7 回收），**公平调度/背压/指标未做**（AI 侧并行分支在做） |
+| 6 | 投影兜底的**写入侧**（C 方案补投影：把 AI 任务详情投影成阶段行） | 2、3 | 回调丢失时详情仍能看到阶段进度；与回调行不冲突（"同 `(run_id,stage_key)` 时间更新者胜"）。**本轮只做了只读 STALE 标记**，写入侧等回调链的真实丢失率数据 |
 
 > 纪律：**每一批落地后必须在 §9.1 加一行**（条目 / 代码位置 / 验证方式），并同步 `ITERATION.md` 与 `ai-backend/README.md` 的接口/指标表——
 > 这是"文档、脚本、代码口径一致"的最低成本做法。
