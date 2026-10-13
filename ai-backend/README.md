@@ -119,7 +119,7 @@ curl "http://127.0.0.1:8100/health?with_ocr=true&with_vec=true"     # 期望 cod
 | GET | `/admin/reindex[/{jobId}]` | 重建进度（`processed_docs`/`total_docs`/`failed_docs`/`skipped_docs`/`written_chunks`/**`eta_seconds`**） |
 | POST | `/admin/reindex/{jobId}/cancel` | 中断重建（协作式，在文档边界生效；已写入的切片不回滚，下次续跑会跳过） |
 | POST/GET/DELETE | `/upload-tasks[/{id}]` | 上传解析任务（先返回、后台解析、轮询进度；**解析阶段就完成向量化入库**）。队列满时返回 **429** 且任务标 `FAILED`（不再出现"永久 QUEUED"与 `work/tmp` 残留） |
-| POST | `/chat` | 文档问答（工具调用：检索 → 读页 → 计算；带 `biz_query` 时**多一个** `query_business_data`）。请求 `{question, doc_ids, history, biz_query?}`（`docIds`/`bizQuery` 亦接受）；`biz_query = {url, scope_token, entities}` 是主系统给的**受控查询通道**（P2，契约见 [`../docs/AI前端与集成方案.md`](../docs/AI前端与集成方案.md) §11）——**不传时行为与本版本前完全一致**。响应 `data.answer` 正文用 `[1][2]` 标注出处，`data.citations` 给出结构化出处 `[{index,doc_id,filename,page_no,snippet,score}]`——**前端"点引用跳原文第 N 页"就靠它**，无引用时为 `[]`；系统数据查询照常进 `data.trace`（名称/参数摘要/耗时/命中数） |
+| POST | `/chat` | 文档问答（工具调用：检索 → 读页 → 计算；带 `biz_query` 时**多一个** `query_business_data`）。请求 `{question, doc_ids, scope?, history, biz_query?}`（`docIds`/`bizQuery` 亦接受）；**`scope` 是检索的硬上界**：`{doc_ids?, attachment_ids?, project_ids?, security_levels?}`，与模型在工具里给的 `doc_id` **取交集**，越界直接返回 `scope_violation`（**不退回更大范围**）——不传时行为与本版本前完全一致。`biz_query = {url, scope_token, entities}` 是主系统给的**受控查询通道**（P2，契约见 [`../docs/AI前端与集成方案.md`](../docs/AI前端与集成方案.md) §11）——**不传时行为与本版本前完全一致**。响应 `data.answer` 正文用 `[1][2]` 标注出处，`data.citations` 给出结构化出处 `[{index,doc_id,filename,page_no,snippet,score}]`——**前端"点引用跳原文第 N 页"就靠它**，无引用时为 `[]`；系统数据查询照常进 `data.trace`（名称/参数摘要/耗时/命中数） |
 
 成功响应 `{"code":0,"data":{...}}`；失败为 HTTP 状态码 + `{"detail":"..."}`（与 Python 版一致）。
 其中 **503 = 向量后端不可用 / 模型繁忙**（可重试），**429 = 解析队列已满**（可重试），两者都带明确原因。
@@ -145,7 +145,8 @@ curl -s 'http://127.0.0.1:8100/health?with_metrics=true'
 `ai.retrieval.rerank.pairs`（重排对数，降配 `RETRIEVAL_RECALL` 的收益口径）、
 `ai.vector.embedded` / `ai.vector.indexed`（入库向量化/写索引切片数）、
 `ai.vector.lazy_backfill`（查询侧补算切片数，**正常应为 0**）、
-`ai.retrieval.scope.filtered`（被硬作用域过滤掉的切片数）、`ai.opensearch.retries`。
+`ai.retrieval.scope.filtered`（被硬作用域过滤掉的切片数）、`ai.opensearch.retries`、
+`ai.opensearch.requests`（HTTP 出口请求数：与"线程数不随请求数线性增长"配对，验收连接复用）。
 
 ## 重建索引（可中断、可续跑）
 

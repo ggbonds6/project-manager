@@ -14,6 +14,11 @@
  *   2) 单元格内裸竖线 —— 未转义的 `|` 会被当成多一列（应写 `\|`）；
  *   3) 本地链接失效 —— 相对路径的 [文本](目标) 必须存在（http/https/mailto/#锚点 跳过）；
  *   4) ITERATION 一致性 —— 「迭代总表」数据行数必须等于「各迭代明细」段数（仓库硬约定）。
+ *
+ * ⚠️ 检查 4 里「迭代总表」的版本号前缀是**白名单**：目前有 v*（主系统）、ai-*（AI 服务）、
+ * docs-*（纯文档轮）、**code-***（以落地代码为主、同时同步文档的轮次）。
+ * 新增一类前缀时必须同步下面的正则，否则该行会被漏数、报出"总表 N != 明细 N+1"的假问题
+ * （2026-10-13 新增 code-1.0 时就是这么暴露的）。
  */
 
 import fs from 'node:fs';
@@ -91,7 +96,7 @@ if (fs.existsSync(iteration)) {
   let end = start;
   for (let i = start + 1; i < lines.length; i++) {
     if (isRow(lines[i])) {
-      if (/^\|\s*(v\d|ai-|docs-)/.test(lines[i])) rows.push(lines[i]);
+      if (/^\|\s*(v\d|ai-|docs-|code-)/.test(lines[i])) rows.push(lines[i]);
       end = i;
     } else break;
   }

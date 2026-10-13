@@ -11,9 +11,15 @@
 > 所有引用都标了**来源文件路径**；**未能读到的部分如实写"未确认"**（见 §8 未确认 12、15~18）。
 >
 > **本轮范围**：**只设计、只写文档**，`ai-backend/**`、`backend/**`、`frontend/**`、`scripts/**`、`deploy/**` **一行未动**；
-> **参考项目只读、未改它任何文件**。
+> **参考项目只读、未改它任何文件**（实施状态见上方 §9 链接）。
 > **本文的定位**：把 [`RAG流程完整性评估.md`](RAG流程完整性评估.md) 登记的 **22 条缺口（G1~G22）** 与 **9 个量化触发点（T1~T9）**
-> 在**设计层面**闭合——给出阶段契约、数据模型（V15 DDL 草案）、状态机、接口与验收指标；**不落地代码**。
+> 在**设计层面**闭合——给出阶段契约、数据模型（V15 DDL 草案）、状态机、接口与验收指标。
+>
+> ⚠️ **实施状态（2026-10-13 更新，务必先看）**：本文**已按 §6.1 落地 P0-α 三项**，其余仍为设计（未落地）。
+> 逐项状态与代码位置见 **§9 实施状态**（**以 §9 为准**：第 1~8 章是设计目标，未在 §9 标注"已落地"的都还没写代码）。
+>
+> **初版范围（历史记录，保留以便对照）**：初版**只设计、只写文档**，`ai-backend/**`、`backend/**`、`frontend/**`、`scripts/**`、`deploy/**` 一行未动；
+> **参考项目只读、未改它任何文件**。
 >
 > **证据口径（三类，逐条标注，不混用）**：
 > ① **代码/文档事实**＝给出 `文件:行` 或既有文档章节，可逐字复核；
@@ -1342,3 +1348,49 @@ effective_priority = task.priority (主系统写入，默认 0)
 | 既有结论（不重复） | `docs/AI模型调用与任务队列评估.md` §3.3/§5.2/§6.1；`docs/RAG流程完整性评估.md` §1.2/§4/§5.2；`docs/AI工具集与检索编排评估.md` §4/§7 |
 | **参考项目（data-classification）** | 后端：`C:\Users\yjc\Desktop\data\data-classification-backend\src\main\java\com\example\dc\scheduler\{JobScheduler,Job,JobEnv,JobType,JobRunner,JobView,JobController,JobStartController,JobQueryService,JobPersistenceService,JobSchemaInitializer,SchedulerProperties}.java`、`scheduler/runner/OcrParseJobRunner.java`、`service/SysConfigService.java`、`controller/SysConfigController.java`、`src/main/resources/application.yml`；前端：`C:\Users\yjc\Desktop\data\data-classification\src\{App.tsx,components/JobCenterModal.tsx,components/JobProgressModal.tsx,hooks/useJobTracker.ts,services/dataService.ts,pages/ClassifyQueueModal.tsx}` |
 | 外部公开事实（选型） | `opensearch-java` POM：[3.1.0](https://repo1.maven.org/maven2/org/opensearch/client/opensearch-java/3.1.0/opensearch-java-3.1.0.pom) / [3.10.0](https://repo1.maven.org/maven2/org/opensearch/client/opensearch-java/3.10.0/opensearch-java-3.10.0.pom)；官方 Java client 页（transport 与 deprecation）：<https://docs.opensearch.org/latest/clients/java/>；OkHttp 5.0.0 POM：<https://repo1.maven.org/maven2/com/squareup/okhttp3/okhttp/5.0.0/okhttp-5.0.0.pom>；okhttp 4.12.0 jar 体积：<https://repo1.maven.org/maven2/com/squareup/okhttp3/okhttp/4.12.0/> |
+
+---
+
+## 9. 实施状态（**以本节为准**）
+
+> 本节是本文第 1~8 章的**唯一进度口径**：未在本节标注为"已落地"的条目，**都还只是设计**，代码里没有。
+> 每次落地一批就在这里加一行，并写明**代码位置**与**验证方式**——避免"文档写了、代码没写"的歧义。
+
+### 9.1 已落地
+
+| # | 条目 | 对应缺口/分期 | 代码位置 | 验证 |
+| --- | --- | --- | --- | --- |
+| I1 | **删掉查询侧全量 `_bulk`**：只补"算出向量但索引里还没有"的切片，补写走 `indexChunks` 且为 best-effort（失败只 WARN，不阻断检索） | G2 / P0-α-1 | `ai-backend/.../retrieval/RetrievalService.java`（`recallByOpenSearch`）；查询路径不再调用 `upsertAll` | `RetrievalServiceTest.openSearchBackendRoutesThroughIndexAndReranks`（断言"索引已齐时一次都不写"）+ `queryPathBackfillsOnlyMissingChunks`（只补缺的那一片） |
+| I2 | **请求级作用域硬下推**：模型给的 `doc_id` 与请求作用域**取交集**；越界返回 `scope_violation`，不退回更大范围 | G3 / P0-α-2 | `SearchScope`（新增 `intersect` / `provablyEmptyAgainst`）、`Tools.searchDocuments`、`Tools.execute`、`ToolAgent.run`、`QaService.ask`、`ChatController`（`/chat` 的 `scope` 入参） | 新增 `ToolsScopePushdownTest`（6 例）+ `ChatControllerRequestTest.parsesRequestScopeDimensions` |
+| I3 | **密级成为作用域第四维**：`securityLevels` 参与本地过滤与 kNN filter（缺字段不算命中） | G17 / P0-α-2 | `SearchScope.matches/describe`、`OpenSearchIndex.clausesOf`（`security_level` terms 子句） | `ToolsScopePushdownTest.securityLevelDimensionMatchesStrictly` |
+| I4 | **OpenSearch 出口改单例共享** `HttpClient`（显式 `HTTP_1_1`、`followRedirects(NEVER)`、connectTimeout=`min(10s, 单请求超时)`），连接池与 keep-alive 才真正生效；新增 `ai.opensearch.requests` | §2.4 / P0-α-3 | `OpenSearchIndex`（`http` 字段 + `execute()` + `Machine`） | `OpenSearchIndexTest` 12 例全绿；`ai.opensearch.requests` 与"线程数不随请求数线性增长"配对人工验收（未做真集群压测） |
+
+**这一批的验证证据**：`mvn -o -f ai-backend/pom.xml test` → **Tests run: 189, Failures: 0, Errors: 0**（改造前 181，新增 8 例）。
+**未做**：真集群（`10.254.212.110:9200`）压测与 top-k 一致性验证（步骤 19 ①-3）——**I1 的写请求数=0、I4 的复用效果都需要在真集群上复测**。
+
+### 9.2 未落地（仍为设计）
+
+| 章节 | 未落地的内容 | 为什么还没做 |
+| --- | --- | --- |
+| §3.2 | 七阶段契约与阶段行（PARSE/CLEAN/CHUNK/EMBED/INDEX 的"阶段"建模） | 依赖 V15 表与 AI→主系统阶段回调（见 §4.4.3 的 B/C 方案） |
+| §3.3 | **清洗阶段**（`TextCleaner` + C1~C8 + `clean_rev` 三层防护） | P1-α；前置是 G8 评测基线（页码标注 + recall@5/MRR） |
+| §3.4 | 切片改进（表格整块、重叠、结构感知、父子块、切片元数据补齐） | P1-α；前置同上 |
+| §3.5 | 混合型 PDF 逐页 OCR 回退、DOCX/XLSX 扩展、页级缓存 | P2 |
+| §3.6 | 查询改写、RRF、四类缓存、`/chat` 上下文预算、答案侧 `verification` | P2（作用域硬下推这一项**已落地**，见 9.1-I2） |
+| §4.3 | **V15 迁移**（扩 13 列 + 3 张流水线表）与 DDL | 未落成 SQL 文件；与 §9.3 的分批计划一起做 |
+| §4.4~4.8 | 状态机、阶段/产物上报、溯源接口 API-1~API-7、质量看板、任务流视图 | 依赖 V15 |
+| §5 | **统一并发管理**（L1 `PipelineGate`、优先级/公平/背压、抢占式领取） | P1-β；与 V15 的 `claimed_by`/`claim_expires_at` 一起做 |
+| §6 | P0-β / P1-α / P1-β / P2 的其余条目 | 见各自分期 |
+
+### 9.3 下一批建议（顺序即依赖）
+
+| 顺序 | 内容 | 前置 | 验收 |
+| --- | --- | --- | --- |
+| 1 | **V15 迁移**（§4.3 的 DDL 落成 `backend/src/main/resources/db/migration-yashan/V15__ai_pipeline_flow.sql`） | 无 | 迁移在库外评审通过；`YashanMigrationRunner` 按文件名登记；存量行零影响 |
+| 2 | 主系统侧阶段/产物/事件表实体 + Mapper + 阶段回调接口（API-1/API-2 雏形） | 1 | 单测覆盖"回调幂等 upsert"与"投影兜底" |
+| 3 | AI 侧在 5 个阶段边界上报 + `run_id` 贯穿 | 2 | 每份新解析文档 5 条阶段行；`SUM(阶段耗时)/任务耗时 ≥ 0.9` |
+| 4 | 前端任务流视图（阶段条 + 阶段卡片 + 产物抽屉；交互参照 data-classification，见 §4.9.3） | 3 | `npm run build` 0 错；能回答"卡在哪一步/多久/为什么失败" |
+| 5 | L1 `PipelineGate` + 双机抢占式领取 | 1 | §5.8 的 V1~V8 |
+
+> 纪律：**每一批落地后必须在 §9.1 加一行**（条目 / 代码位置 / 验证方式），并同步 `ITERATION.md` 与 `ai-backend/README.md` 的接口/指标表——
+> 这是"文档、脚本、代码口径一致"的最低成本做法。
