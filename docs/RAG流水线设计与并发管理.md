@@ -1364,8 +1364,9 @@ effective_priority = task.priority (主系统写入，默认 0)
 | I2 | **请求级作用域硬下推**：模型给的 `doc_id` 与请求作用域**取交集**；越界返回 `scope_violation`，不退回更大范围 | G3 / P0-α-2 | `SearchScope`（新增 `intersect` / `provablyEmptyAgainst`）、`Tools.searchDocuments`、`Tools.execute`、`ToolAgent.run`、`QaService.ask`、`ChatController`（`/chat` 的 `scope` 入参） | 新增 `ToolsScopePushdownTest`（6 例）+ `ChatControllerRequestTest.parsesRequestScopeDimensions` |
 | I3 | **密级成为作用域第四维**：`securityLevels` 参与本地过滤与 kNN filter（缺字段不算命中） | G17 / P0-α-2 | `SearchScope.matches/describe`、`OpenSearchIndex.clausesOf`（`security_level` terms 子句） | `ToolsScopePushdownTest.securityLevelDimensionMatchesStrictly` |
 | I4 | **OpenSearch 出口改单例共享** `HttpClient`（显式 `HTTP_1_1`、`followRedirects(NEVER)`、connectTimeout=`min(10s, 单请求超时)`），连接池与 keep-alive 才真正生效；新增 `ai.opensearch.requests` | §2.4 / P0-α-3 | `OpenSearchIndex`（`http` 字段 + `execute()` + `Machine`） | `OpenSearchIndexTest` 12 例全绿；`ai.opensearch.requests` 与"线程数不随请求数线性增长"配对人工验收（未做真集群压测） |
+| I5 | **V15 迁移落成真实 SQL 文件**（`attachment_ai_task` 扩 13 列 + 3 张流水线表） | §4.3 / §9.3-1（P0-β 的前置） | `backend/src/main/resources/db/migration-yashan/V15__ai_pipeline_flow.sql` | `mvn -o -f backend/pom.xml -DskipTests package` 通过，且 `jar tf` 确认 `BOOT-INF/classes/db/migration-yashan/V15__ai_pipeline_flow.sql` 已随包发布；**未在真实崖山库执行**（下次启动/部署由 `YashanMigrationRunner` 应用并登记 `schema_version`） |
 
-**这一批的验证证据**：`mvn -o -f ai-backend/pom.xml test` → **Tests run: 189, Failures: 0, Errors: 0**（改造前 181，新增 8 例）。
+**验证证据**：① `mvn -o -f ai-backend/pom.xml test` → **Tests run: 189, Failures: 0, Errors: 0**（改造前 181，新增 8 例）；② `mvn -o -f backend/pom.xml -DskipTests package` 通过 + V15 随包发布（见 I5）。
 **未做**：真集群（`10.254.212.110:9200`）压测与 top-k 一致性验证（步骤 19 ①-3）——**I1 的写请求数=0、I4 的复用效果都需要在真集群上复测**。
 
 ### 9.2 未落地（仍为设计）
