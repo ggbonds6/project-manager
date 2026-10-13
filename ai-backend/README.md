@@ -101,12 +101,72 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | `AI_PIPELINE_HEARTBEAT_SECONDS` / `AI_PIPELINE_LEASE_SECONDS` | 30 / 90 | 领取租约与心跳间隔（契约里的 `lease_seconds`；**409 表示租约被抢 ⇒ 立即停止该任务并放回**） |
 | `AI_PIPELINE_MDC` | true | 是否把 `run_id` 写进日志 MDC（排障时按一次任务过滤日志） |
 | `AI_PIPELINE_CHUNK_KEY_FORMAT` | `legacy` | 切片键形态。`legacy`=三段（**与接入前逐字节一致，升级不使既有索引/缓存失效**）；`rev`=`d=<docId>:p=<pageNo>:h=<sha1>:c=<cleanRev>:k=<chunkRev>`（清洗/切片规则变更即换键，需跑一次 `POST /admin/reindex` 统一）。解析器两种都认 |
-| `AI_PIPELINE_PARSE_REV` / `AI_PIPELINE_CLEAN_REV` / `AI_PIPELINE_CHUNK_REV` | 1 / **0** / 0 | 流水线版本段。`clean_rev=0` = **本轮尚无清洗阶段**（CLEAN 阶段如实上报 `SKIPPED`，原因写在 `error_msg`）。规则清单/开关/阈值任一变化即 +1 ⇒ 向量缓存整体失效重算（`work/vectors/*.json` 头部记 `clean_rev/chunk_rev`） |
+| `AI_PIPELINE_PARSE_REV` / `AI_PIPELINE_CLEAN_REV` / `AI_PIPELINE_CHUNK_REV` | 1 / **0** / 0 | 流水线版本段。`clean_rev=0` = **清洗关闭**（默认口径；`CLEAN` 阶段如实上报 `SKIPPED`，原因写在 `error_msg`，切片输入 = 解析原文）。规则清单/开关/阈值任一变化即 +1 ⇒ 切片键（`rev` 形态）与向量缓存（`work/vectors/*.json` 头部记 `clean_rev/chunk_rev`）整体失效；`GET /admin/reindex/plan` 会算出"哪些文档需要重算" |
 
 `pipeline_rev = parse=<n>,clean=<n>,chunk=<n>,embed=<sha1(embed_model+dimensions)[0:8]>`；
 任务级幂等键 `task_key = sha1(内容 sha1 + pipeline_rev)`。
-**五阶段边界**：`PARSE` → `CLEAN`（本批 `SKIPPED`）→ `CHUNK` → `EMBED` → `INDEX`，随后 `/finish` 报终态
+**五阶段边界**：`PARSE` → `CLEAN`（`DONE`/`PARTIAL`，或关闭时 `SKIPPED` + 原因）→ `CHUNK` → `EMBED` → `INDEX`，随后 `/finish` 报终态
 （`DONE`/`PARTIAL`（有页级失败时）/`FAILED`/`CANCELLED`）；`RETRIEVE`/`GENERATE` 是在线阶段，不落阶段行。
+
+### 清洗阶段（**新增**，设计 §3.3 / G1+T7）`ai.clean.*`
+
+> 纯本地、**确定性**：同输入 + 同 `clean_rev` ⇒ 同输出（可缓存、可复算、可做前后对照）。
+> 规则**只作用于文本层与平台 OCR markdown 两路**解析结果（未知来源的页原样传下去）。
+> **默认关闭**：`ai.clean.enabled=false` 时 `CLEAN` 阶段上报 `SKIPPED` + 原因，切片输入 = 解析原文，
+> **与接入前逐字一致**（`clean_rev=0`；回归见 `CleanRevRegressionTest`）。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AI_CLEAN_ENABLED` | **false** | 清洗总开关。打开时请同时把 `AI_PIPELINE_CLEAN_REV` 设为 ≥1，并跑一次 `POST /admin/reindex?force=true` |
+| `AI_CLEAN_RULES` | `c1,c2,c3,c4,c5,c6,c7` | 规则清单（逗号分隔）。留空 = 用每条规则自己的默认开关（`c1`~`c7` 开、`c8` 关）。⚠️ **关掉 `c5` 等于同时关掉"表格不被 `c3/c4/c8` 动"的保护** |
+| `AI_CLEAN_HEADER_FOOTER_RATIO` | 0.5 | `c1` 跨页阈值：同一归一化行在 ≥ 该比例的页出现、且位于页首/页末 2 行内 ⇒ 判为页眉/页脚 |
+| `AI_CLEAN_HEADER_FOOTER_MIN_CHARS` | 4 | `c1` 最小行长：短于此的行不参与页眉/页脚判定 |
+| `AI_CLEAN_DEDUP_DROP` | false | `c6` 段级去重：false = **只标记不删**（`duplicate_of` 进产物供复核）；true 才真删重复段 |
+| `AI_CLEAN_WATERMARK_PATTERNS` | 空 | `c8` 水印正则白名单（逗号分隔）。为空 = 该规则不生效（**默认关**：水印文字常是密级线索，合规风险高于收益） |
+
+**规则清单（`c1`~`c8`，与设计 §3.3.2 逐条对应）**：
+
+| id | 规则 | 默认 | 判据（可核对的算法） |
+| --- | --- | --- | --- |
+| `c1` | 页眉/页脚（跨页重复行） | 开 | 归一化（折空白+去数字）后同一行在 ≥50% 的页出现，且位于页首/页末 2 行内 ⇒ 整行剔除；命中行全部进 `removed_lines` |
+| `c2` | 纯页码行 | 开 | `^[-—–\s]*\d{1,4}[-—–\s]*$`、`^第\s*\d+\s*页(共\s*\d+\s*页)?$`、`^\d+\s*/\s*\d+$`、`^Page\s+\d+(\s+of\s+\d+)?$`；**先把"共 Y 页"抽成 `total_pages` 再删行** |
+| `c3` | 空白与不可见字符归一 | 开 | 换行统一、零宽字符删除、全角空格→半角、行首尾 strip、≥3 空格压缩、连续空行压到 1 行；**表格块内不压缩连续空格** |
+| `c4` | 断行合并 / 连字符修复 | 开 | 上一行行尾无句末标点且当前行不是条款/列表/标题起始 ⇒ 合并；`-`/`‐` 结尾 + 下一行小写字母 ⇒ 去连字符合并；**表格块内不合并** |
+| `c5` | 表格与正文分离 | 开 | markdown 竖线结构（连续 ≥2 竖线行，含分隔行或 ≥3 行）⇒ **只标记** `table_ranges`，交切分整块处理，不改写文本 |
+| `c6` | 段级去重 | 开（只标记） | 归一化后完全相同且 ≥20 字的段落，同文档出现 ≥2 次 ⇒ 保留首次、后续记 `duplicate_of`；`AI_CLEAN_DEDUP_DROP=true` 才删 |
+| `c7` | 编码归一 | 开 | 全角 ASCII 区 → 半角，**但保留句读类标点 `，；：？！（）`**（设计 §3.3.2 C7 ②）；统计替代字符 `\uFFFD`（不静默删），归一只记进 `normalized[]` |
+| `c8` | 水印剔除 | **关** | 只删命中 `AI_CLEAN_WATERMARK_PATTERNS` 的整行；词表为空即不生效（"非页首/页末的高频重复行"**未做**，见下方"未做"） |
+
+**产物与阶段上报**：`clean_diff` 摘要（≤4000 字符，含 `removed_chars_ratio`/`removed_lines`/`rules_fired`/被删行样本）
+进主系统 DB；**全文前后对照**留 `work/clean/<docId>.json`（可重建物，`object_key` 指路）。
+`CLEAN` 阶段的 `counters` 含 `clean_rev`/`rules_enabled`/`rules_hit`/`pages*`/`before_chars`/`after_chars`/
+`removed_chars(_ratio)`/`removed_lines`/`pages_all_removed`/`duplicate_paragraphs`/`table_blocks`/`table_chars`/`replacement_chars`/`total_pages`。
+
+**未做（如实登记）**：`c5` 的平台 `blocks[label=table]` **bbox 匹配未做**（`BlockRef` 只有 label+bbox、没有行号/行文本，
+无法映射到行 ⇒ 只认竖线结构，无竖线的表格按正文处理）；`c8` 的"非页首/页末高频重复行"未做（只做词表）；
+`c1` 的白名单正则未提供（命中行一律留痕供人工复核）。
+
+### 切分（**新增**，设计 §3.4 / G11+G12）`ai.chunk.*`
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `AI_CHUNK_IMPROVED` | **true** | 改进切分（结构感知 + 表格整块 + 重叠 + 父子块）。false = **回退到接入前的切法**（段落累积到 `chunk-chars` 就断、无重叠、无结构感知、**无长度上限**），仅用于口味回归对照 |
+| `AI_CHUNK_CHARS` | 500 | 单切片的**目标**字数（打包目标，不是硬上限），与接入前一致 |
+| `AI_CHUNK_MAX_CHAR_LEN` | 2000 | 单切片的**硬上限**。验收口径：**不存在 > 该值的切片**；超长段落按句末标点二次切 |
+| `AI_CHUNK_OVERLAP_RATIO` | 0.12 | 相邻切片重叠比例（上限 0.15）。默认 ≈ 500×12% = 60 字；**按句回退**、**只在本页内**；表格片与结构边界处不加重叠前缀 |
+| `AI_CHUNK_STRUCTURE_AWARE` | true | 按标题/条款边界优先切（标题总是边界，不在标题与其后续正文之间切）；关闭即退化为"按段落打包" |
+| `AI_CHUNK_TABLES_WHOLE` | true | 表格整块成片；超硬上限时按行切、**每片重复表头行 + 分隔行**并前置 `【表格：…】` |
+| `AI_CHUNK_PARENT_SUMMARY_CHARS` | 200 | 父块摘要字数上限（父子块 small-to-big 的"上卷"）；0 = 关闭该能力 |
+
+**切片元数据（设计 §3.4.5）**：`order_in_page`/`parent_key`/`is_table`/`table_rows`/`section_path`/`char_len`/`source`
++ `clean_rev`/`chunk_rev` 都写进 OpenSearch 文档与 mapping（`page_no`/`doc_id`/`filename` 原有）。
+**父子块本轮形态**：父块 = **一页**（`parent_key = <docId>:p=<pageNo>`），子块检索命中后由检索层现算父块摘要
+（同页子块拼接前 N 字）一并给模型；`work/chunks/<docId>.json` 里有 `parents[]`（父键 + 子键 + 摘要）。
+**升级点**：`section_path` 已经逐片算好，升级到"章节树父块"只需把 `parent_key` 从"页"换成"章节"，子块/重叠/上限不动。
+
+**`GET /admin/reindex/plan`（新增，只读）**：按向量缓存头部算出 `stale_docs`/`fresh_docs`/`unknown_docs`
+与 `needs_rebuild`，回答"`clean_rev` 改了要不要重建、影响多少份"（`index_checked=false`：不连集群）。
+`POST /admin/reindex` 的任务行新增 `pipeline_rev`/`clean_rev`/`chunk_rev`/`clean_enabled`/`chunk_improved` 快照。
 
 ## 四条链路（与主系统**同一套形状**）
 
@@ -242,6 +302,49 @@ curl -XPOST 'http://127.0.0.1:8100/admin/reindex?force=true'
 向量化在重建里同样是**批 32 + 并发 8**（共享 embed 信号量），写入按 `OPENSEARCH_BULK_SIZE=500` 分批。
 `VEC_BACKEND=opensearch` 且集群不可达时，重建**启动即报错**（`503` + "向量后端不可用"），
 不会悄悄改成"用进程内重建"。
+
+**改了 `clean_rev`/`chunk_rev` 之后先看计划，再决定要不要重建**（设计 §3.3.3 的 L3）：
+
+```bash
+curl -s 'http://127.0.0.1:8100/admin/reindex/plan'
+# → {pipeline_rev, clean_rev, chunk_rev, clean_enabled, chunk_improved, chunk_key_format,
+#    docs, stale_docs, fresh_docs, unknown_docs, stale_sample[], index_checked:false,
+#    needs_rebuild, recommendation}
+```
+
+`stale_docs` = 向量缓存头部的 `clean_rev/chunk_rev` 与当前口径**不一致**的文档数（⇒ 会重算）；
+`fresh_docs` = 一致（缓存仍有效）；`unknown_docs` = 没有向量缓存（从未向量化）。
+`needs_rebuild=true` 时跑 `POST /admin/reindex?force=true`（`force` 才会忽略"已存在"）。
+本端点是**只读**的：不发请求、不写文件、不改索引；`index_checked=false` 表示没有连集群核对索引里的 `chunk_key`
+（`opensearch` 后端上"缓存一致"不等于"索引齐"，那一步要另跑一次重建或人工核对）。
+
+## 检索级评测（recall@k / MRR / 命中率；**不进 `mvn test`**）
+
+`scripts/eval-ai.mjs` 评的是**端到端问答**（数字一致率、拒答、工具选择）。检索这一层单独有一把尺子：
+
+```powershell
+cd ai-backend
+mvn -o test-compile
+mvn -o dependency:build-classpath "-Dmdep.outputFile=target/cp.txt"
+$cp = (Get-Content target/cp.txt -Raw).Trim()
+$env:LLM_API_KEY = '<平台 sk>'        # 需要真检索时（向量化/重排走平台网关）
+java -cp "target/classes;target/test-classes;$cp" com.pmgt.ai.tools.RetrievalEvalTool `
+     --work ./work --eval ../eval/smoke-30.json --top-k 5 --out ./target/retrieval-eval.json
+```
+
+- **指标**：`recall@k`（top-k 覆盖到的真值数 / 该题真值总数，宏平均）、`MRR`（首个命中真值的排名倒数）、`命中率`（top-k 里至少 1 条真值的题占比）；
+- **真值两个来源**：`expected.citation_pages`（**人工标注**的页码，当前数据集全是 `null`）或
+  `expected.citation_chunk_keys`（正确切片键，更严格；给了就优先按它比对）；
+- **`citation_pages=null` ⇒ 该题记 `SKIPPED_UNLABELED`**：**跳过而不是失败**（退出码仍为 0），
+  指标分母只统计已标注题；全部未标注时打印 `n/a`（**不是 0**——0 会被读成"全错"）。
+  **页码标注是用户的任务**（[`../eval/README.md`](../eval/README.md) §1 的硬边界，不许瞎标）；
+- **退出码**：0 = 无失败（含全跳过）；1 = 有已标注题一条都没命中；2 = 用法/参数错误；
+- 工具源码在 [`src/test/java/com/pmgt/ai/tools/RetrievalEvalTool.java`](src/test/java/com/pmgt/ai/tools/RetrievalEvalTool.java)，
+  指标计算在**主源码** [`src/main/java/com/pmgt/ai/module/eval/RetrievalEval.java`](src/main/java/com/pmgt/ai/module/eval/RetrievalEval.java)
+  （纯函数，被 `RetrievalEvalTest` 覆盖，含 `citation_pages=null ⇒ SKIP` 的用例）。
+- **为什么不开 `/admin/eval` 端点**（本轮的二选一）：① 它依赖平台网关与人工标注，是开发/验收期活动；
+  ② AI 服务当前**没有入站鉴权**（见「运维与风险」），新开一个"能对全库跑任意 query"的端点等于开一个未鉴权探测面；
+  ③ 与既有 `TopKCompareTool` 同一先例（手工跑、口令只从环境变量读），不引入第二种跑法。
 
 ## top-k 一致性比对工具（手工对真集群；**不进 `mvn test`**）
 
