@@ -329,10 +329,6 @@ class PipelineGateTest {
                     pool.submit(() -> gate.admit(GateChannel.INTERACTIVE, "P", 0, 1500));
             Thread.sleep(120);
             assertTrue(gate.interactiveQueueNonEmpty(), "交互式等待者应在队列里");
-            System.err.println("DBGT before-batch nonEmpty=" + gate.interactiveQueueNonEmpty()
-                    + " waitingCount=" + gate.interactiveWaitingCount()
-                    + " interactiveDepth=" + gate.snapshotQueueDepth("interactive")
-                    + " interactiveInflight=" + gate.snapshotQueueInflight("interactive"));
 
             // 批量解析此刻**不该**被派发（还有 2 个空位也一样）
             GateResult batch = gate.admit(GateChannel.BATCH_PARSE, "P", 0, 300);
