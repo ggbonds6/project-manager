@@ -37,31 +37,30 @@ class ChatControllerBizQueryTest {
 
     private static final String TOKEN = "scope-token-should-never-be-echoed";
 
-    /** 记录"走了哪个重载、收到了什么通道"，返回固定答案（真 QaService 要连大模型）。 */
+    /** 记录"有没有拿到通道"，返回固定答案（真 QaService 要连大模型）。 */
     private static final class StubQaService extends QaService {
 
         private BizQuerySpec received;
-        private boolean fiveArgPath;
+        /** true = 本次请求带着 {@code biz_query}（控制器走的就是"带通道"的那条分支）。 */
+        private boolean withBizQueryPath;
 
         private StubQaService() {
-            super(null, null, null);   // 只覆写两个 ask，父类协作者不会被用到
+            super(null, null, null);   // 只覆写 ask，父类协作者不会被用到
         }
 
-        @Override
-        public QaResult ask(
-                String question, List<String> docIds, List<Map<String, Object>> history, Integer maxRounds) {
-            this.fiveArgPath = false;
-            return canned();
-        }
-
+        /**
+         * ⚠️ 覆写控制器真正调用的<b>六参</b>版本：四参/五参只是转发到它。
+         * 覆写老签名会静默不生效（stub 返回 null，断言表现为"响应字段全空"）。
+         */
         @Override
         public QaResult ask(
                 String question,
                 List<String> docIds,
                 List<Map<String, Object>> history,
                 Integer maxRounds,
-                BizQuerySpec bizQuery) {
-            this.fiveArgPath = true;
+                BizQuerySpec bizQuery,
+                com.pmgt.ai.module.retrieval.SearchScope requestScope) {
+            this.withBizQueryPath = bizQuery != null;
             this.received = bizQuery;
             return canned();
         }
@@ -91,7 +90,7 @@ class ChatControllerBizQueryTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.answer").value("答案"));
 
-        assertFalse(stub.fiveArgPath, "不传 biz_query 时必须走原来的入口");
+        assertFalse(stub.withBizQueryPath, "不传 biz_query 时必须走原来的入口");
         assertNull(stub.received);
     }
 
@@ -106,7 +105,7 @@ class ChatControllerBizQueryTest {
                                 + "\"entities\":[\"projects\",\"stats\"]}}"))
                 .andExpect(status().isOk());
 
-        assertTrue(stub.fiveArgPath, "传了 biz_query 才走带通道的入口");
+        assertTrue(stub.withBizQueryPath, "传了 biz_query 才走带通道的入口");
         assertEquals("http://10.0.0.1:8080/api/ai/query", stub.received.url());
         assertEquals(TOKEN, stub.received.scopeToken());
         assertEquals(List.of("projects", "stats"), stub.received.entities());
@@ -123,7 +122,7 @@ class ChatControllerBizQueryTest {
                                 + "\"scopeToken\":\"tok-2\",\"entities\":[\"stats\"]}}"))
                 .andExpect(status().isOk());
 
-        assertTrue(stub.fiveArgPath);
+        assertTrue(stub.withBizQueryPath);
         assertEquals("tok-2", stub.received.scopeToken());
         assertEquals(List.of("stats"), stub.received.entities());
     }
@@ -138,7 +137,7 @@ class ChatControllerBizQueryTest {
                                 + "\"scope_token\":\"tok-3\"}}"))
                 .andExpect(status().isOk());
 
-        assertTrue(stub.fiveArgPath);
+        assertTrue(stub.withBizQueryPath);
         assertNull(stub.received.entities());
         assertTrue(stub.received.allows("payments"), "没给收窄清单就不限制实体");
     }

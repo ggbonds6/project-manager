@@ -1,6 +1,7 @@
 package com.pmgt.ai.module.llm;
 
 import com.pmgt.ai.module.retrieval.SearchPort;
+import com.pmgt.ai.module.retrieval.SearchScope;
 import com.pmgt.ai.module.store.DocStore;
 import com.pmgt.ai.module.store.StoredDoc;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -179,8 +180,44 @@ public class Tools {
      */
     public Map<String, Object> searchDocuments(
             String query, Integer topK, String docId, CitationRegistry citations) {
+        return searchDocuments(query, topK, docId, citations, null);
+    }
+
+    /**
+     * 同上，并接受<b>请求级作用域</b>（{@code /chat} 请求里主系统给的 {@code doc_ids} 等）。
+     *
+     * <p>作用域是<b>上界</b>，模型不能把它放大：模型给的 {@code doc_id} 与请求作用域
+     * <b>取交集</b>（{@link SearchScope#intersect(SearchScope)}）；交集被证明为空时
+     * 直接返回"越界即空"的结构化结果（带 {@code scope_violation}），
+     * <b>不退化成"在请求作用域内检索"</b>——静默放宽范围会让模型以为它读到了那份文档。
+     *
+     * @param requestScope 本次请求的作用域；{@code null} 或空 = 不加约束（老行为）
+     */
+    public Map<String, Object> searchDocuments(
+            String query, Integer topK, String docId, CitationRegistry citations,
+            SearchScope requestScope) {
         int k = normalizeTopK(topK);
-        SearchPort.SearchResult result = searchPort.search(query == null ? "" : query, k, docId);
+        SearchScope effective = SearchScope.empty();
+        if (requestScope != null && requestScope.constrained()) {
+            effective = effective.intersect(requestScope);
+            if (docId != null && !docId.isBlank()
+                    && !requestScope.docIds().isEmpty() && !requestScope.docIds().contains(docId)) {
+                return scopeViolation(docId, requestScope);
+            }
+            if (docId != null && !docId.isBlank()) {
+                effective = effective.intersect(SearchScope.ofDocIds(List.of(docId)));
+            }
+        } else if (docId != null && !docId.isBlank()) {
+            effective = SearchScope.ofDocIds(List.of(docId));
+        }
+        if (effective.provablyEmptyAgainst(requestScope)) {
+            return scopeViolation(docId, requestScope);
+        }
+
+        String q = query == null ? "" : query;
+        SearchPort.SearchResult result = effective.constrained()
+                ? searchPort.searchInScope(q, k, effective)
+                : searchPort.search(q, k, docId);
         List<Map<String, Object>> hits = new ArrayList<>();
         if (result != null && result.hits() != null) {
             for (SearchPort.Hit hit : result.hits()) {
@@ -198,6 +235,9 @@ public class Tools {
                             + "或确认问题涉及的文档是否已上传。");
             // note 会写明"向量服务不可用，本次仅关键词召回"这类降级信息，别吞掉
             empty.put("note", result == null || result.note() == null ? "" : result.note());
+            if (effective.constrained()) {
+                empty.put("scope", effective.describe());
+            }
             return empty;
         }
         Map<String, Object> out = new LinkedHashMap<>();
@@ -206,6 +246,26 @@ public class Tools {
         out.put("retrieval", result.retrieval());
         out.put("reranked", result.reranked());
         out.put("note", result.note());
+        if (effective.constrained()) {
+            out.put("scope", effective.describe());
+        }
+        return out;
+    }
+
+    /**
+     * 越界即空的结构化结果（不是异常：模型该据此改问法或如实回答"未找到"）。
+     *
+     * <p>文案刻意把三件事说清：① 越界了；② 本次授权范围是什么；③ 不要重试同一个 docId。
+     */
+    private static Map<String, Object> scopeViolation(String docId, SearchScope requestScope) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("found", 0);
+        out.put("hits", List.of());
+        out.put("scope_violation", true);
+        out.put("doc_id", docId);
+        out.put("scope", requestScope == null ? "" : requestScope.describe());
+        out.put("hint", "该文档不在本次授权范围内（越界即空，不会退回更大范围）。"
+                + "请在授权范围内检索，或如实说明「文档中未找到」。");
         return out;
     }
 
@@ -754,6 +814,24 @@ public class Tools {
             Map<String, Object> arguments,
             CitationRegistry citations,
             BizQuerySpec bizQuery) {
+        return execute(name, arguments, citations, bizQuery, null);
+    }
+
+    /**
+     * 执行工具（带引用注册表 + 受控查询通道 + <b>请求级作用域</b>）。
+     *
+     * <p>{@code requestScope} 只影响 {@code search_documents}：它把请求作用域当上界，
+     * 与模型给的 {@code doc_id} 取交集（越界即空）。其余工具与错误分支完全不受影响——
+     * 老调用点仍走上面的四参重载，行为与本版本前一致。
+     *
+     * @param requestScope 本次请求的作用域；{@code null} 或空 = 不加约束
+     */
+    public Map<String, Object> execute(
+            String name,
+            Map<String, Object> arguments,
+            CitationRegistry citations,
+            BizQuerySpec bizQuery,
+            SearchScope requestScope) {
         Map<String, Object> args = arguments == null ? Map.of() : arguments;
         try {
             if ("search_documents".equals(name)) {
@@ -761,7 +839,8 @@ public class Tools {
                         asString(args.get("query")),
                         asInt(args.get("top_k"), (Integer) null),
                         asString(args.get("doc_id")),
-                        citations);
+                        citations,
+                        requestScope);
             }
             if ("read_page".equals(name)) {
                 return readPage(

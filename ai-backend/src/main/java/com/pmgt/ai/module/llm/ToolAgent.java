@@ -1,6 +1,7 @@
 package com.pmgt.ai.module.llm;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.pmgt.ai.module.retrieval.SearchScope;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -213,6 +214,24 @@ public class ToolAgent {
             Double timeoutSeconds,
             CitationRegistry citations,
             BizQuerySpec bizQuery) {
+        return run(messages, maxRounds, timeoutSeconds, citations, bizQuery, null);
+    }
+
+    /**
+     * 同上，并带上<b>请求级作用域</b>（主系统在 {@code /chat} 里给的 {@code doc_ids} 等）。
+     *
+     * <p>它是检索的<b>上界</b>：一路传给 {@code Tools.execute} → {@code search_documents}，
+     * 与模型给的 {@code doc_id} 取交集（越界即空）。{@code null} 或空 = 不加约束（老行为）。
+     *
+     * @param requestScope 本次请求的作用域；{@code null} 表示主系统没限定范围
+     */
+    public AgentResult run(
+            List<Map<String, Object>> messages,
+            Integer maxRounds,
+            Double timeoutSeconds,
+            CitationRegistry citations,
+            BizQuerySpec bizQuery,
+            SearchScope requestScope) {
         long startedNanos = System.nanoTime();
         List<ToolTrace> trace = new ArrayList<>();
         int promptTokens = 0;
@@ -246,7 +265,7 @@ public class ToolAgent {
                 for (LlmClient.ToolCall call : resp.toolCalls()) {
                     long t0 = System.nanoTime();
                     Map<String, Object> result =
-                            tools.execute(call.name(), call.arguments(), citations, bizQuery);
+                            tools.execute(call.name(), call.arguments(), citations, bizQuery, requestScope);
                     double cost = elapsedSeconds(t0);
 
                     // 工具结果必须回传；用 JSON 保证结构清晰、模型好解析

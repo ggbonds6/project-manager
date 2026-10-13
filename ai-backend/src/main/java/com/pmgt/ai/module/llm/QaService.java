@@ -1,6 +1,7 @@
 package com.pmgt.ai.module.llm;
 
 import com.pmgt.ai.common.config.AiSettings;
+import com.pmgt.ai.module.retrieval.SearchScope;
 import com.pmgt.ai.module.store.DocStore;
 import org.springframework.stereotype.Service;
 
@@ -189,6 +190,30 @@ public class QaService {
             List<Map<String, Object>> history,
             Integer maxRounds,
             BizQuerySpec bizQuery) {
+        return ask(question, docIds, history, maxRounds, bizQuery, null);
+    }
+
+    /**
+     * 问答（带<b>请求级作用域</b>）。
+     *
+     * <p>作用域是本次检索的<b>上界</b>：一路传给 {@code ToolAgent → Tools.search_documents}，
+     * 与模型给的 {@code doc_id} 取交集（越界即空）。它与 {@code docIds} 的分工：
+     * <ul>
+     *   <li>{@code docIds}＝请求里显式给的文档清单（用于 system 提示词里"本次范围"的清单）；</li>
+     *   <li>{@code requestScope}＝完整的四维作用域（文档/附件/项目/密级），<b>只有它参与检索过滤</b>。</li>
+     * </ul>
+     * 两者同时给出时以 {@code requestScope} 过滤、以 {@code docIds ∪ scope.docIds()} 组清单，
+     * 因此"老调用只传 docIds"的行为与改造前逐字节一致。
+     *
+     * @param requestScope 本次请求的作用域；{@code null} = 不加约束
+     */
+    public QaResult ask(
+            String question,
+            List<String> docIds,
+            List<Map<String, Object>> history,
+            Integer maxRounds,
+            BizQuerySpec bizQuery,
+            SearchScope requestScope) {
 
         long startedNanos = System.nanoTime();
         String q = question == null ? "" : question.strip();
@@ -203,7 +228,7 @@ public class QaService {
                     "问题为空");
         }
 
-        List<Map<String, Object>> docs = scopedDocs(docIds);
+        List<Map<String, Object>> docs = scopedDocs(docIds, requestScope);
         if (docs.isEmpty() && bizQuery == null) {
             return new QaResult(NO_DOC_ANSWER, List.of(), List.of(), List.of(), Map.of(), "done", "没有可用文档");
         }
@@ -221,7 +246,8 @@ public class QaService {
                         ? settings.getLimits().getChatTimeoutSeconds()
                         : (double) Math.max(1, settings.getGateway().getTimeoutSeconds()),
                 citations,
-                bizQuery);
+                bizQuery,
+                requestScope);
 
         String answer = result.getText();
         if (answer == null || answer.isEmpty()) {
@@ -272,7 +298,7 @@ public class QaService {
      * <p>⚠️ <b>不要加 {@code buildQaMessages(String, List<String>, List<Map>)} 重载</b>：
      * 泛型擦除后它与本方法签名相同（都是 {@code (String, List, List)}），编译不过。
      * Python 没这个问题（鸭子类型），Java 必须区分开——要按 docIds 组装就先自己调
-     * {@link #scopedDocs(List)} 再传进来。
+     * {@link #scopedDocs(List, SearchScope)} 再传进来。
      */
     public BuiltMessages buildQaMessages(
             String question, List<Map<String, Object>> docs, List<Map<String, Object>> history) {
@@ -317,14 +343,41 @@ public class QaService {
 
     /** 作用域内的文档（元信息）。{@code docIds} 为空表示全部。 */
     public List<Map<String, Object>> scopedDocs(List<String> docIds) {
+        return scopedDocs(docIds, null);
+    }
+
+    /**
+     * 作用域内的文档（元信息）。
+     *
+     * <p>{@code requestScope} 只用来把清单收窄到"请求作用域里点名的那些文档"：
+     * 作用域给了 {@code doc_ids} 时，清单取"显式 {@code docIds} ∩ 作用域 doc_ids"
+     * （一方为空即取另一方），因此：
+     * <ul>
+     *   <li>老调用（只传 {@code docIds}）→ 行为与改造前一致；</li>
+     *   <li>只传作用域 → 清单就是作用域点名的文档；</li>
+     *   <li>都不传 → 全部文档（不含权限判断，权限由主系统的 scope_token 决定）。</li>
+     * </ul>
+     */
+    public List<Map<String, Object>> scopedDocs(List<String> docIds, SearchScope requestScope) {
         List<Map<String, Object>> docs = docStore == null ? List.of() : docStore.list();
         if (docs == null) {
             return List.of();
         }
-        if (docIds == null || docIds.isEmpty()) {
+        Set<String> keep = new LinkedHashSet<>();
+        if (docIds != null) {
+            docIds.stream().filter(id -> id != null && !id.isBlank()).forEach(id -> keep.add(id.strip()));
+        }
+        Set<String> bound = requestScope == null ? Set.of() : requestScope.docIds();
+        if (!bound.isEmpty()) {
+            if (keep.isEmpty()) {
+                keep.addAll(bound);
+            } else {
+                keep.retainAll(bound);
+            }
+        }
+        if (keep.isEmpty()) {
             return docs;
         }
-        Set<String> keep = new LinkedHashSet<>(docIds);
         List<Map<String, Object>> out = new ArrayList<>();
         for (Map<String, Object> doc : docs) {
             if (doc != null && keep.contains(asText(doc.get("doc_id")))) {

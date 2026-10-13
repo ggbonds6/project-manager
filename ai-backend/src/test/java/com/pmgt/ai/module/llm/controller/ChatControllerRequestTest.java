@@ -14,6 +14,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -35,16 +37,25 @@ class ChatControllerRequestTest {
 
         private List<String> receivedDocIds;
         private String receivedQuestion;
+        /** 控制器解析出来的作用域（用来钉住 {@code scope} 四维的字段名映射）。 */
+        private com.pmgt.ai.module.retrieval.SearchScope receivedScope;
 
         private StubQaService() {
             super(null, null, null);   // 只覆写 ask，父类协作者不会被用到
         }
 
+        /**
+         * ⚠️ 覆写的是控制器真正调用的<b>六参</b>版本：
+         * 四参/五参只是转发到它，覆写老的会静默不生效（表现为"stub 返回 null"）。
+         */
         @Override
         public QaResult ask(
-                String question, List<String> docIds, List<Map<String, Object>> history, Integer maxRounds) {
+                String question, List<String> docIds, List<Map<String, Object>> history, Integer maxRounds,
+                com.pmgt.ai.module.llm.BizQuerySpec bizQuery,
+                com.pmgt.ai.module.retrieval.SearchScope requestScope) {
             this.receivedQuestion = question;
             this.receivedDocIds = new ArrayList<>(docIds == null ? List.of() : docIds);
+            this.receivedScope = requestScope;
 
             // 用真实的引用表造 citations，连同响应形状一起验
             CitationRegistry citations = new CitationRegistry();
@@ -130,5 +141,41 @@ class ChatControllerRequestTest {
                 .andExpect(jsonPath("$.data.llm.rounds").value(2))
                 .andExpect(jsonPath("$.data.stopped_reason").value("done"))
                 .andExpect(jsonPath("$.data.error").value(""));
+    }
+
+    /**
+     * 请求级 {@code scope}（四维硬约束）必须被解析出来并传给 QaService。
+     *
+     * <p>为什么单独一条：{@code scope} 是<b>检索的硬上界</b>，如果字段名映射错了（静默忽略），
+     * 表现就是"范围没生效、答了全库"——与 {@code doc_ids} 当初那个坑同一类，必须钉住。
+     */
+    @Test
+    void parsesRequestScopeDimensions() throws Exception {
+        mvc.perform(post("/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"question\":\"中标金额是多少\","
+                                + "\"scope\":{\"doc_ids\":[\"abc123\"],"
+                                + "\"attachment_ids\":[\"77\"],"
+                                + "\"project_ids\":[\"5\"],"
+                                + "\"security_levels\":[\"L2\"]}}"))
+                .andExpect(status().isOk());
+
+        assertNotNull(stub.receivedScope, "scope 必须被解析（否则就是静默忽略）");
+        assertEquals(java.util.Set.of("abc123"), stub.receivedScope.docIds());
+        assertEquals(java.util.Set.of("77"), stub.receivedScope.attachmentIds());
+        assertEquals(java.util.Set.of("5"), stub.receivedScope.projectIds());
+        assertEquals(java.util.Set.of("L2"), stub.receivedScope.securityLevels());
+    }
+
+    /** 不传 {@code scope} 时是"无约束"（老调用方行为不变）。 */
+    @Test
+    void missingScopeMeansUnconstrained() throws Exception {
+        mvc.perform(post("/chat")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"question\":\"中标金额是多少\"}"))
+                .andExpect(status().isOk());
+
+        assertNotNull(stub.receivedScope);
+        assertFalse(stub.receivedScope.constrained());
     }
 }

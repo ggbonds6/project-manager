@@ -144,6 +144,31 @@ class RetrievalServiceTest {
             }
         }
 
+        /** 索引里已存在的切片键（查询侧"要不要补写"的依据）。 */
+        java.util.Set<String> existing = new java.util.LinkedHashSet<>();
+        int existingKeyCalls;
+
+        @Override
+        public java.util.Set<String> existingChunkKeys(java.util.Collection<String> chunkKeys) {
+            existingKeyCalls++;
+            return existing;
+        }
+
+        /**
+         * 检索路径的"缺片补写"走这个方法（不是 {@link #upsertAll}）。
+         * 离线替身在这里只记账、不发请求——否则每个用例都要真连一次集群。
+         */
+        @Override
+        public int indexChunks(List<DocStore.Chunk> chunks, List<float[]> vectors, int dimension,
+                               Map<String, DocMeta> metaByDocId) {
+            upsertCalls++;
+            upsertedDocs += chunks.size();
+            for (int i = 0; i < chunks.size(); i++) {
+                textsById.put(RetrievalService.chunkKey(chunks.get(i)), chunks.get(i).text());
+            }
+            return chunks.size();
+        }
+
         @Override
         public List<SearchHit> search(float[] queryVector, int k) {
             return search(queryVector, null, k, SearchScope.empty());
@@ -366,7 +391,10 @@ class RetrievalServiceTest {
 
     // ── OpenSearch 在线路由（离线：HTTP 层被替身换掉）─────────────
 
-    /** 配好 opensearch 后：探活 → 确保索引 → 幂等 upsert → kNN 召回 → 精排，且带"未实测"标注。 */
+    /**
+     * 配好 opensearch 后：探活 → 确保索引 → kNN 召回 → 精排，且带"未实测"标注；
+     * <b>并且检索路径不写索引</b>（G2：查询侧全量 {@code _bulk} 已删除）。
+     */
     @Test
     void openSearchBackendRoutesThroughIndexAndReranks() {
         DocStore store = store();
@@ -375,6 +403,8 @@ class RetrievalServiceTest {
         String key = RetrievalService.chunkKey(new DocStore.Chunk(docId, "a.pdf", 1, text));
 
         StubIndex index = new StubIndex(new AiSettings());
+        // 索引里已经有这个切片（正常状态：入库/重建已经写完）
+        index.existing.add(key);
         // kNN 的返回：模拟集群里已经有这个切片（分数是 cosinesimil 的相似度量纲）
         index.hits = List.of(new OpenSearchIndex.SearchHit(key, docId, "a.pdf", 1, 0.62, text));
 
@@ -384,10 +414,9 @@ class RetrievalServiceTest {
                 : List.of(new RerankHit(0, 0.88, 0));
         SearchPort.SearchResult result = openSearchService(store, vec, index).search("付款方式", 2, docId);
 
-        assertEquals(1, index.healthCalls, "走 opensearch 前必须探活（连不上就显式报错）");
         assertEquals(1, index.ensureIndexCalls, "首次检索要确保索引存在");
-        assertTrue(index.upsertCalls >= 1, "切片必须写进索引（幂等 upsert）");
-        assertTrue(index.upsertedDocs >= 1);
+        assertEquals(0, index.upsertCalls, "索引已齐时检索路径**一次都不该写**（G2：删掉查询侧全量 upsert）");
+        assertEquals(0, index.upsertedDocs);
         assertEquals(1, index.searchCalls, "向量召回必须由 kNN 完成，而不是进程内余弦");
         assertTrue(result.reranked(), "精排仍走 Reranker");
         assertEquals("hybrid", result.retrieval(), "kNN 命中即向量召回成功 → hybrid");
@@ -399,6 +428,34 @@ class RetrievalServiceTest {
         assertNotNull(index.lastScope);
         assertTrue(index.lastScope.docIds().contains(docId),
                 "docId 必须作为 filter 下推，而不是只在本地丢弃越界命中：" + index.lastScope.describe());
+    }
+
+    /**
+     * 索引缺片时只在检索路径补写<b>缺的那些</b>（不是整个作用域）。
+     *
+     * <p>这是 G2 的另一半：删掉"每次检索重写作用域"之后，补写能力保留但必须精确——
+     * 索引里已有的切片不允许被重复写（否则等于把写放大换个条件又加回来）。
+     */
+    @Test
+    void queryPathBackfillsOnlyMissingChunks() {
+        DocStore store = store();
+        String docId = save(store, "a.pdf", "第一页内容".repeat(80), "第二页内容".repeat(80));
+        StoredDoc stored = store.get(docId);
+        String key1 = RetrievalService.chunkKey(
+                new DocStore.Chunk(docId, "a.pdf", 1, stored.pageText(1)));
+        String key2 = RetrievalService.chunkKey(
+                new DocStore.Chunk(docId, "a.pdf", 2, stored.pageText(2)));
+
+        StubIndex index = new StubIndex(new AiSettings());
+        index.existing.add(key1);      // 第 1 页已在索引里；第 2 页缺失
+        index.hits = List.of();
+
+        openSearchService(store, new FakeVec(), index).search("内容", null, null);
+
+        assertEquals(1, index.upsertCalls, "只应补写一次（缺 1 页）");
+        assertEquals(1, index.upsertedDocs, "补写的条数必须等于缺失条数，而不是作用域全量");
+        assertTrue(index.textsById.containsKey(key2), "缺失的第 2 页要被补上：" + index.textsById.keySet());
+        assertFalse(index.textsById.containsKey(key1), "已在索引里的第 1 页不该被重写");
     }
 
     /** local 后端绝不能碰 OpenSearch（防止"顺手也探一下"变成隐式依赖）。 */
@@ -443,6 +500,9 @@ class RetrievalServiceTest {
      * 若实现里图省事把 {@code values()} 与 {@code chunks} 按下标 zip，向量就会挂到别的切片上——
      * 索引里全是错配向量，检索结果看起来正常却全错。这里让两页文本拿到的向量明显不同，
      * 谁被 zip 错位就会露出来。
+     *
+     * <p>本用例走的是"索引里两页都缺"的补写路径（{@code StubIndex.existing} 为空），
+     * 因此补写内容 == 作用域内全部切片，正好可以直接断言配对关系。
      */
     @Test
     void indexedVectorStaysPairedWithItsOwnChunkText() {

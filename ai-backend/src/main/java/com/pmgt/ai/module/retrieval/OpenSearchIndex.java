@@ -98,6 +98,29 @@ public class OpenSearchIndex {
 
     private final Machine machine;
 
+    /**
+     * 进程内<b>唯一</b>的 HTTP 出口：连接池与 keep-alive 因此才真正生效。
+     *
+     * <p>为什么必须共享（原来的写法是"每次请求现建一个 {@code HttpClient}"）：
+     * 每次 {@code new} 都会新建自己的连接池与 selector 线程，请求结束后连接无法复用，
+     * 于是每一次 {@code _search}/{@code _bulk} 都要重付一次 TCP 握手与线程创建。
+     * 本服务一次问答会走 2 次 kNN 检索、一次导入会走多次 {@code _bulk}，这个开销是白付的。
+     *
+     * <p>三条刻意的配置：
+     * <ol>
+     *   <li>{@code HTTP_1_1}：OpenSearch 3.x 的 REST 接口默认是 HTTP/1.1，显式声明可省掉
+     *       每次请求的 h2 升级尝试；</li>
+     *   <li>{@code followRedirects(NEVER)}：集群 REST 不该有重定向，出现重定向属于配置错误，
+     *       我们要的是明确报错而不是被悄悄引到别处；</li>
+     *   <li>connectTimeout 取 {@code min(10, 单次请求超时)}：连不上要快速失败，
+     *       读超时仍由每个请求的 {@code HttpRequest.timeout()} 单独控制。</li>
+     * </ol>
+     *
+     * <p>与"未启用时完全不碰网络"的既有语义不冲突：本字段只在构造期创建对象，
+     * <b>不发起任何请求</b>；真正的网络访问仍只在 {@code VEC_BACKEND=opensearch} 的调用路径上发生。
+     */
+    private final HttpClient http;
+
     public OpenSearchIndex(AiSettings settings) {
         this(settings, null);
     }
@@ -106,6 +129,12 @@ public class OpenSearchIndex {
     public OpenSearchIndex(AiSettings settings, MeterRegistry registry) {
         this.settings = settings;
         this.machine = new Machine(registry == null ? new SimpleMeterRegistry() : registry);
+        this.http = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(
+                        Math.min(10, Math.max(1, (long) Math.ceil(timeoutSeconds())))))
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .version(HttpClient.Version.HTTP_1_1)
+                .build();
     }
 
     /** 集群是否已配置（配了 url 才算启用）。 */
@@ -615,7 +644,12 @@ public class OpenSearchIndex {
         return filter;
     }
 
-    /** 作用域 → terms 子句数组（三个维度各自一个 {@code terms} 子句，交给 bool.filter 做交集）。 */
+    /**
+     * 作用域 → terms 子句数组（四个维度各自一个 {@code terms} 子句，交给 bool.filter 做交集）。
+     *
+     * <p>密级是第四个维度：它与其余三维同一纪律——给了值就必须命中，
+     * 文档缺 {@code security_level} 字段时不会被 terms 命中（缺失 ≠ 通配）。
+     */
     private ArrayNode clausesOf(SearchScope scope) {
         ArrayNode clauses = MAPPER.createArrayNode();
         if (scope == null || !scope.constrained()) {
@@ -624,6 +658,7 @@ public class OpenSearchIndex {
         addTerms(clauses, "doc_id", scope.docIds());
         addTerms(clauses, "attachment_id", scope.attachmentIds());
         addTerms(clauses, "project_id", scope.projectIds());
+        addTerms(clauses, "security_level", scope.securityLevels());
         return clauses;
     }
 
@@ -779,11 +814,9 @@ public class OpenSearchIndex {
             builder.method(method, HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
         }
         try {
-            // 每次现建 client：未启用时完全不碰网络，也不持有连接池
-            HttpClient client = HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(Math.min(10, Math.max(1, (long) timeoutSeconds))))
-                    .build();
-            return client.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            // 复用进程内唯一的 client（见字段注释：原来每次现建会丢掉连接池与 keep-alive）
+            machine.requests.increment();
+            return http.send(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new VecClient.VecException(unavailable("请求被中断：" + e.getMessage()), e);
@@ -818,10 +851,17 @@ public class OpenSearchIndex {
     /** 指标挂载点（单独一个小对象，避免把 protected 的测试替身污染成"必须实现指标"）。 */
     private static final class Machine {
         private final Counter retries;
+        private final Counter requests;
 
         private Machine(MeterRegistry registry) {
             this.retries = Counter.builder("ai.opensearch.retries")
                     .description("OpenSearch 幂等调用的重试次数")
+                    .register(registry);
+            // 出口请求数：与"每次现建 HttpClient"那个缺陷的验收口径配对——
+            // 请求数增长而进程线程数不增长，才说明连接真的被复用了
+            // （见 docs/RAG流水线设计与并发管理.md §6.1 α3 的验收指标）。
+            this.requests = Counter.builder("ai.opensearch.requests")
+                    .description("OpenSearch HTTP 出口请求数（连接复用后应只随请求数增长，不再新建连接）")
                     .register(registry);
         }
     }

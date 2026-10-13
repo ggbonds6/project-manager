@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.pmgt.ai.common.web.ApiResponse;
 import com.pmgt.ai.module.llm.BizQuerySpec;
 import com.pmgt.ai.module.llm.QaService;
+import com.pmgt.ai.module.retrieval.SearchScope;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -40,14 +41,20 @@ public class ChatController {
      * <b>不传 {@code biz_query} 的请求必须走原来的四参入口</b>——那条路径的行为、工具清单、
      * 提示词都与本版本前逐字节一致（§11.2 的兼容性要求，也是"分批发版"的前提）。
      * 传了才走带通道的五参入口（多注册一个工具、多一段业务路由提示词）。
+     *
+     * <p>{@code scope}（可选）在两条分支上都生效：它是检索的<b>硬上界</b>
+     * （文档/附件/项目/密级四维），与模型给的 {@code doc_id} 取交集，越界即空。
      */
     @PostMapping("/chat")
     public Map<String, Object> chat(@RequestBody ChatIn payload) {
         BizQuerySpec bizQuery = payload.getBizQuery();
+        SearchScope scope = payload.searchScope();
         QaService.QaResult result = bizQuery == null
-                ? qaService.ask(payload.getQuestion(), payload.getDocIds(), payload.getHistory(), null)
+                ? qaService.ask(payload.getQuestion(), payload.getDocIds(), payload.getHistory(), null,
+                        null, scope)
                 : qaService.ask(
-                        payload.getQuestion(), payload.getDocIds(), payload.getHistory(), null, bizQuery);
+                        payload.getQuestion(), payload.getDocIds(), payload.getHistory(), null, bizQuery,
+                        scope);
         return ApiResponse.ok(result.toDict());
     }
 
@@ -95,5 +102,66 @@ public class ChatController {
         @JsonProperty("biz_query")
         @JsonAlias({"bizQuery"})
         private BizQuerySpec bizQuery;
+
+        /**
+         * 请求级作用域（**可选**，检索的硬上界）。
+         *
+         * <pre>
+         * "scope": { "doc_ids": ["…"], "attachment_ids": ["…"],
+         *            "project_ids": ["…"], "security_levels": ["内部","秘密"] }
+         * </pre>
+         *
+         * <p>为什么不复用 {@code doc_ids}：{@code doc_ids} 是"本次要问哪些文档"（历史契约，语义不变），
+         * 而 {@code scope} 是<b>四维硬约束</b>（多了附件/项目/密级），并且两处给了 doc 清单时
+         * 取<b>交集</b>（见 {@code SearchScope.intersect}）。
+         *
+         * <p><b>缺失元数据一律不算命中</b>：一旦给了密级/项目维度，缺这些字段的文档会被排除——
+         * 缺失 ≠ 通配，否则权限过滤形同虚设。
+         */
+        @JsonProperty("scope")
+        @JsonAlias({"search_scope", "searchScope"})
+        private ScopeIn scope;
+
+        /** 把请求里的作用域转成检索层的作用域对象（未给 = 无约束）。 */
+        public SearchScope searchScope() {
+            return scope == null
+                    ? SearchScope.empty()
+                    : SearchScope.of(scope.getDocIds(), scope.getAttachmentIds(),
+                            scope.getProjectIds(), scope.getSecurityLevels());
+        }
+    }
+
+    /**
+     * 请求里的作用域四维（与 {@link SearchScope} 一一对应；全部可选）。
+     *
+     * <p>只收名字对齐的 snake_case 主名 + camelCase 别名（与 {@code doc_ids} 同一处理，
+     * 避免"按文档发 snake_case 被静默丢弃"那类最难排查的问题）。
+     */
+    @Data
+    public static class ScopeIn {
+
+        /** 限定文档（与顶层 {@code doc_ids} 取交集）。 */
+        @JsonProperty("doc_ids")
+        @JsonAlias({"docIds"})
+        private List<String> docIds;
+
+        /** 限定主系统附件 id。 */
+        @JsonProperty("attachment_ids")
+        @JsonAlias({"attachmentIds"})
+        private List<String> attachmentIds;
+
+        /** 限定项目 id（文档元数据里的 project_id）。 */
+        @JsonProperty("project_ids")
+        @JsonAlias({"projectIds"})
+        private List<String> projectIds;
+
+        /**
+         * 限定密级（文档元数据里的 {@code security_level}）。
+         *
+         * <p>给了值就只在该密级集合内检索；文档没有密级元数据 ⇒ <b>不在范围内</b>（缺失 ≠ 通配）。
+         */
+        @JsonProperty("security_levels")
+        @JsonAlias({"securityLevels"})
+        private List<String> securityLevels;
     }
 }

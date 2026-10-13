@@ -425,20 +425,41 @@ public class RetrievalService implements SearchPort {
             indexEnsured = true;
         }
         Map<String, DocMeta> metas = docMetaStore.all();
+        // 索引里已有哪些切片：只用来判断"要不要补写"，不再无条件全量写（G2）
+        Set<String> indexedKeys = vectors.isEmpty()
+                ? Set.of() : openSearchIndex.existingChunkKeys(byKey.keySet());
         // ⚠️ 逐切片按 chunkKey 取向量再组装：embedChunks 返回的是 Map，**迭代顺序没有任何保证**，
         // 若把 values() 直接和 chunks 按下标 zip，向量就会和别的切片文本错配——
         // 而错配比报错严重得多（索引用的是错的向量，检索结果看起来正常却全错）。
-        List<OpenSearchIndex.ChunkDoc> docs = new ArrayList<>();
+        //
+        // ── 只在"确实缺片"时补写（G2：删掉查询侧全量 _bulk）──
+        // 改造前这里无条件把**当前作用域的全部切片** upsert 一遍，于是每次提问都重写一遍作用域
+        // （作用域为空时即全库；估算：15,000 切片 × 38,333 字节/切片 ≈ 575 MB/问）。
+        // 那是纯写放大：写入本来就该由入库（DocIndexer）与重建（ReindexService）负责。
+        // 现在只在"某切片算出了向量、但索引里还没有它"时补写——这属于异常路径，
+        // 由 embedChunksForQuery 打 WARN 并计 ai.vector.lazy_backfill（正常应为 0）。
+        List<DocStore.Chunk> backfill = new ArrayList<>();
         for (DocStore.Chunk chunk : chunks) {
             float[] vector = vectors.get(chunkKey(chunk));
-            if (vector != null) {
-                docs.add(new OpenSearchIndex.ChunkDoc(
-                        chunkKey(chunk), chunk.docId(), chunk.filename(), chunk.pageNo(), chunk.text(), vector,
-                        metas.getOrDefault(chunk.docId(), DocMeta.EMPTY)));
+            if (vector != null && !indexedKeys.contains(chunkKey(chunk))) {
+                backfill.add(chunk);
             }
         }
-        if (!docs.isEmpty()) {
-            openSearchIndex.upsertAll(docs);   // 幂等：_id = 切片键（含内容指纹）
+        if (!backfill.isEmpty()) {
+            List<float[]> backfillVectors = new ArrayList<>(backfill.size());
+            for (DocStore.Chunk chunk : backfill) {
+                backfillVectors.add(vectors.get(chunkKey(chunk)));
+            }
+            // best-effort：补写失败**不阻断本次检索**（少写几个切片只会让本次召回少几条命中，
+            // 与"跳过整次检索"相比损失小得多）；失败原因写进日志，指标由 ai.vector.lazy_backfill 反映。
+            try {
+                openSearchIndex.indexChunks(backfill, backfillVectors, dimension, metas);
+                log.warn("索引缺少 {} 个切片，已在检索路径补写（正常应为 0：入库/重建就该写完）",
+                        backfill.size());
+            } catch (RuntimeException e) {
+                log.warn("索引缺少 {} 个切片、检索路径补写失败（本次检索继续，不因此失败）：{}",
+                        backfill.size(), e.getMessage());
+            }
         }
 
         List<float[]> queryVectors = vec.embedTexts(List.of(query), null);
