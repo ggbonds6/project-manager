@@ -243,10 +243,12 @@ export function citationChunkKey(c: AiCitation): string | null {
 
 /* ==================== 解析流水线（RAG 任务流，§4.3~§4.9） ====================
  *
- * 契约来源：《RAG流水线设计与并发管理》§4 与任务书"冻结的接口"——
- *   `GET /api/ai/pipeline/runs?attachment_id=&status=&page=&size=`
- *   `GET /api/ai/pipeline/runs/{run_id}`
- * 鉴权是**用户 JWT**（不是 AI 服务令牌），JSON 字段以 **snake_case 为主名**。
+ * 契约来源：《RAG流水线设计与并发管理》§4 与任务书"冻结的接口"，路径按 `code-1.4` 的定案走
+ * **用户侧入口**（浏览器带用户 JWT）：
+ *   `GET /api/ai/runs?attachment_id=&status=&page=&size=`
+ *   `GET /api/ai/runs/{run_id}/pipeline`
+ * 同形状的 `GET /api/ai/pipeline/**` 是**服务间回写前缀**（只认 `X-AI-Service-Token`，用户 JWT 调 401），
+ * 前端**不用**它；两侧字段名与分页信封完全一致（snake_case 主名 + camelCase 别名）。
  *
  * 两条纪律（与 §9 契约同一口径）：
  *  ① 前端**兼容读取** camelCase：归一化函数同时认 `run_id` 与 `runId`，
@@ -452,7 +454,7 @@ export interface AiPipelineEvent {
   createdAt?: string | null;
 }
 
-/** `GET /api/ai/pipeline/runs/{run_id}` 详情 */
+/** `GET /api/ai/runs/{run_id}/pipeline` 详情（用户侧入口；服务间同形状入口见本节文件头注释） */
 export interface AiPipelineRunDetail extends AiPipelineRun {
   stages: AiPipelineStage[];
   artifacts: AiPipelineArtifact[];

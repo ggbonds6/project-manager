@@ -42,10 +42,15 @@ export interface AiTaskQuery {
 }
 
 /**
- * 解析流水线（任务流）查询：`GET /api/ai/pipeline/runs`。
+ * 解析流水线（任务流）查询：`GET /api/ai/runs`。
  *
  * 注意这是**用户 JWT** 的接口（与 `/ai/tasks` 同一鉴权族），不是 AI 服务的 `scope_token`；
- * 路径前缀 `/api/ai/pipeline`，字段 snake_case（后端给 camelCase 时由 `types/ai.ts` 的归一化兜住）。
+ * 字段 snake_case（后端给 camelCase 时由 `types/ai.ts` 的归一化兜住）。
+ *
+ * **路径口径（`code-1.4` 定案，勿改回）**：设计契约里同形状的 `GET /api/ai/pipeline/runs*` 是
+ * **服务间回写前缀**（只认 `X-AI-Service-Token`，用户 JWT 调它一律 401）；
+ * 浏览器读的是主系统另开的用户侧入口 `/api/ai/runs` 与 `/api/ai/runs/{run_id}/pipeline`——
+ * 同一份读逻辑、两种门票。改回 `/ai/pipeline/**` 会让任务流视图在浏览器里直接 401。
  */
 export interface AiPipelineRunQuery {
   /** 只看某个附件的流水线记录（溯源抽屉"查看该附件的任务流"用） */
@@ -175,12 +180,13 @@ export const aiApi = {
    * 列表接口**不带**阶段明细与产物 content（§4.9.2⑥"详情必须重新取全量"），
    * 所以这里只归一化表头字段；打开抽屉时一定再打一次详情接口。
    *
-   * 兼容两种响应形状：分页对象 `{total, records}` 与裸数组
+   * 兼容两种响应形状：分页对象 `{total, page, size, records}` 与裸数组
    * （后端未分页时也给得出结果，不至于整页空白）。
    */
   async pipelineRuns(params: AiPipelineRunQuery): Promise<{ total: number; records: AiPipelineRun[] }> {
     const res = await api.get<PageResult<Record<string, unknown>> | Record<string, unknown>[]>(
-      '/ai/pipeline/runs',
+      // 用户侧入口（用户 JWT）；服务间前缀 /ai/pipeline/** 浏览器调会 401，见 AiPipelineRunQuery 注释
+      '/ai/runs',
       {
         attachment_id: params.attachmentId ?? undefined,
         status: params.status || undefined,
@@ -197,9 +203,14 @@ export const aiApi = {
     };
   },
 
-  /** 流水线详情：任务字段 + `stages[]` + `artifacts[]` + `events[]`（打开抽屉与 1.5s 轮询都用它） */
+  /**
+   * 流水线详情：任务字段 + `stages[]` + `artifacts[]` + `events[]`（打开抽屉与 1.5s 轮询都用它）。
+   *
+   * 路径是用户侧入口 `/ai/runs/{run_id}/pipeline`（`run_id` 原样用列表里拿到的那个；
+   * 服务间同形状入口 `/ai/pipeline/runs/{run_id}` 只认服务令牌，浏览器不能用）。
+   */
   async pipelineRunDetail(runId: string): Promise<AiPipelineRunDetail> {
-    const raw = await api.get<Record<string, unknown>>(`/ai/pipeline/runs/${encodeURIComponent(runId)}`);
+    const raw = await api.get<Record<string, unknown>>(`/ai/runs/${encodeURIComponent(runId)}/pipeline`);
     return normalizePipelineRunDetail(raw);
   },
 
@@ -212,6 +223,9 @@ export const aiApi = {
    *   * 端点落地后在这里补两个方法，并把 PipelineFlowDrawer 底部的"待接"提示换成按钮：
    *       retryPipelineRun(runId, onlyFailedStage?)  → POST /ai/pipeline/runs/{run_id}/retry
    *       cancelPipelineRun(runId)                   → POST /ai/pipeline/runs/{run_id}/cancel
+   *     ⚠️ 上面两行是**设计稿里的写法**：真要做时必须挂在**用户侧**前缀下
+   *     （与 `/ai/runs*` 同族，用户 JWT）；`/api/ai/pipeline/**` 是**服务间回写**前缀
+   *     （只认 `X-AI-Service-Token`），浏览器调它一律 401（`code-1.4` 的鉴权定案）。
    * 取消语义必须沿用现状口径：**已在跑的项会跑完，未开始的会跳过**（§4.9.2⑤）。
    */
 };

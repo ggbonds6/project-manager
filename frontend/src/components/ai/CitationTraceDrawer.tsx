@@ -11,7 +11,8 @@
  * | ④ 附件 + 页码 → 原文第 N 页 | `citations[].attachment_id` + `.page_no` → 复用既有 `AttachmentPreviewModal`（PDF 走 `#page=N`） | "引用未回填 attachment_id"（仍按 docId/文件名兜底映射一次） |
  *
  * 三条刻意的设计：
- *  ① **不新增接口**：产物摘要就从冻结契约的详情接口里取（`GET /api/ai/pipeline/runs/{run_id}`），
+ *  ① **不新增接口**：产物摘要从主系统**用户侧**详情入口取（`GET /api/ai/runs/{run_id}/pipeline`，
+ *     用户 JWT；服务间前缀 `/api/ai/pipeline/**` 浏览器调会 401，本组件不用它）；
  *     设计里的 API-4（`/api/ai/chunks/{chunkKey}` 切片全文）不在本轮冻结契约内，故不调用；
  *     因此"清洗后文本"一栏显示的是**引用片段**（`snippet`，检索时返回的），并明确标注它不是清洗后全文。
  *  ② **缺一层就写一层**：任何缺失都渲染"该环节未上报：<缺什么>"，绝不留空白，

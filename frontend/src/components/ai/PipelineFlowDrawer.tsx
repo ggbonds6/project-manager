@@ -354,7 +354,7 @@ export default function PipelineFlowDrawer({
             <>
               <div>{error}</div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                这里读的是主系统接口 {'/api/ai/pipeline/runs/{run_id}'}；失败<b>不代表该任务没有阶段数据</b>，
+                这里读的是主系统用户侧接口 {'/api/ai/runs/{run_id}/pipeline'}；失败<b>不代表该任务没有阶段数据</b>，
                 可能只是接口尚未部署或权限不足。
               </Typography.Text>
             </>
@@ -637,10 +637,10 @@ export default function PipelineFlowDrawer({
           ) : null}
 
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 12, marginBottom: 0 }}>
-            重试 / 取消：本轮后端未提供流水线级端点
-            （待接 {'POST /api/ai/pipeline/runs/{run_id}/retry'}、
-            {' POST /api/ai/pipeline/runs/{run_id}/cancel'}），
-            因此这里<b>只读展示</b>、不摆点不动的按钮。任务级重试仍可在「任务队列」签对失败任务执行。
+            重试 / 取消：本轮后端未提供流水线级端点，因此这里<b>只读展示</b>、不摆点不动的按钮。
+            后续若要接，必须挂在<b>用户侧</b>前缀下（如 {'POST /api/ai/runs/{run_id}/retry'}、
+            {' POST /api/ai/runs/{run_id}/cancel'}）——/api/ai/pipeline/** 是服务间回写前缀，
+            浏览器调它一律 401。任务级重试仍可在「任务队列」签对失败任务执行。
           </Typography.Paragraph>
         </>
       ) : null}

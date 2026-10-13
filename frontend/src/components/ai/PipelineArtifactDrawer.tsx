@@ -1,12 +1,13 @@
 /**
  * 产物抽屉（任务流视图的第 ③ 层）
  * ----------------------------------------------------------------
- * 数据来源：**详情接口的 `artifacts[]`**（`GET /api/ai/pipeline/runs/{run_id}`）。
+ * 数据来源：**详情接口的 `artifacts[]`**（`GET /api/ai/runs/{run_id}/pipeline`，用户 JWT）。
  * 这里**不自己打接口**——产物摘要是详情的一部分，抽屉打开时详情已经取过全量；
  * 也让"打开抽屉即重取全量"这条纪律只有一个落点（PipelineFlowDrawer）。
  *
  * 与 §4.7 的边界一致：
- *  - DB **只存摘要**（`content` ≤ 4000 字符，超长截断、`char_count` 记真实值）；
+ *  - DB **只存摘要**（`content` ≤ 4000 字符、**已解析成 JSON 给前端直接渲染**，超长截断），
+ *    而 `char_count` 是**产物全文的真实字符数**（不是摘要长度）——所以卡片上按"全文字符数"标注；
  *  - 全文留在 AI 服务 `work/`，由 `object_key` 指路 ⇒ 这里把 `object_key` 做成**可复制文本**，
  *    并明说"主系统不提供该路径的下载接口"——不做点不动的"下载"按钮；
  *  - 产物行**不可变**（只 INSERT、`artifact_rev` 递增）⇒ 同一类型可能有多行，按 rev 展示，供"两次解析对比"。
@@ -61,7 +62,7 @@ export default function PipelineArtifactDrawer({ open, artifacts, runId, onClose
         message="这里只有摘要"
         description={
           <Typography.Text style={{ fontSize: 12 }}>
-            主系统按 §4.7 只存摘要（content ≤ 4000 字符，超长截断并记真实 char_count）；
+            主系统按 §4.7 只存摘要（content ≤ 4000 字符、超长截断；卡片上的 char_count 是<b>产物全文的真实字符数</b>）；
             清洗前后全文 / 切片全文留在 AI 服务 work/，由 object_key 指路。
             本系统<b>不提供该路径的下载接口</b>，所以 object_key 只做可复制展示（不做点不动的下载按钮）。
           </Typography.Text>
@@ -116,7 +117,7 @@ export default function PipelineArtifactDrawer({ open, artifacts, runId, onClose
                     <Descriptions.Item label="版本 / 条数">
                       {(a.artifactRev ?? '暂无数据') + ' / ' + (hasValue(a.itemCount) ? a.itemCount : '暂无数据')}
                     </Descriptions.Item>
-                    <Descriptions.Item label="摘要字符数">
+                    <Descriptions.Item label="全文字符数 char_count">
                       {hasValue(a.charCount) ? a.charCount : '暂无数据'}
                     </Descriptions.Item>
                     <Descriptions.Item label="sha1">

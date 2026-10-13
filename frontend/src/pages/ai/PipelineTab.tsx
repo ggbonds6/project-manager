@@ -4,7 +4,7 @@
  * 位置选择（为什么不改造现有「任务队列」签）：
  *  - 「任务队列」用的是**既有冻结契约** `GET /api/ai/tasks`（`QUEUED/RUNNING/DONE/FAILED` 四态 + 重试），
  *    它现在就在用、还有人在依赖，**本轮不动它**（改它的数据源等于把既有页签换成半成品）；
- *  - 任务流视图用的是**新的** `GET /api/ai/pipeline/runs`（阶段/产物/事件、八态含 PARTIAL/DEAD），
+ *  - 任务流视图用的是**新的** `GET /api/ai/runs`（阶段/产物/事件、八态含 PARTIAL/DEAD），
  *    两者的主键（`task_id` vs `run_id`）、状态枚举、可得字段都不一样，硬拼成一张表只能靠
  *    `attachment_id` 猜关联——那会造出一个"看起来对、其实可能错"的视图；
  *  - 所以**新增「解析流水线」签**，并在签标签上挂**进行中角标**（借鉴参考项目"顶栏常驻入口 + 角标"，
@@ -356,7 +356,7 @@ export default function PipelineTab() {
             <>
               <div>{error}</div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                接口是主系统 {'/api/ai/pipeline/runs'}；这里失败<b>不代表没有解析任务</b>，
+                接口是主系统用户侧入口 {'/api/ai/runs'}（服务间前缀 {'/api/ai/pipeline/**'} 浏览器调会 401）；这里失败<b>不代表没有解析任务</b>，
                 既有「任务队列」签读的是另一套接口（{'/api/ai/tasks'}），那边仍可查看与重试。
               </Typography.Text>
             </>
