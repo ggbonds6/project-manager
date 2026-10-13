@@ -30,14 +30,39 @@ public interface SearchPort {
     record SearchResult(int found, List<Hit> hits, String retrieval, boolean reranked, String note) {
     }
 
+    /**
+     * 一条命中。
+     *
+     * <p>P1-α 补了五个字段（设计 §3.4.4/§3.4.5），它们都服务"可溯源 + 省一次 {@code read_page}"：
+     * <ul>
+     *   <li>{@code chunkKey}：切片唯一键（含 {@code clean_rev/chunk_rev} 版本段）——
+     *       引用回填、检索级评测的"正确切片"比对、两次解析差异对比都要它；</li>
+     *   <li>{@code parentKey} / {@code parentSummary}：<b>父子块（small-to-big）</b>——
+     *       子块检索命中后，把同页父块摘要一并给模型（设计 §3.4.4 的轻量形态）；</li>
+     *   <li>{@code isTable} / {@code sectionPath}：表格片与章节路径（展示与后续章节树父块的接缝）。</li>
+     * </ul>
+     *
+     * <p>老的七参构造<b>保留</b>（测试与外部实现不必改）：新字段按"未知"填。
+     */
     record Hit(
             String docId,
             String filename,
             int pageNo,
+            String chunkKey,
             double score,
             double keywordScore,
             double vectorScore,
-            String text) {
+            String text,
+            boolean isTable,
+            String parentKey,
+            String parentSummary,
+            String sectionPath) {
+
+        /** 兼容构造（无切片元数据的命中）。 */
+        public Hit(String docId, String filename, int pageNo, double score, double keywordScore,
+                   double vectorScore, String text) {
+            this(docId, filename, pageNo, null, score, keywordScore, vectorScore, text, false, null, null, "");
+        }
 
         /**
          * 命中字典（给模型、给前端）。
@@ -53,6 +78,10 @@ public interface SearchPort {
          *
          * <p>调用方若要在结果上补字段（如 {@code cite}），<b>请再复制一份</b>，不要直接改返回值：
          * 目前每次调用都是新建的，但契约上它是"只读快照"。
+         *
+         * <p>字段<b>只在有值时出现</b>（{@code chunk_key}/{@code parent_summary} 等）：
+         * 两条后端（local / opensearch）必须产出同一套键，否则"结构一致"的回归会红
+         * （见 {@code RetrievalBackendParityTest}）——所以这一层不做后端相关的分支。
          */
         public Map<String, Object> toMap() {
             Map<String, Object> out = new LinkedHashMap<>();
@@ -63,6 +92,21 @@ public interface SearchPort {
             out.put("keyword_score", keywordScore);
             out.put("vector_score", vectorScore);
             out.put("text", text);
+            if (chunkKey != null && !chunkKey.isBlank()) {
+                out.put("chunk_key", chunkKey);
+            }
+            if (isTable) {
+                out.put("is_table", true);
+            }
+            if (parentKey != null && !parentKey.isBlank()) {
+                out.put("parent_key", parentKey);
+            }
+            if (parentSummary != null && !parentSummary.isBlank()) {
+                out.put("parent_summary", parentSummary);
+            }
+            if (sectionPath != null && !sectionPath.isBlank()) {
+                out.put("section_path", sectionPath);
+            }
             return out;
         }
     }

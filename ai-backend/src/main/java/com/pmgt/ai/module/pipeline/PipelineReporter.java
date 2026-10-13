@@ -34,10 +34,18 @@ import java.util.UUID;
 @Component
 public class PipelineReporter {
 
-    /** 本批尚无清洗阶段（G1 属 P1-α）——CLEAN 阶段如实上报 SKIPPED，原因就用这句话。 */
+    /**
+     * 清洗阶段<b>关闭</b>时的跳过原因（{@code ai.clean.enabled=false}，默认）。
+     *
+     * <p>措辞口径（不要改成"尚未实现"）：清洗<b>已经实现</b>（{@code module/clean/**}），
+     * 只是默认关闭——默认关闭的理由是"行为与接入前逐字一致"（升级不该悄悄改变切片文本），
+     * 而且打开它必须同时 +1 {@code clean_rev} 并跑一次重建（切片键会换）。
+     * 所以这里必须写成"关闭 + 怎么打开"，而不是"还没有这个能力"。
+     */
     public static final String CLEAN_SKIPPED_REASON =
-            "本批尚未实现清洗阶段（G1 属 P1-α）：切片输入为解析后的原始文本，clean_rev=0 表示未经清洗。"
-                    + "启用清洗后本阶段将上报 DONE/PARTIAL 并写入 clean_diff 产物。";
+            "清洗默认关闭（ai.clean.enabled=false，clean_rev=0）：切片输入 = 解析原文，逐字未改。"
+                    + "打开方式：置 ai.clean.enabled=true 并把 ai.pipeline.clean-rev 设为 ≥1，"
+                    + "随后跑一次 POST /admin/reindex?force=true（切片键含版本段，旧向量缓存会整体失效）。";
 
     private final AiSettings settings;
     private final PipelineReportClient client;
@@ -90,7 +98,10 @@ public class PipelineReporter {
     public Map<String, Object> configSummary() {
         Map<String, Object> out = new LinkedHashMap<>(client.configSummary());
         out.put("reporter_enabled", enabled());
-        out.put("clean_stage", "SKIPPED（" + CLEAN_SKIPPED_REASON.substring(0, 24) + "…）");
+        out.put("clean_stage", settings.getClean().isEnabled()
+                ? "DONE/PARTIAL（ai.clean.enabled=true，clean_rev=" + settings.getPipeline().getCleanRev()
+                        + "；规则=" + settings.getClean().getRules() + "）"
+                : "SKIPPED（" + CLEAN_SKIPPED_REASON.substring(0, 24) + "…）");
         out.put("stages", java.util.Arrays.stream(StageKey.reported()).map(StageKey::key).toList());
         return out;
     }

@@ -7,6 +7,10 @@ import com.pmgt.ai.common.gate.GateResult;
 import com.pmgt.ai.common.gate.PipelineGate;
 import com.pmgt.ai.common.util.ProgressFn;
 import com.pmgt.ai.common.web.ApiException;
+import com.pmgt.ai.module.clean.CleanContext;
+import com.pmgt.ai.module.clean.CleanResult;
+import com.pmgt.ai.module.clean.RuleBasedTextCleaner;
+import com.pmgt.ai.module.clean.TextCleaner;
 import com.pmgt.ai.module.doc.DocumentText;
 import com.pmgt.ai.module.doc.DocumentReader;
 import com.pmgt.ai.module.ocr.PdfInfo;
@@ -84,6 +88,15 @@ public class UploadTaskService {
     private final PipelineGate gate;
     /** 阶段上报（可为 null = 测试里不接上报）。 */
     private final PipelineReporter reporter;
+    /**
+     * 清洗器（设计 §3.3）。
+     *
+     * <p>为什么在构造期建、而不是 Spring 注入一个 Bean：清洗器是 {@code AiSettings} 的<b>纯函数投影</b>
+     * （规则/阈值抄成不可变快照），谁拿同一份配置建出来的都等价；
+     * 这样既不用改 {@code DocIndexer}/{@code RetrievalService}/{@code ReindexService} 的构造签名
+     * （它们各自也按同一份配置建一个），又保证全进程只有一个口径。
+     */
+    private final TextCleaner cleaner;
 
     private final Map<String, UploadTask> tasks = new ConcurrentHashMap<>();
 
@@ -122,6 +135,7 @@ public class UploadTaskService {
         this.uploadTaskExecutor = uploadTaskExecutor;
         this.gate = gate;
         this.reporter = reporter;
+        this.cleaner = new RuleBasedTextCleaner(settings);
         MeterRegistry meters = registry == null ? new SimpleMeterRegistry() : registry;
         this.rejected = Counter.builder("ai.upload.rejected")
                 .description("因解析队列已满被拒绝的上传任务数（诚实失败：任务标 FAILED 并清临时文件）")
@@ -458,11 +472,6 @@ public class UploadTaskService {
                 run.artifact(ArtifactType.PAGE_DIGEST, pageDigestJson(doc, task, failedPages), null,
                         doc.text().length(), PipelineRev.sha1Hex(doc.text()),
                         doc.pageCount(), "页级摘要（页数/空页/逐页字符数与来源）；全文留在 work/docs/<docId>.json");
-                // ── CLEAN：本批尚无清洗阶段 ⇒ 如实上报 SKIPPED（原因见 PipelineReporter）──
-                run.stageSkipped(StageKey.CLEAN, PipelineReporter.cleanSkippedReason());
-                run.artifact(ArtifactType.CLEAN_DIFF, null, null, null, null, 0,
-                        "本批无清洗阶段（clean_rev=" + PipelineRev.current().cleanRev()
-                                + "）：无前后对照可写，如实留空而不是伪造数据");
             }
 
             task.setStageKey("store");
@@ -473,6 +482,11 @@ public class UploadTaskService {
                     doc,
                     task.getSizeBytes() > 0 ? task.getSizeBytes() : fileSize(tmp));
             task.setDocId(saved.getDocId());
+
+            // ── CLEAN：独立清洗阶段（设计 §3.3，启用时 DONE/PARTIAL + counters + clean_diff）──
+            // 注意顺序：CLEAN 在 store 之后（需要 docId 才能把前后对照全文落到 work/clean/<docId>.json），
+            // 在 CHUNK 之前（切分吃清洗后的文本）。关闭时如实 SKIPPED 且 counters 不变。
+            CleanResult cleaned = runCleanStage(saved, run);
             if (run != null) {
                 run.event("RUNNING", "RUNNING", "doc_id=" + saved.getDocId() + " staged=PARSE", "ai-backend");
             }
@@ -484,7 +498,7 @@ public class UploadTaskService {
             task.setStageKey("embed");
             task.setStage(UploadTask.STAGE_LABEL.get("embed"));
             nestedStarted = System.nanoTime();
-            DocIndexer.Prepared prepared = docIndexer.prepare(saved, run);
+            DocIndexer.Prepared prepared = docIndexer.prepare(saved, cleaned, run);
             DocIndexer.IndexOutcome indexed = docIndexer.indexPrepared(saved, prepared, false, onProgress, run);
             List<String> notes = new ArrayList<>(doc.getNotes() == null ? List.of() : doc.getNotes());
             notes.add("向量化/入库：" + indexed.describe());
@@ -541,6 +555,102 @@ public class UploadTaskService {
     }
 
     // ── 上报用的计数与摘要（都由既有事实派生，不新增状态）────────────────
+
+    /**
+     * CLEAN 阶段（设计 §3.3）：<b>启用时</b>跑清洗、上报 {@code DONE}/{@code PARTIAL}（带 counters）、
+     * 写 {@code clean_diff} 产物（摘要进 DB，全文落 {@code work/clean/<docId>.json}）；
+     * <b>关闭时</b>如实上报 {@code SKIPPED} + 原因，且 <b>counters 一个都不给</b>（没做的事不编数字）。
+     *
+     * <p>返回的 {@link CleanResult} 一路传给 CHUNK 阶段——切分必须吃清洗后的文本，
+     * 否则"清洗了但切的是原文"，而清洗阶段看起来还是 {@code DONE}（最坏的一种不一致）。
+     */
+    private CleanResult runCleanStage(StoredDoc saved, RunContext run) {
+        CleanResult cleaned = cleaner.cleanDocument(CleanContext.of(saved, PipelineRev.current().cleanRev()));
+        if (!cleaned.enabled()) {
+            if (run != null) {
+                run.stageSkipped(StageKey.CLEAN, PipelineReporter.cleanSkippedReason());
+                run.artifact(ArtifactType.CLEAN_DIFF, null, null, null, null, 0,
+                        "清洗关闭（ai.clean.enabled=false，clean_rev=" + cleaned.cleanRev()
+                                + "）：无前后对照可写，如实留空而不是伪造数据");
+            }
+            return cleaned;
+        }
+        if (run != null) {
+            run.stageStarted(StageKey.CLEAN, "doc=" + saved.getDocId() + " clean_rev=" + cleaned.cleanRev()
+                    + " pages=" + cleaned.stats().pages());
+        }
+        Map<String, Object> counters = cleanCounters(cleaned);
+        // PARTIAL 语义：有页被整页删空（>0 即异常，见设计 §3.3.4）⇒ 清洗"做了但不完整"，
+        // 交给人工复核；不因为清洗把任务判失败（正文还在产物与原文里）。
+        int failedPages = cleaned.stats().pagesAllRemoved();
+        if (run != null) {
+            run.stageDone(StageKey.CLEAN, cleaned.stats().pagesCleaned(), failedPages, counters,
+                    cleanOutputDigest(cleaned));
+            run.artifact(ArtifactType.CLEAN_DIFF, RuleBasedTextCleaner.summaryJson(cleaned),
+                    cleanTracePath(cleaned.docId()), RuleBasedTextCleaner.fullTraceJson(cleaned).length(),
+                    PipelineRev.sha1Hex(cleanOutputDigest(cleaned)), cleaned.removed().size(),
+                    "清洗前后对照（摘要 ≤4000 字符；全文在 " + cleanTracePath(cleaned.docId())
+                            + "；removed_lines 供人工复核误删）");
+        }
+        writeCleanTrace(cleaned);
+        return cleaned;
+    }
+
+    /** CLEAN 阶段的 counters（设计 §3.3.4 的质量口径逐项给出）。 */
+    private Map<String, Object> cleanCounters(CleanResult cleaned) {
+        CleanResult.Stats stats = cleaned.stats();
+        Map<String, Object> counters = new LinkedHashMap<>();
+        counters.put("clean_rev", cleaned.cleanRev());
+        counters.put("rules_enabled", new ArrayList<>(cleaner.options().enabledRules()));
+        counters.put("rules_hit", cleaned.firedByRule());
+        counters.put("rules_fired", cleaned.rulesFired().size());
+        counters.put("pages", stats.pages());
+        counters.put("pages_cleaned", stats.pagesCleaned());
+        counters.put("pages_skipped", stats.pagesSkipped());
+        counters.put("before_chars", stats.beforeChars());
+        counters.put("after_chars", stats.afterChars());
+        counters.put("removed_chars", stats.removedChars());
+        counters.put("removed_chars_ratio", stats.removedCharsRatio());
+        counters.put("removed_lines", stats.removedLines());
+        counters.put("pages_all_removed", stats.pagesAllRemoved());
+        counters.put("duplicate_paragraphs", stats.duplicateParagraphs());
+        counters.put("table_blocks", stats.tableBlocks());
+        counters.put("table_chars", stats.tableChars());
+        counters.put("replacement_chars", stats.replacementChars());
+        if (stats.totalPages() != null) {
+            counters.put("total_pages", stats.totalPages());
+        }
+        return counters;
+    }
+
+    private String cleanOutputDigest(CleanResult cleaned) {
+        StringBuilder sb = new StringBuilder("pages=").append(cleaned.pages().size())
+                .append("; after_chars=").append(cleaned.stats().afterChars())
+                .append("; removed_lines=").append(cleaned.stats().removedLines())
+                .append("; rules=").append(cleaned.firedByRule().keySet());
+        for (CleanResult.CleanPage page : cleaned.pages()) {
+            sb.append("; p").append(page.pageNo()).append('=')
+                    .append(PipelineRev.sha1Hex(page.safeAfter()).substring(0, 12));
+        }
+        return sb.toString();
+    }
+
+    /** 清洗前后对照全文的路径（作为 {@code clean_diff} 产物的 {@code object_key}）。 */
+    private String cleanTracePath(String docId) {
+        return settings.getWorkDir().resolve("clean").resolve(docId + ".json").toString();
+    }
+
+    /** 落盘清洗前后对照全文（失败只 WARN：它是可重建物，不该影响解析结果）。 */
+    private void writeCleanTrace(CleanResult cleaned) {
+        Path path = Path.of(cleanTracePath(cleaned.docId()));
+        try {
+            Files.createDirectories(path.getParent());
+            Files.writeString(path, RuleBasedTextCleaner.fullTraceJson(cleaned),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.warn("清洗前后对照落盘失败（不影响解析）：{}：{}", path, e.getMessage());
+        }
+    }
 
     private int countFailedPages(DocumentText doc) {
         int failed = 0;

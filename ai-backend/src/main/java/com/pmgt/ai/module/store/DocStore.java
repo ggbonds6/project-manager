@@ -183,8 +183,31 @@ public class DocStore {
 
     // ── 切片（检索的最小单元）─────────────────────────────────────
 
-    /** 切片单元：{@code docId / filename / pageNo / text}，直接对齐 Python 的切片字典。 */
-    public record Chunk(String docId, String filename, int pageNo, String text) {
+    /**
+     * 切片单元：{@code docId / filename / pageNo / text} + <b>检索与溯源需要的元数据</b>。
+     *
+     * <p>元数据是 P1-α 补的（设计 §3.4.5），它们解决四件事：
+     * <ul>
+     *   <li>{@code orderInPage}：页内顺序（重叠去重、结果排序、人工复核都要它）；</li>
+     *   <li>{@code parentKey}：<b>父子块接缝</b>（small-to-big 上卷到父块摘要）；</li>
+     *   <li>{@code isTable / tableRows}：表格检索策略（整块保留，不与正文混排）；</li>
+     *   <li>{@code sectionPath / source}：章节路径（升级章节树父块的接缝）与来源（文本层 / OCR）。</li>
+     * </ul>
+     *
+     * <p>{@link #Chunk(String, String, int, String)} 这个四参构造是<b>兼容入口</b>：
+     * 老调用点与测试不需要改，元数据按"无"填（{@code parentKey} 由切分阶段补）。
+     */
+    public record Chunk(String docId, String filename, int pageNo, String text, int orderInPage,
+                        String parentKey, boolean isTable, int tableRows, String sectionPath, String source) {
+
+        /** 兼容构造（无元数据的切片）：老调用点与测试用。 */
+        public Chunk(String docId, String filename, int pageNo, String text) {
+            this(docId, filename, pageNo, text, 0, null, false, 0, "", "");
+        }
+
+        public int charLen() {
+            return text == null ? 0 : text.length();
+        }
     }
 
     public List<Chunk> iterChunks(StoredDoc doc) {
@@ -197,55 +220,14 @@ public class DocStore {
      * <p>为什么页号一定不能丢：检索结果要能标注来源（{@code [P2]}），否则提示词里"必须标来源"
      * 的约束无从落地——答案看起来对但没有出处，等于没法复核。
      *
-     * <p>切法照搬 Python {@code store.iter_chunks}：<b>先按空行分段</b>；
-     * 若该页没有空行（扫描件常见的一整段），再按换行切；段落按 {@code chunkChars} 累积成块。
-     * 为什么不按固定长度切：固定长度会把句子、条款从中间截断，检索回来的片段语义不完整——
-     * 切片质量是检索效果的分水岭，"按段落"是不引入额外依赖时的合理起点。
+     * <p>⚠️ <b>这是"接入前的切法"，且已被冻结为回退口径</b>（P1-α 起）：
+     * 真正的切分入口是 {@code DocumentChunker.chunksOf(doc, settings)}（结构感知 + 表格整块 +
+     * 重叠 + 硬上限）。本方法保留有两个不可替代的用途：
+     * ① {@code ai.chunk.improved=false} 时的回退；② 测试里的"今天的行为"对照基准。
+     * 实现逐字搬到 {@code DocumentChunker.legacy}（单一实现，不复制两份）。
      */
     public List<Chunk> iterChunks(StoredDoc doc, int chunkChars) {
-        int limit = chunkChars > 0 ? chunkChars : DEFAULT_CHUNK_CHARS;
-        List<Chunk> out = new ArrayList<>();
-        for (StoredDoc.PageInfo page : doc.getPages()) {
-            String text = page.text().strip();
-            if (text.isEmpty()) {
-                continue;
-            }
-
-            List<String> paras = new ArrayList<>();
-            for (String part : text.split("\n\\s*\n")) {
-                String p = part.strip();
-                if (!p.isEmpty()) {
-                    paras.add(p);
-                }
-            }
-            if (paras.size() <= 1) {
-                paras.clear();
-                for (String line : text.split("\n")) {
-                    String p = line.strip();
-                    if (!p.isEmpty()) {
-                        paras.add(p);
-                    }
-                }
-            }
-
-            StringBuilder buf = new StringBuilder();
-            for (String para : paras) {
-                if (buf.length() > 0 && buf.length() + para.length() > limit) {
-                    out.add(new Chunk(doc.getDocId(), doc.getFilename(), page.pageNo(), buf.toString()));
-                    buf.setLength(0);
-                    buf.append(para);
-                } else {
-                    if (buf.length() > 0) {
-                        buf.append('\n');
-                    }
-                    buf.append(para);
-                }
-            }
-            if (buf.length() > 0) {
-                out.add(new Chunk(doc.getDocId(), doc.getFilename(), page.pageNo(), buf.toString()));
-            }
-        }
-        return out;
+        return com.pmgt.ai.module.chunk.DocumentChunker.legacy(doc, chunkChars);
     }
 
     /** 全库（或单文档）切片，检索入口用。 */

@@ -97,8 +97,11 @@ class PipelineReporterTest {
                     .findFirst().orElseThrow();
             assertTrue(clean.contains("\"status\":\"SKIPPED\""), clean);
             assertTrue(clean.contains("error_msg"), "SKIPPED 必须带原因（诚实登记，不伪造 DONE）：" + clean);
-            assertTrue(clean.contains("尚未实现清洗阶段"), clean);
+            // 措辞口径：清洗**已实现**、默认关闭（不是"尚未实现"）；原因里必须给出打开方式
+            assertTrue(clean.contains("清洗默认关闭"), clean);
+            assertTrue(clean.contains("ai.clean.enabled=true"), "跳过原因要给打开方式：" + clean);
             assertTrue(clean.contains("\"item_count\":0"), clean);
+            assertFalse(clean.contains("\"counters\""), "清洗关闭时不得给 counters（没做的事不编数字）：" + clean);
             assertFalse(clean.contains("elapsed_ms\":\""), "elapsed_ms 必须是数字而不是字符串：" + clean);
         }
     }

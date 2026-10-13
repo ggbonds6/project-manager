@@ -152,7 +152,9 @@ class UploadTaskStageReportTest {
             String clean = server.requests().stream()
                     .filter(r -> r.contains("/stages/CLEAN")).findFirst().orElseThrow();
             assertTrue(clean.contains("\"status\":\"SKIPPED\""), clean);
-            assertTrue(clean.contains("尚未实现清洗阶段"), "CLEAN=SKIPPED 必须写明原因：" + clean);
+            assertTrue(clean.contains("清洗默认关闭"), "CLEAN=SKIPPED 必须写明原因：" + clean);
+            assertFalse(clean.contains("\"counters\""),
+                    "清洗关闭时 counters 必须为空（行为与接入前一致）：" + clean);
 
             String parse = server.requests().stream()
                     .filter(r -> r.contains("/stages/PARSE") && r.contains("\"DONE\"")).findFirst().orElseThrow();

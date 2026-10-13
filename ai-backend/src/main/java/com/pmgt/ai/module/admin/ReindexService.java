@@ -1,6 +1,9 @@
 package com.pmgt.ai.module.admin;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pmgt.ai.common.config.AiSettings;
+import com.pmgt.ai.module.chunk.DocumentChunker;
+import com.pmgt.ai.module.pipeline.PipelineRev;
 import com.pmgt.ai.module.retrieval.DocIndexer;
 import com.pmgt.ai.module.retrieval.OpenSearchIndex;
 import com.pmgt.ai.module.retrieval.RetrievalService;
@@ -10,6 +13,8 @@ import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -59,6 +64,9 @@ public class ReindexService {
 
     private static final DateTimeFormatter TS = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
+    /** 只读解析向量缓存头部用（与 {@code RetrievalService} 的缓存格式同源）。 */
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
     private final AiSettings settings;
     private final DocStore docStore;
     private final DocIndexer docIndexer;
@@ -100,6 +108,18 @@ public class ReindexService {
         /** 并发/批大小快照（Job 是静态类，读不到外层 settings，启动时由 start() 写入）。 */
         private volatile int concurrency;
         private volatile int bulkSize;
+        /**
+         * 启动时的流水线版本快照（设计 §3.3.3 的 L3）。
+         *
+         * <p>为什么要写进 Job：{@code clean_rev} 变了就必须重算（L1 换键 + L2 缓存失效），
+         * 而"这次重建是按哪版规则重建的"只有记在任务行上才能事后核对
+         * （否则只看到"重建过"，不知道重建到了哪一版）。
+         */
+        private volatile String pipelineRev = "";
+        private volatile int cleanRev;
+        private volatile int chunkRev;
+        private volatile boolean cleanEnabled;
+        private volatile boolean chunkImproved;
 
         Job(boolean skipExisting, List<String> docIds) {
             this.skipExisting = skipExisting;
@@ -130,6 +150,12 @@ public class ReindexService {
             out.put("eta_seconds", etaSeconds());
             out.put("concurrency", concurrency);
             out.put("bulk_size", bulkSize);
+            // ── 版本快照（L3）：clean_rev 变化 ⇒ 必须用 force=true 重建，任务行上要能看出来 ──
+            out.put("pipeline_rev", pipelineRev);
+            out.put("clean_rev", cleanRev);
+            out.put("chunk_rev", chunkRev);
+            out.put("clean_enabled", cleanEnabled);
+            out.put("chunk_improved", chunkImproved);
             return out;
         }
 
@@ -177,11 +203,92 @@ public class ReindexService {
         Job job = new Job(skipExisting, targets);
         job.concurrency = settings.getLimits().getEmbedConcurrency();
         job.bulkSize = settings.getOpenSearch().getBulkSize();
+        // 版本快照（L3）：重建是按哪一版规则跑的，必须能事后核对
+        job.pipelineRev = PipelineRev.pipelineRev();
+        job.cleanRev = PipelineRev.current().cleanRev();
+        job.chunkRev = PipelineRev.current().chunkRev();
+        job.cleanEnabled = settings.getClean().isEnabled();
+        job.chunkImproved = settings.getChunk().isImproved();
         jobs.put(job.jobId, job);
         runner.submit(() -> run(job));
-        log.info("重建索引任务 {} 启动：{} 份文档（skip_existing={}, backend={}）",
-                job.jobId, targets.size(), skipExisting, settings.getRetrieval().getBackend());
+        log.info("重建索引任务 {} 启动：{} 份文档（skip_existing={}, backend={}, force={}, pipeline_rev={}）",
+                job.jobId, targets.size(), skipExisting, settings.getRetrieval().getBackend(), force,
+                job.pipelineRev);
         return job;
+    }
+
+    /**
+     * <b>重建计划（只读，L3 的"体现"）</b>：按向量缓存的版本头判断哪些文档需要重算。
+     *
+     * <p>为什么要它：{@code clean_rev}/{@code chunk_rev} 变化后，切片键（L1）与向量缓存（L2）
+     * 都会失效——但"要不要现在跑一次重建"不能靠猜。这里给出<b>可核对的数字</b>：
+     * <ul>
+     *   <li>{@code stale_docs}：向量缓存头部的 {@code clean_rev/chunk_rev} 与当前口径不一致（⇒ 会重算）；</li>
+     *   <li>{@code fresh_docs}：一致（⇒ 缓存仍然有效）；</li>
+     *   <li>{@code unknown_docs}：没有向量缓存（从未向量化，或缓存被删）。</li>
+     * </ul>
+     * 它是<b>只读</b>：不发请求、不写文件、不改索引。{@code local} 后端上"缓存一致"就等价于
+     * "不用重算"；{@code opensearch} 后端还要看索引里的切片键（那需要连集群，本端点刻意不连，
+     * 所以返回里明写 {@code index_checked=false}）。
+     */
+    public Map<String, Object> plan() {
+        int stale = 0;
+        int fresh = 0;
+        int unknown = 0;
+        List<String> staleSample = new ArrayList<>();
+        Path vectors = settings.getWorkDir().resolve("vectors");
+        for (StoredDoc doc : docStore.allDocs()) {
+            Path file = vectors.resolve(doc.getDocId() + ".json");
+            if (!Files.isRegularFile(file)) {
+                unknown++;
+                continue;
+            }
+            Integer cacheClean = null;
+            Integer cacheChunk = null;
+            try {
+                com.fasterxml.jackson.databind.JsonNode payload = MAPPER.readTree(Files.readString(file));
+                if (payload.has("clean_rev")) {
+                    cacheClean = payload.path("clean_rev").asInt(-1);
+                }
+                if (payload.has("chunk_rev")) {
+                    cacheChunk = payload.path("chunk_rev").asInt(-1);
+                }
+            } catch (Exception e) {
+                unknown++;
+                continue;
+            }
+            boolean match = cacheClean != null && cacheChunk != null
+                    && cacheClean == PipelineRev.current().cleanRev()
+                    && cacheChunk == PipelineRev.current().chunkRev();
+            if (match) {
+                fresh++;
+            } else {
+                stale++;
+                if (staleSample.size() < 20) {
+                    staleSample.add(doc.getDocId());
+                }
+            }
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("pipeline_rev", PipelineRev.pipelineRev());
+        out.put("clean_rev", PipelineRev.current().cleanRev());
+        out.put("chunk_rev", PipelineRev.current().chunkRev());
+        out.put("clean_enabled", settings.getClean().isEnabled());
+        out.put("chunk_improved", settings.getChunk().isImproved());
+        out.put("chunk_key_format", PipelineRev.format());
+        out.put("docs", stale + fresh + unknown);
+        out.put("stale_docs", stale);
+        out.put("fresh_docs", fresh);
+        out.put("unknown_docs", unknown);
+        out.put("stale_sample", staleSample);
+        out.put("index_checked", false);
+        out.put("needs_rebuild", stale > 0);
+        out.put("recommendation", stale > 0
+                ? "clean_rev/chunk_rev 与向量缓存头部不一致：跑 POST /admin/reindex?force=true 重算"
+                        + "（force 才会忽略'已存在'；L1 的切片键已换，旧索引条目不会被误当命中）"
+                : "向量缓存与当前版本一致；local 后端无需重建。opensearch 后端请另按索引里的 "
+                        + "chunk_key 核对（本端点不连集群，故 index_checked=false）");
+        return out;
     }
 
     public Job get(String jobId) {
@@ -306,6 +413,9 @@ public class ReindexService {
     /**
      * 文档级断点：该文档的全部切片键是否<b>一个不缺</b>地都在索引里。
      *
+     * <p>⚠️ 切片键必须与入库/检索<b>同一口径</b>算（{@code DocumentChunker.chunksOf}）：
+     * 用回退口径算键会让"索引里其实已经齐了"的文档被当成没齐，从而白跑一遍向量化。
+     *
      * <p>非 OpenSearch 后端（local）没有"索引"可查，恒返回 false（每次都重算缓存——
      * 缓存命中时不发请求，代价可忽略）。
      */
@@ -313,7 +423,7 @@ public class ReindexService {
         if (!docIndexer.usesOpenSearch()) {
             return false;
         }
-        List<DocStore.Chunk> chunks = docStore.iterChunks(doc);
+        List<DocStore.Chunk> chunks = DocumentChunker.chunksOf(doc, settings);
         if (chunks.isEmpty()) {
             return true;
         }
@@ -347,6 +457,10 @@ public class ReindexService {
         out.put("running_jobs", running.get());
         out.put("jobs", jobs.size());
         out.put("skip_existing_default", true);
+        out.put("pipeline_rev", PipelineRev.pipelineRev());
+        out.put("clean_enabled", settings.getClean().isEnabled());
+        out.put("clean_rev", PipelineRev.current().cleanRev());
+        out.put("chunk_rev", PipelineRev.current().chunkRev());
         return out;
     }
 }

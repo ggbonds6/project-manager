@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.model.ModelRegistry;
+import com.pmgt.ai.module.chunk.DocumentChunker;
 import com.pmgt.ai.module.pipeline.PipelineRev;
 import com.pmgt.ai.module.store.DocStore;
 import com.pmgt.ai.module.store.StoredDoc;
@@ -362,12 +363,17 @@ public class RetrievalService implements SearchPort {
                     chunk.docId(),
                     chunk.filename(),
                     chunk.pageNo(),
+                    entry.getKey(),
                     round(entry.getValue(), 4),
                     round(kw.getOrDefault(entry.getKey(), 0.0), 2),
                     round(vecScore.getOrDefault(entry.getKey(), 0.0), 4),
                     text.length() > MAX_SNIPPET_CHARS
                             ? text.substring(0, MAX_SNIPPET_CHARS) + "…"
-                            : text));
+                            : text,
+                    chunk.isTable(),
+                    chunk.parentKey(),
+                    parentSummaryOf(chunks, chunk),
+                    chunk.sectionPath()));
         }
 
         return new SearchResult(
@@ -376,6 +382,38 @@ public class RetrievalService implements SearchPort {
                 vectorsUsed ? "hybrid" : "keyword",
                 reranked,
                 note);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // 父子块（small-to-big，设计 §3.4.4 的轻量形态）
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * 命中切片所属页（父块）的摘要：同页全部子块按顺序拼接的前 {@code ai.chunk.parent-summary-chars} 字。
+     *
+     * <p>为什么要给模型这段：命中只返回切片本体时，模型要完整上下文就得再花一轮 {@code read_page}
+     * （现状"一次问答 2 次检索 + 1 次读页"的延迟来源之一）。父块摘要很便宜（同页文本已经在内存里），
+     * 所以<b>命中即带上</b>——它减少（不是消除）{@code read_page}：整页 4000 字仍走 {@code read_page}。
+     *
+     * <p>边界：父块摘要 = 当前页的子块拼接，不含跨页内容（页码语义优先）；
+     * {@code parent-summary-chars=0} 时关闭这一能力（返回空串，命中里也就不出现该字段）。
+     */
+    private String parentSummaryOf(List<DocStore.Chunk> chunks, DocStore.Chunk hit) {
+        int maxChars = settings.getChunk().getParentSummaryChars();
+        if (maxChars <= 0 || hit == null) {
+            return "";
+        }
+        List<DocStore.Chunk> samePage = new ArrayList<>();
+        for (DocStore.Chunk chunk : chunks) {
+            if (chunk.pageNo() == hit.pageNo() && java.util.Objects.equals(chunk.docId(), hit.docId())) {
+                samePage.add(chunk);
+            }
+        }
+        if (samePage.size() <= 1) {
+            return "";   // 只有一片时"上卷"没有新增信息（本身已经是全页）
+        }
+        String summary = DocumentChunker.parentSummary(samePage, maxChars);
+        return summary.equals(hit.text() == null ? "" : hit.text().strip()) ? "" : summary;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -515,17 +553,25 @@ public class RetrievalService implements SearchPort {
 
     /**
      * 按作用域装载切片：{@code docIds} 非空时逐份读（避免为了一个 doc 扫描整个文档库），
-     * 否则读全库。attachment/project 维度的收窄在调用方按元数据做（{@link SearchScope#matches}）。
+     * 否则读全库。
+     *
+     * <p><b>必须与入库/重建走同一个切分口径</b>（{@code DocumentChunker.chunksOf}）：
+     * 切片键是"清洗 + 切分后文本的指纹"，查询侧若换个算法算键，键就对不上索引里的键——
+     * 表现为"索引里明明有切片、却一条都召回不到"。所以这里不做任何"查询专用"的简化。
      */
     private List<DocStore.Chunk> loadChunks(SearchScope scope) {
         if (scope == null || scope.docIds().isEmpty()) {
-            return docStore.loadChunks(null);
+            List<DocStore.Chunk> out = new ArrayList<>();
+            for (StoredDoc doc : docStore.allDocs()) {
+                out.addAll(DocumentChunker.chunksOf(doc, settings));
+            }
+            return out;
         }
         List<DocStore.Chunk> out = new ArrayList<>();
         for (String docId : scope.docIds()) {
             StoredDoc doc = docStore.get(docId);
             if (doc != null) {
-                out.addAll(docStore.iterChunks(doc));
+                out.addAll(DocumentChunker.chunksOf(doc, settings));
             }
         }
         return out;

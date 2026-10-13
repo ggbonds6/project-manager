@@ -96,6 +96,28 @@ class AiSettingsBindingTest {
     }
 
     @Test
+    @DisplayName("ai.clean.* / ai.chunk.* 全部绑上：清洗开关与规则清单、重叠比例、max_char_len、父子块摘要")
+    void cleanAndChunkBindAllKeys() throws Exception {
+        AiSettings settings = bound();
+        AiSettings.Clean clean = settings.getClean();
+        assertFalse(clean.isEnabled(), "清洗默认关（行为与接入前逐字一致）");
+        assertEquals("c1,c2,c3,c4,c5,c6,c7", clean.getRules(), "默认规则清单 = C1~C7（C8 水印默认关）");
+        assertEquals(0.5, clean.getHeaderFooterRatio());
+        assertEquals(4, clean.getHeaderFooterMinChars());
+        assertFalse(clean.isDedupDrop(), "段级去重默认只标记不删");
+        assertEquals("", clean.getWatermarkPatterns());
+
+        AiSettings.Chunk chunk = settings.getChunk();
+        assertTrue(chunk.isImproved(), "改进切分默认开");
+        assertEquals(500, chunk.getChunkChars());
+        assertEquals(2000, chunk.getMaxCharLen(), "硬上限 2000（验收：不存在 >2000 字符的切片）");
+        assertEquals(0.12, chunk.getOverlapRatio(), "重叠比例默认 0.12（设计给的 10%~15% 区间内）");
+        assertTrue(chunk.isStructureAware());
+        assertTrue(chunk.isTablesWhole());
+        assertEquals(200, chunk.getParentSummaryChars());
+    }
+
+    @Test
     @DisplayName("既有的 ai.limits / ai.retrieval 键没被新配置改动（回归：三处一致的另一半）")
     void existingKeysUnchanged() throws Exception {
         AiSettings settings = bound();

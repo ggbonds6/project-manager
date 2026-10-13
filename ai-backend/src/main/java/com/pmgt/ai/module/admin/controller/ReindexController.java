@@ -79,6 +79,23 @@ public class ReindexController {
         return ApiResponse.ok(reindexService.list());
     }
 
+    /**
+     * <b>重建计划（只读）</b>：按向量缓存的版本头算出"哪些文档需要重算"。
+     *
+     * <p>设计 §3.3.3 的 L3：{@code clean_rev/chunk_rev} 变化后，
+     * 切片键（L1）与向量缓存（L2）都失效——但"要不要现在重建、影响多少份文档"必须看得见，
+     * 而不是靠运维猜。本端点<b>不发请求、不写任何东西</b>（{@code opensearch} 索引里的键
+     * 需要连集群才能核对，所以返回里明写 {@code index_checked=false}）。
+     *
+     * <pre>
+     *   curl 'http://127.0.0.1:8100/admin/reindex/plan'
+     * </pre>
+     */
+    @GetMapping("/plan")
+    public Map<String, Object> plan() {
+        return ApiResponse.ok(reindexService.plan());
+    }
+
     /** 单个任务的进度（含 ETA、失败数、跳过数）。 */
     @GetMapping("/{jobId}")
     public Map<String, Object> get(@PathVariable String jobId) {

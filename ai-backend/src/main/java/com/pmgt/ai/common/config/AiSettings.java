@@ -31,6 +31,8 @@ public class AiSettings {
     private BizQuery bizQuery = new BizQuery();
     private Gate gate = new Gate();
     private Pipeline pipeline = new Pipeline();
+    private Clean clean = new Clean();
+    private Chunk chunk = new Chunk();
 
     /** 平台网关（OCR / 对话 / 向量化 / 重排共用）。 */
     @Getter
@@ -438,9 +440,120 @@ public class AiSettings {
 
         /** 解析版本（{@code parse_rev}）：改进解析逻辑（渲染/OCR 路由）时 +1。 */
         private int parseRev = 1;
-        /** 清洗版本（{@code clean_rev}）：<b>0 = 本轮尚无清洗阶段</b>（规则清单/开关/阈值任一变化即 +1）。 */
+        /**
+         * 清洗版本（{@code clean_rev}）：<b>0 = 清洗关闭（与接入前逐字一致）</b>；
+         * 启用清洗后从 1 起步，<b>规则清单 / 每条规则开关 / 阈值任一变化即 +1</b>
+         * （设计 §3.3.2 的 CleanRev 口径）。它同时进切片键（L1）、向量缓存校验（L2）与
+         * {@code /admin/reindex} 的重建判据（L3）。
+         */
         private int cleanRev = 0;
         /** 切片版本（{@code chunk_rev}）：切分参数或算法变化时 +1。 */
         private int chunkRev = 0;
+    }
+
+    /**
+     * 清洗阶段（设计 §3.3，G1/T7）的配置。
+     *
+     * <p><b>默认关闭</b>：{@code ai.clean.enabled=false} ⇒ {@code CLEAN} 阶段如实上报
+     * {@code SKIPPED} 并把解析后的原始文本直接交给切分，<b>行为与接入前逐字一致</b>
+     * （{@code clean_rev=0}）。要吃到清洗收益就显式打开，并把 {@code clean_rev} +1
+     * （规则清单/开关/阈值任一变化都要 +1，否则"规则改了但缓存不失效"）。
+     *
+     * <p>规则只作用于<b>文本层</b>与<b>平台 OCR markdown</b> 两路解析结果——清洗函数是<b>纯函数</b>
+     * （同输入 + 同 {@code clean_rev} ⇒ 同输出），因此可以缓存、可以复算、可以做前后对照。
+     */
+    @Getter
+    @Setter
+    public static class Clean {
+        /**
+         * 清洗总开关。默认 <b>false</b>：
+         * <ul>
+         *   <li>{@code false} ⇒ CLEAN 阶段报 {@code SKIPPED}（带原因），切片输入 = 解析原文；</li>
+         *   <li>{@code true}  ⇒ CLEAN 阶段报 {@code DONE}/{@code PARTIAL}（带 counters），
+         *       并按下面的规则清单逐条清洗；</li>
+         * </ul>
+         * 打开时请同时把 {@code ai.pipeline.clean-rev} 设为 ≥1 并跑一次
+         * {@code POST /admin/reindex?force=true}（旧切片键与旧向量缓存都会失效）。
+         */
+        private boolean enabled = false;
+
+        /**
+         * 启用的规则清单（逗号分隔）。默认 {@code c1,c2,c3,c4,c5,c6,c7}——
+         * 即 §3.3.2 的 C1~C7；<b>C8（水印）默认关</b>（合规风险高于收益，见文档 §3.3.2），
+         * 要用就显式写成 {@code c1,...,c8} 并配置 {@link #watermarkPatterns}。
+         *
+         * <p>清单里出现未知规则 id 时启动期只 WARN（不静默当成"开"），规则清单本身进
+         * {@code clean_rev} 的口径（改了清单就要 +1）。
+         */
+        private String rules = "c1,c2,c3,c4,c5,c6,c7";
+
+        /**
+         * C1 的跨页重复阈值：同一归一化行在 <b>≥ 该比例</b> 的页出现，且位于页首/页末 2 行内 ⇒ 判为页眉/页脚。
+         * 默认 0.5（设计 §3.3.2 的判据）。
+         */
+        private double headerFooterRatio = 0.5;
+
+        /** C1 的最小行长（字符）：短于此的行不参与页眉/页脚判定（设计给的兜底是"< 4 字不参与"）。 */
+        private int headerFooterMinChars = 4;
+
+        /**
+         * C6 段级去重的处置方式：默认 {@code false} = <b>只标记不删</b>
+         * （{@code duplicate_of} 进产物，供人工复核）；{@code true} 才真的删掉重复段。
+         */
+        private boolean dedupDrop = false;
+
+        /**
+         * C8 水印剔除的正则白名单（逗号分隔）。为空 = 该规则不生效（默认空）。
+         * <b>只删命中白名单的行</b>，且被删的行一律进 {@code removed_lines}。
+         */
+        private String watermarkPatterns = "";
+    }
+
+    /**
+     * 切分阶段（设计 §3.4，G11/G12）的配置。
+     *
+     * <p>与 {@link Clean} 的关系：清洗先跑（纯函数），切分吃清洗后的文本。
+     * 两者都进切片键（{@code clean_rev/chunk_rev}），所以任何参数变化都必须 +1 对应版本。
+     */
+    @Getter
+    @Setter
+    public static class Chunk {
+        /**
+         * 是否启用改进切分（结构感知 + 表格整块 + 重叠 + 父子块）。
+         *
+         * <p>默认 <b>true</b>：这是本轮 P1-α 的交付物。置为 {@code false} 是
+         * <b>回退到接入前的切法</b>（段落累积到 {@code chunk-chars} 就断、无重叠、无结构感知）
+         * ——保留它的唯一目的是"口味回归时能一键对照"，长度上限与表格整块也会一起失效
+         * （即允许出现 &gt; max-char-len 的切片）。
+         */
+        private boolean improved = true;
+
+        /** 单个切片的<b>目标</b>字数（打包目标，不是硬上限）。默认 500，与接入前一致。 */
+        private int chunkChars = 500;
+
+        /**
+         * 单个切片的<b>硬上限</b>（字符）。验收口径：不存在 &gt; 该值的切片。
+         *
+         * <p>为什么是 2000（4 × chunk-chars）：切片是检索单元，太长会让向量语义被稀释；
+         * 2000 字 ≈ 一页 A4 正文，仍能整页回答"某页说了什么"。超长段落按句末标点二次切。
+         */
+        private int maxCharLen = 2000;
+
+        /**
+         * 相邻切片的重叠比例（0~1）。默认 0.12（设计 §3.4.3 给的区间 10%~15% 的中点附近）。
+         *
+         * <p>重叠<b>按句回退</b>（向前找最近的句末标点，最多回退 {@code 0.15 × chunk-chars}），
+         * 且<b>只发生在同一页内</b>（不跨页，保持页码语义）。表格片不参与重叠。
+         */
+        private double overlapRatio = 0.12;
+
+        /** 是否按标题/条款边界优先切（设计 §3.4.1）；关闭即退化为"按段落打包"。 */
+        private boolean structureAware = true;
+
+        /** 表格整块不截断（设计 §3.4.2）；关闭则表格与正文一样参与打包。 */
+        private boolean tablesWhole = true;
+
+        /** 父块摘要的字数上限（设计 §3.4.4 的 {@code parentSummary} ≤ 300 字，这里默认 200）。 */
+        private int parentSummaryChars = 200;
     }
 }

@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.model.ModelRegistry;
+import com.pmgt.ai.module.pipeline.PipelineRev;
 import com.pmgt.ai.module.store.DocStore;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -192,11 +193,18 @@ public class OpenSearchIndex {
      * {@link DocMeta#EMPTY}（缺字段就不写，查询侧按"不在作用域内"处理）。
      */
     public record ChunkDoc(String id, String docId, String filename, int pageNo, String text, float[] vector,
-                           DocMeta meta) {
+                           DocMeta meta, int orderInPage, String parentKey, boolean isTable, int tableRows,
+                           String sectionPath, String source) {
 
         /** 不带元数据的便捷构造（老调用点与测试用）。 */
         public ChunkDoc(String id, String docId, String filename, int pageNo, String text, float[] vector) {
-            this(id, docId, filename, pageNo, text, vector, DocMeta.EMPTY);
+            this(id, docId, filename, pageNo, text, vector, DocMeta.EMPTY, 0, null, false, 0, "", "");
+        }
+
+        /** 带 doc 级元数据、不带切片级元数据的便捷构造（老调用点用）。 */
+        public ChunkDoc(String id, String docId, String filename, int pageNo, String text, float[] vector,
+                        DocMeta meta) {
+            this(id, docId, filename, pageNo, text, vector, meta, 0, null, false, 0, "", "");
         }
     }
 
@@ -254,6 +262,20 @@ public class OpenSearchIndex {
         properties.putObject("source").put("type", "keyword");
         properties.putObject("page_no").put("type", "integer");
         properties.putObject("created_at").put("type", "date");
+        // ── 切片级元数据（设计 §3.4.5，P1-α 新增）──
+        // 它们是"父子块 / 表格 / 章节路径 / 版本追溯"在索引里的落点：
+        //   · order_in_page 与 parent_key 一起支持"同页邻块上卷"与重叠去重；
+        //   · is_table / table_rows 支持表格检索策略（列表展示与人工复核都要看）；
+        //   · section_path 是后续升级"章节树父块"的接缝；
+        //   · clean_rev / chunk_rev 让"某条命中是哪版规则切的"在索引里可查（切片键里也有，双保险）。
+        properties.putObject("order_in_page").put("type", "integer");
+        properties.putObject("parent_key").put("type", "keyword");
+        properties.putObject("is_table").put("type", "boolean");
+        properties.putObject("table_rows").put("type", "integer");
+        properties.putObject("section_path").put("type", "keyword");
+        properties.putObject("char_len").put("type", "integer");
+        properties.putObject("clean_rev").put("type", "integer");
+        properties.putObject("chunk_rev").put("type", "integer");
         return body;
     }
 
@@ -400,6 +422,26 @@ public class OpenSearchIndex {
         for (float value : chunk.vector()) {
             vector.add(value);
         }
+        // ── 切片级元数据（设计 §3.4.5）：有值才写，空值不落字段（与 doc 级元数据同一纪律）──
+        doc.put("char_len", chunk.text() == null ? 0 : chunk.text().length());
+        if (chunk.orderInPage() > 0) {
+            doc.put("order_in_page", chunk.orderInPage());
+        }
+        if (chunk.parentKey() != null && !chunk.parentKey().isBlank()) {
+            doc.put("parent_key", chunk.parentKey());
+        }
+        if (chunk.isTable()) {
+            doc.put("is_table", true);
+            doc.put("table_rows", chunk.tableRows());
+        }
+        if (chunk.sectionPath() != null && !chunk.sectionPath().isBlank()) {
+            doc.put("section_path", chunk.sectionPath());
+        }
+        if (chunk.source() != null && !chunk.source().isBlank()) {
+            doc.put("source", chunk.source());
+        }
+        doc.put("clean_rev", PipelineRev.current().cleanRev());
+        doc.put("chunk_rev", PipelineRev.current().chunkRev());
         DocMeta meta = chunk.meta();
         if (meta != null && !meta.isEmpty()) {
             meta.sparseMap().forEach((field, value) -> doc.put(field, String.valueOf(value)));
@@ -448,7 +490,7 @@ public class OpenSearchIndex {
         return toDocs(chunks, vectors, Map.of());
     }
 
-    /** 同上，但按 docId 补上过滤元数据。 */
+    /** 同上，但按 docId 补上过滤元数据，并把切片级元数据（序号/父键/表格/章节/来源）带进索引文档。 */
     public List<ChunkDoc> toDocs(List<DocStore.Chunk> chunks, List<float[]> vectors,
                                  Map<String, DocMeta> metaByDocId) {
         List<ChunkDoc> docs = new ArrayList<>();
@@ -462,7 +504,13 @@ public class OpenSearchIndex {
                     chunk.pageNo(),
                     chunk.text(),
                     vectors.get(i),
-                    metas.getOrDefault(chunk.docId(), DocMeta.EMPTY)));
+                    metas.getOrDefault(chunk.docId(), DocMeta.EMPTY),
+                    chunk.orderInPage(),
+                    chunk.parentKey(),
+                    chunk.isTable(),
+                    chunk.tableRows(),
+                    chunk.sectionPath(),
+                    chunk.source()));
         }
         return docs;
     }

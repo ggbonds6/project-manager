@@ -2,6 +2,9 @@ package com.pmgt.ai.module.retrieval;
 
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.util.ProgressFn;
+import com.pmgt.ai.module.chunk.ChunkOptions;
+import com.pmgt.ai.module.chunk.DocumentChunker;
+import com.pmgt.ai.module.clean.CleanResult;
 import com.pmgt.ai.module.pipeline.ArtifactType;
 import com.pmgt.ai.module.pipeline.PipelineRev;
 import com.pmgt.ai.module.pipeline.RunContext;
@@ -11,6 +14,7 @@ import com.pmgt.ai.module.store.StoredDoc;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -55,8 +59,12 @@ import java.util.Set;
  * <p>保留"查询侧补齐"的能力（{@code RetrievalService.embedChunks} 仍会在缺向量时补算），
  * 但那条路径现在会打 WARN 并计 {@code ai.vector.lazy_backfill}——<b>持续 >0 就是缺陷</b>。
  */
+@Slf4j
 @Component
 public class DocIndexer {
+
+    /** {@code chunk_manifest} 摘要里逐片样本的条数上限（全文在 {@code work/chunks/}）。 */
+    static final int MANIFEST_SAMPLES = 20;
 
     private final AiSettings settings;
     private final DocStore docStore;
@@ -104,38 +112,77 @@ public class DocIndexer {
     /**
      * 切分（CHUNK 阶段）：纯本地、确定性；上报 {@code RUNNING → DONE(或 PARTIAL)}，
      * 并写一份 {@code chunk_manifest} 摘要产物（Q5 的数据源，DB 只存摘要、全文留 {@code work/}）。
+     *
+     * @param cleaned 已算好的清洗结果（解析链路会传；{@code null} ⇒ 这里按当前配置自己清洗一遍，
+     *                保证"查询侧与入库侧同一口径"，见 {@code DocumentChunker.chunksOf}）
      */
-    public Prepared prepare(StoredDoc doc, RunContext run) {
+    public Prepared prepare(StoredDoc doc, CleanResult cleaned, RunContext run) {
         long started = System.nanoTime();
+        ChunkOptions options = ChunkOptions.of(settings);
         if (run != null) {
             run.stageStarted(StageKey.CHUNK, "doc=" + doc.getDocId() + " pages=" + doc.getPageCount()
                     + " pipeline_rev=" + PipelineRev.pipelineRev());
         }
-        List<DocStore.Chunk> chunks = docStore.iterChunks(doc);
+        List<DocStore.Chunk> chunks = cleaned == null
+                ? DocumentChunker.chunksOf(doc, settings)
+                : DocumentChunker.chunk(cleaned, doc, options);
         long elapsed = Math.max(0, (System.nanoTime() - started) / 1_000_000);
         if (run != null) {
-            run.stageDone(StageKey.CHUNK, chunks.size(), 0, chunkCounters(doc, chunks), outputDigestOf(chunks));
-            run.artifact(ArtifactType.CHUNK_MANIFEST, chunkManifestJson(doc, chunks), null,
-                    null, PipelineRev.sha1Hex(outputDigestOf(chunks)),
-                    chunks.size(), "切片清单（全文在 AI 服务 work/docs/<docId>.json 与 work/chunks，DB 只存摘要）");
+            run.stageDone(StageKey.CHUNK, chunks.size(), 0, chunkCounters(doc, chunks, options),
+                    outputDigestOf(chunks));
+            run.artifact(ArtifactType.CHUNK_MANIFEST, chunkManifestJson(doc, chunks, options),
+                    chunkManifestPath(doc), fullManifestJson(doc, chunks, options).length(),
+                    PipelineRev.sha1Hex(outputDigestOf(chunks)),
+                    chunks.size(), "切片清单（摘要进 DB；全文在 " + chunkManifestPath(doc) + "）");
         }
+        writeChunkManifest(doc, chunks, options);
         return new Prepared(chunks, elapsed);
     }
 
-    private Map<String, Object> chunkCounters(StoredDoc doc, List<DocStore.Chunk> chunks) {
+    /** 老签名（不传清洗结果）：行为与"按当前配置清洗 + 切分"一致。 */
+    public Prepared prepare(StoredDoc doc, RunContext run) {
+        return prepare(doc, null, run);
+    }
+
+    private Map<String, Object> chunkCounters(StoredDoc doc, List<DocStore.Chunk> chunks, ChunkOptions options) {
         int max = 0;
         long total = 0;
+        int tables = 0;
+        int tableRows = 0;
+        int maxTable = 0;
+        int overlapped = 0;
         for (DocStore.Chunk chunk : chunks) {
-            int len = chunk.text() == null ? 0 : chunk.text().length();
+            int len = chunk.charLen();
             max = Math.max(max, len);
             total += len;
+            if (chunk.isTable()) {
+                tables++;
+                tableRows += chunk.tableRows();
+                maxTable = Math.max(maxTable, len);
+            }
+            if (chunk.orderInPage() > 0) {
+                overlapped++;
+            }
         }
         Map<String, Object> counters = new LinkedHashMap<>();
         counters.put("pages", doc.getPageCount());
         counters.put("chunk_count", chunks.size());
         counters.put("avg_char_len", chunks.isEmpty() ? 0 : Math.round((double) total / chunks.size()));
         counters.put("max_char_len", max);
-        counters.put("chunk_chars", DocStore.DEFAULT_CHUNK_CHARS);
+        counters.put("max_char_len_limit", options.maxCharLen());
+        counters.put("over_limit_chunks", chunks.stream().filter(c -> c.charLen() > options.maxCharLen()).count());
+        counters.put("chunk_chars", options.chunkChars());
+        counters.put("chunk_improved", options.improved());
+        counters.put("structure_aware", options.structureAware());
+        counters.put("tables_whole", options.tablesWhole());
+        counters.put("overlap_ratio", options.overlapRatio());
+        counters.put("overlap_chars", options.overlapChars());
+        counters.put("overlapped_chunks", overlapped);
+        counters.put("table_chunks", tables);
+        counters.put("table_rows", tableRows);
+        counters.put("max_table_chars", maxTable);
+        counters.put("parent_count", DocumentChunker.parentCount(chunks));
+        counters.put("parent_summary_chars", settings.getChunk().getParentSummaryChars());
         counters.put("clean_rev", PipelineRev.current().cleanRev());
         counters.put("chunk_rev", PipelineRev.current().chunkRev());
         counters.put("chunk_key_format", PipelineRev.format());
@@ -155,28 +202,113 @@ public class DocIndexer {
     }
 
     /** {@code chunk_manifest} 摘要（≤4000 字符，超长截断——DB 只存摘要，全文由 object_key 指路）。 */
-    private String chunkManifestJson(StoredDoc doc, List<DocStore.Chunk> chunks) {
+    private String chunkManifestJson(StoredDoc doc, List<DocStore.Chunk> chunks, ChunkOptions options) {
         Map<String, Object> manifest = new LinkedHashMap<>();
         manifest.put("doc_id", doc.getDocId());
         manifest.put("filename", doc.getFilename());
         manifest.put("chunk_count", chunks.size());
-        manifest.put("chunk_chars", DocStore.DEFAULT_CHUNK_CHARS);
+        manifest.put("chunk_chars", options.chunkChars());
+        manifest.put("max_char_len", maxCharLen(chunks));
+        manifest.put("max_char_len_limit", options.maxCharLen());
+        manifest.put("overlap_ratio", options.overlapRatio());
+        manifest.put("chunk_improved", options.improved());
+        manifest.put("table_chunks", chunks.stream().filter(DocStore.Chunk::isTable).count());
+        manifest.put("parent_count", DocumentChunker.parentCount(chunks));
+        manifest.put("sample_limit", MANIFEST_SAMPLES);
         manifest.put("pipeline_rev", PipelineRev.pipelineRev());
         List<Map<String, Object>> samples = new ArrayList<>();
-        for (int i = 0; i < Math.min(20, chunks.size()); i++) {
+        for (int i = 0; i < Math.min(MANIFEST_SAMPLES, chunks.size()); i++) {
             DocStore.Chunk chunk = chunks.get(i);
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("chunk_key", RetrievalService.chunkKey(chunk));
             item.put("page_no", chunk.pageNo());
-            item.put("char_len", chunk.text() == null ? 0 : chunk.text().length());
+            item.put("order_in_page", chunk.orderInPage());
+            item.put("char_len", chunk.charLen());
+            item.put("is_table", chunk.isTable());
+            if (chunk.isTable()) {
+                item.put("table_rows", chunk.tableRows());
+            }
+            item.put("parent_key", chunk.parentKey());
+            if (chunk.sectionPath() != null && !chunk.sectionPath().isBlank()) {
+                item.put("section_path", chunk.sectionPath());
+            }
             samples.add(item);
         }
         manifest.put("samples", samples);
+        return clipJson(manifest, 4000, doc, chunks.size());
+    }
+
+    /** 切片清单全文（落 {@code work/chunks/<docId>.json}，可重建物、不进主系统）。 */
+    private String fullManifestJson(StoredDoc doc, List<DocStore.Chunk> chunks, ChunkOptions options) {
+        Map<String, Object> manifest = new LinkedHashMap<>();
+        manifest.put("doc_id", doc.getDocId());
+        manifest.put("filename", doc.getFilename());
+        manifest.put("chunk_count", chunks.size());
+        manifest.put("chunk_chars", options.chunkChars());
+        manifest.put("max_char_len", options.maxCharLen());
+        manifest.put("overlap_ratio", options.overlapRatio());
+        manifest.put("structure_aware", options.structureAware());
+        manifest.put("tables_whole", options.tablesWhole());
+        manifest.put("parent_summary_chars", settings.getChunk().getParentSummaryChars());
+        manifest.put("pipeline_rev", PipelineRev.pipelineRev());
+        manifest.put("clean_rev", PipelineRev.current().cleanRev());
+        manifest.put("chunk_rev", PipelineRev.current().chunkRev());
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (DocStore.Chunk chunk : chunks) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("chunk_key", RetrievalService.chunkKey(chunk));
+            item.put("page_no", chunk.pageNo());
+            item.put("order_in_page", chunk.orderInPage());
+            item.put("char_len", chunk.charLen());
+            item.put("is_table", chunk.isTable());
+            item.put("table_rows", chunk.tableRows());
+            item.put("parent_key", chunk.parentKey());
+            item.put("section_path", chunk.sectionPath());
+            item.put("source", chunk.source());
+            item.put("text", chunk.text());
+            items.add(item);
+        }
+        manifest.put("chunks", items);
+        // 父块索引：small-to-big 的接缝（父键 → 子键列表 + 摘要）；升级章节树时这里换成章节父块
+        manifest.put("parents", DocumentChunker.parentsOf(chunks, settings.getChunk().getParentSummaryChars()));
         try {
-            String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(manifest);
-            return json.length() <= 4000 ? json : json.substring(0, 4000);
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(manifest);
         } catch (Exception e) {
             return "{\"doc_id\":\"" + doc.getDocId() + "\",\"chunk_count\":" + chunks.size() + "}";
+        }
+    }
+
+    /** 切片清单全文的路径（作为 {@code chunk_manifest} 产物的 {@code object_key}）。 */
+    private String chunkManifestPath(StoredDoc doc) {
+        return settings.getWorkDir().resolve("chunks").resolve(doc.getDocId() + ".json").toString();
+    }
+
+    /** 落盘切片清单全文（失败只 WARN：它是可重建物，不该影响解析结果）。 */
+    private void writeChunkManifest(StoredDoc doc, List<DocStore.Chunk> chunks, ChunkOptions options) {
+        java.nio.file.Path path = java.nio.file.Path.of(chunkManifestPath(doc));
+        try {
+            java.nio.file.Files.createDirectories(path.getParent());
+            java.nio.file.Files.writeString(path, fullManifestJson(doc, chunks, options),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.warn("切片清单全文落盘失败（不影响解析）：{}：{}", path, e.getMessage());
+        }
+    }
+
+    private static int maxCharLen(List<DocStore.Chunk> chunks) {
+        int max = 0;
+        for (DocStore.Chunk chunk : chunks) {
+            max = Math.max(max, chunk.charLen());
+        }
+        return max;
+    }
+
+    private static String clipJson(Map<String, Object> payload, int limit, StoredDoc doc, int chunkCount) {
+        try {
+            String json = new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(payload);
+            return json.length() <= limit ? json : json.substring(0, limit);
+        } catch (Exception e) {
+            return "{\"doc_id\":\"" + doc.getDocId() + "\",\"chunk_count\":" + chunkCount + "}";
         }
     }
 
@@ -213,8 +345,11 @@ public class DocIndexer {
                                       ProgressFn progress, RunContext run) {
         long started = System.nanoTime();
         ProgressFn onProgress = progress == null ? ProgressFn.NONE : progress;
+        // 没有预切分结果时按"清洗 + 切分"重算一遍：必须与 prepare 完全同口径（同一个入口）
+        StoredDoc source = docStore == null ? doc
+                : java.util.Objects.requireNonNullElse(docStore.get(doc.getDocId()), doc);
         List<DocStore.Chunk> chunks = prepared == null || prepared.chunks() == null
-                ? docStore.iterChunks(doc) : prepared.chunks();
+                ? DocumentChunker.chunksOf(source, settings) : prepared.chunks();
         if (chunks.isEmpty()) {
             if (run != null) {
                 run.stageDone(StageKey.EMBED, 0, 0, Map.of("reason", "无切片（文档没有可切分的文本）"), "chunks=0");

@@ -191,10 +191,52 @@ ai:
     # POST /admin/reindex 统一）。解析器两种都认（兼容读）。
     chunk-key-format: ${AI_PIPELINE_CHUNK_KEY_FORMAT:legacy}
     # 流水线版本段（设计 §3.3.3）：任一变化 ⇒ 向量缓存整体失效重算。
-    # clean-rev=0 = **本轮尚无清洗阶段**（CLEAN 阶段如实上报 SKIPPED 并写明原因）。
+    # clean-rev=0 = **清洗关闭**（默认口径：CLEAN 阶段如实上报 SKIPPED，切片输入 = 解析原文）；
+    # 启用清洗（ai.clean.enabled=true）时必须把它设为 ≥1，并跑一次 POST /admin/reindex?force=true。
     parse-rev: ${AI_PIPELINE_PARSE_REV:1}
     clean-rev: ${AI_PIPELINE_CLEAN_REV:0}
     chunk-rev: ${AI_PIPELINE_CHUNK_REV:0}
+  # ── 清洗阶段（设计 §3.3，G1/T7）──
+  # 纯本地、确定性：同输入 + 同 clean_rev ⇒ 同输出（可缓存、可复算、可做前后对照）。
+  # 规则只作用于**文本层与平台 OCR markdown 两路**解析结果（未知来源原样传下去）。
+  # 产物：摘要进主系统的 clean_diff（≤4000 字符），全文留 work/clean/<docId>.json。
+  clean:
+    # 默认 false：CLEAN 阶段如实上报 SKIPPED + 原因，**行为与接入前逐字一致**（clean_rev=0）。
+    # 打开时请同时把 ai.pipeline.clean-rev 设为 ≥1，并跑一次 POST /admin/reindex?force=true
+    # （切片键含版本段、向量缓存头部含版本段，旧数据不会被误当命中）。
+    enabled: ${AI_CLEAN_ENABLED:false}
+    # 启用的规则清单（逗号分隔）。c1~c8 对应设计 §3.3.2：
+    #   c1 页眉/页脚（跨页重复行）  c2 纯页码行  c3 空白与不可见字符归一  c4 断行合并/连字符修复
+    #   c5 表格与正文分离（**只标记**）  c6 段级去重（默认只标记）  c7 编码归一   c8 水印（默认关）
+    # 留空 = 用每条规则自己的默认开关（c1~c7 开、c8 关）。⚠️ 关掉 c5 等于同时关掉"表格不被 c3/c4/c8 动"的保护。
+    rules: ${AI_CLEAN_RULES:c1,c2,c3,c4,c5,c6,c7}
+    # c1 的跨页阈值：同一归一化行在 ≥该比例的页出现、且位于页首/页末 2 行内 ⇒ 判为页眉/页脚。
+    header-footer-ratio: ${AI_CLEAN_HEADER_FOOTER_RATIO:0.5}
+    # c1 的最小行长（字符）：短行不参与页眉/页脚判定。
+    header-footer-min-chars: ${AI_CLEAN_HEADER_FOOTER_MIN_CHARS:4}
+    # c6 的处置方式：false = **只标记不删**（duplicate_of 进产物供复核）；true 才真删重复段。
+    dedup-drop: ${AI_CLEAN_DEDUP_DROP:false}
+    # c8 的正则白名单（逗号分隔）。为空 = 该规则不生效（默认关）；命中的整行会被删除并留痕。
+    watermark-patterns: ${AI_CLEAN_WATERMARK_PATTERNS:}
+  # ── 切分（设计 §3.4，G11/G12）──
+  # 结构感知 + 表格整块 + 重叠窗口 + 超长段落二次切 + 长度硬上限 + 父子块（同页邻块）。
+  # 任何一项变化都要把 ai.pipeline.chunk-rev +1（否则"参数改了但切片键没变"）。
+  chunk:
+    # 默认 true（本轮 P1-α 的交付物）。false = 回退到接入前的切法（段落累积到 chunk-chars 就断、
+    # 无重叠、无结构感知、无长度上限）——只用于口味回归对照。
+    improved: ${AI_CHUNK_IMPROVED:true}
+    # 单个切片的**目标**字数（打包目标，不是硬上限）。默认 500，与接入前一致。
+    chunk-chars: ${AI_CHUNK_CHARS:500}
+    # 单个切片的**硬上限**（字符）。验收口径：不存在 > 该值的切片；超长段落按句末标点二次切。
+    max-char-len: ${AI_CHUNK_MAX_CHAR_LEN:2000}
+    # 相邻切片的重叠比例（0~1，上限 0.15）。默认 0.12 ≈ 500×12% = 60 字；按句回退、只在本页内。
+    overlap-ratio: ${AI_CHUNK_OVERLAP_RATIO:0.12}
+    # 是否按标题/条款边界优先切（关闭即退化为"按段落打包"）。
+    structure-aware: ${AI_CHUNK_STRUCTURE_AWARE:true}
+    # 表格整块不截断（超硬上限时按行切、每片重复表头行 + 分隔行）。
+    tables-whole: ${AI_CHUNK_TABLES_WHOLE:true}
+    # 父块摘要字数上限（父子块 small-to-big 的"上卷"；0 = 关闭）。
+    parent-summary-chars: ${AI_CHUNK_PARENT_SUMMARY_CHARS:200}
 
 # 指标（P0-6，唯一的本轮新增依赖 spring-boot-starter-actuator + micrometer）。
 # 读法：
