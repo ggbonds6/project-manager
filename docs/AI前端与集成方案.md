@@ -38,7 +38,7 @@
 
 | 菜单 | 谁可见 | 页面内容（页签） |
 | --- | --- | --- |
-| **AI 与知识库** `/ai` | 管理员 + 项目经理（`ADMIN`/`MANAGER`） | ① **文档库**：已入库文档列表（文件名/来源项目/页数/切片数/解析时间/状态），可搜索、删除、重新解析、查看解析结果（复用附件预览组件）<br>② **任务队列**：解析任务（排队/进行中/完成/失败 + 失败原因），支持取消/重试——**复用主系统既有的上传任务中心交互**<br>③ **检索调试**：输入问题 → 显示"召回候选 → 融合 → 精排前后分数"，用来判断"答不出来"是解析问题还是检索问题<br>④ **服务自检**：`/health`（网关连通、OCR/向量化/重排是否可用、当前 `VEC_BACKEND`）<br>⑤ **评测与指标**（P2）：recall@5 / MRR / 引用准确率 / 数字幻觉率 |
+| **AI 与知识库** `/ai` | 管理员 + 项目经理（`ADMIN`/`MANAGER`） | ① **文档库**：已入库文档列表（文件名/来源项目/页数/切片数/解析时间/状态），可搜索、删除、重新解析、查看解析结果（复用附件预览组件）<br>② **任务队列**：解析任务（排队/进行中/完成/失败 + 失败原因），支持取消/重试——**复用主系统既有的上传任务中心交互**<br>③ **解析流水线**（P0-β，`code-1.3`）：RAG 任务流视图——**进行中/历史两段** + "只看失败" + 失败行红底 + 页签**进行中角标**；行内「详情」打开任务流抽屉（五段阶段条 `PARSE→CLEAN→CHUNK→EMBED→INDEX` + 阶段卡片 + 产物抽屉）+ 顶部轻量质量看板；数据源是 `GET /api/ai/pipeline/runs*`（见 §9 #11/#12 与本行下方注），**不改**上面的「任务队列」（两者读的是两套契约，理由见 [`RAG流水线设计与并发管理.md`](RAG流水线设计与并发管理.md) §4.9）<br>④ **检索调试**：输入问题 → 显示"召回候选 → 融合 → 精排前后分数"，用来判断"答不出来"是解析问题还是检索问题<br>⑤ **服务自检**：`/health`（网关连通、OCR/向量化/重排是否可用、当前 `VEC_BACKEND`）<br>⑥ **评测与指标**（P2）：recall@5 / MRR / 引用准确率 / 数字幻觉率 |
 
 ### 3.2 全局悬浮 AI 图标（任何页面可用）
 
@@ -225,6 +225,14 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 | 8 | `GET /api/ai/attachments/status` | `attachmentIds=1,2,3`（逗号分隔，上限 200） | `[{attachmentId, indexStatus, progress, docId, error}]` | 登录 |
 | 9 | `POST /api/ai/chat` | `{question, projectId?, attachmentIds?, conversationId?, topK?}` | `{conversationId, answer, citations:[{index, docId, attachmentId, filename, pageNo, snippet, score}], systemData:[{label,value,unit,caliber,dataTime,scope}], toolTrace:[{name,summary,elapsedMs,hitCount}], degraded, notice, elapsedMs, logId}` | 登录（**作用域在主系统解析**） |
 | 10 | `GET /api/ai/ask-logs` | `page, size, userId, from, to` | `{total, records:[{logId, userId, userName, question, projectId, attachmentIds, answerDigest, citedCount, elapsedMs, degraded, createdAt}]}` | ADMIN（P1 使用） |
+| 11 | `GET /api/ai/pipeline/runs` | `attachment_id, status, page, size` | `{total, records:[{run_id, attachment_id, filename?, status, task_type, priority, stage_key?, stage?, stage_done, stage_total, elapsed_ms, error_msg, created_at, updated_at}]}` | 登录（**用户 JWT**） |
+| 12 | `GET /api/ai/pipeline/runs/{run_id}` | — | 任务字段 + `stages:[{stage_key, stage_name, seq, status, elapsed_ms, item_count, item_failed, counters, input_digest, output_digest, error_msg, attempts, started_at, finished_at}]` + `artifacts:[{artifact_type, artifact_rev, content, object_key, char_count, sha1, item_count, created_at}]` + `events:[{stage_key, from_status, to_status, reason, operator, created_at}]` + 可选 `projection_note` | 登录（**用户 JWT**） |
+
+> **#11/#12 的字段命名例外（P0-β，`code-1.3`）**：本表 #1~#10 是 **camelCase**；流水线两接口按
+> [`RAG流水线设计与并发管理.md`](RAG流水线设计与并发管理.md) §4.3 的 DDL 与 §4.9 的任务冻结口径用 **snake_case**（`run_id`/`stage_done`/…）。
+> 前端在 `src/types/ai.ts` 的归一化函数里**兼容读取 camelCase**（`run_id` 与 `runId` 都认），后端将来统一风格不需要改页面。
+> 清单只给**表头**（不含 `stages`/`artifacts`）：打开任务流抽屉时**必须按 `run_id` 再取一次全量**（§4.9.2⑥）。
+> 本轮后端**未提供**流水线级重试/取消端点，前端**只读展示**（待接位置见 `src/api/ai.ts` 末尾注释）。
 
 **枚举取值（定死，前端直接映射中文标签）**：
 
@@ -232,6 +240,8 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 | --- | --- | --- |
 | `indexStatus`（文档/附件） | `NOT_PARSED` / `PARSING` / `READY` / `FAILED` | 未解析 ｜ 解析中 ｜ 已可检索 ｜ 解析失败 |
 | 任务 `status` | `QUEUED` / `RUNNING` / `DONE` / `FAILED` | 排队中 ｜ 解析中 ｜ 已完成 ｜ 失败 |
+| 流水线 `status`（#11/#12，任务与阶段同枚举） | `PENDING` / `RUNNING` / `DONE` / `PARTIAL` / `SKIPPED` / `FAILED` / `CANCELLED` / `DEAD` | 排队中 ｜ 进行中 ｜ 已完成 ｜ **部分成功** ｜ 已跳过 ｜ 失败 ｜ 已取消 ｜ 死信（**`PARTIAL` 必须与 `DONE` 视觉区分**：橙色而非绿色；`DEAD` 用深红区别于 `FAILED`） |
+| 流水线阶段 `stage_key` | `PARSE` / `CLEAN` / `CHUNK` / `EMBED` / `INDEX`（`RETRIEVE`/`GENERATE` 属问答链路，任务流视图折叠展示） | 识别 ｜ 清洗 ｜ 切分 ｜ 向量化 ｜ 入库 |
 | `vectorBackend` | `local` / `opensearch` | 进程内向量 ｜ OpenSearch |
 
 **P0 只实现 #1~#9**；`systemData` 在 P0 恒为 `[]`（受控查询工具属 P2）；#10 随 P1 的留痕页一起做。
@@ -249,7 +259,7 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 
 | 项 | 规定 |
 | --- | --- |
-| 目录 | 页面 `src/pages/ai/*`（`AiPage.tsx` + 各页签子组件）；对话组件 `src/components/ai/*`（**悬浮窗与 `/ai` 页共用**，不许写两份）；接口 `src/api/ai.ts`；类型 `src/types/ai.ts` |
+| 目录 | 页面 `src/pages/ai/*`（`AiPage.tsx` + 各页签子组件，如 `PipelineTab.tsx`）；对话组件 `src/components/ai/*`（**悬浮窗与 `/ai` 页共用**，不许写两份）；任务流与溯源抽屉在 `src/components/ai/PipelineFlowDrawer.tsx` / `PipelineArtifactDrawer.tsx` / `PipelineQualityBoard.tsx` / `CitationTraceDrawer.tsx`，轮询与展示工具在 `useVisiblePolling.ts` / `pipelineFormat.ts`；接口 `src/api/ai.ts`；类型 `src/types/ai.ts` |
 | 请求 | 只用 `@/api/http` 的 `api.get/post/put/del/upload`（自动带 token、自动解包 `data`、错误已统一 toast）；**不引 axios 实例**、不手写 fetch |
 | 类型 | 契约字段在 `src/types/ai.ts` 里与 §9 一一对应；枚举用字符串字面量联合类型 + 中文标签映射表（同 `tagDict` 的做法） |
 | 依赖 | **不新增 npm 依赖**：markdown 用既有 `react-markdown`，高亮/滚动/图标用 antd 与 `@ant-design/icons`，日期用既有 `dayjs` |

@@ -975,10 +975,15 @@ CREATE INDEX idx_ai_pl_event_time  ON ai_pipeline_event (create_time);
 | **阶段卡片字段** | `input_digest`、`output_digest`、`counters_json`（键值列表）、`error_msg`（红）、`attempts`（>1 显示"已重试 N 次"） |
 | **产物行字段** | `artifact_type`（中文名）、`artifact_rev`、`item_count`、`char_count`、`sha1`（前 8 位）、`create_time` |
 | **列表行字段（现有表格扩展）** | 现有 `AiTask` 字段 + **当前阶段**（`stage`）+ **阶段进度**（`stage_done/stage_total`）+ 阶段耗时（`elapsed_ms`） |
-| **刷新策略** | 列表页：沿用现有轮询（本项目 `useAiAttachmentStatus` 已有轮询模式）；任务流抽屉：**打开即拉一次全量**，未终态时 **2s 轮询**，终态或关闭立即**停止**（避免"关了还在打接口"） |
+| **刷新策略** | 列表页：沿用现有轮询（本项目 `useAiAttachmentStatus` 已有轮询模式）；任务流抽屉：**打开即拉一次全量**，未终态时 **1.5s 轮询**（与参考项目详情一致），终态或关闭立即**停止**（避免"关了还在打接口"） |
 | **失败／重试表达** | ① 任务状态 `PARTIAL` 用 `Tag color=orange` + `Tooltip` 写明"可检索，但有 N 项需人工复核"；② `FAILED` + `DEAD` 分别用红/深红；③ 重试按钮放在任务行（现状已有"重新解析"）+ 阶段卡片的"只重试本阶段"（**P2 新增**，需 §3.3.3 的 rev 校验支撑） |
 | **取消** | 沿用现状 `POST /upload-tasks/{id}/cancel`（协作式）；抽屉里给"取消"按钮 + 文案"正在执行的页会跑完，未开始的会跳过" |
 | **与主系统风格一致性** | 全部用 antd 5 现有组件（`Steps`/`Collapse`/`Descriptions`/`Drawer`/`Table`/`Progress`/`Statistic`/`Tag`/`Alert`），**不引入新依赖**；配色沿用 `config/tagDict.ts` 的风格；不打断现有 `TasksTab` 表格 |
+
+> **落地情况（`code-1.3`，见 §9.1-I6）**：本表已按上面实现，三处与本文原稿的**差异**如实登记——
+> ① 轮询间隔按参考项目的详情口径取 **1.5s**（原稿写 2s），并额外做了**页面不可见暂停**与**连续 3 次失败自动停**（参考项目没有这两条）；
+> ② **取消按钮没做**：冻结契约里没有流水线级取消/重试端点，抽屉里改成一句"待接 `POST /api/ai/pipeline/runs/{run_id}/cancel`"的说明（**不摆点不动的按钮**）；
+> ③ 组件落在 `/ai` 页**新增的「解析流水线」签**上（不是改造「任务队列」）：两者主键与状态枚举不同（`task_id`/四态 vs `run_id`/八态），硬拼只能靠 `attachment_id` 猜关联。
 
 ---
 
@@ -1365,21 +1370,24 @@ effective_priority = task.priority (主系统写入，默认 0)
 | I3 | **密级成为作用域第四维**：`securityLevels` 参与本地过滤与 kNN filter（缺字段不算命中） | G17 / P0-α-2 | `SearchScope.matches/describe`、`OpenSearchIndex.clausesOf`（`security_level` terms 子句） | `ToolsScopePushdownTest.securityLevelDimensionMatchesStrictly` |
 | I4 | **OpenSearch 出口改单例共享** `HttpClient`（显式 `HTTP_1_1`、`followRedirects(NEVER)`、connectTimeout=`min(10s, 单请求超时)`），连接池与 keep-alive 才真正生效；新增 `ai.opensearch.requests` | §2.4 / P0-α-3 | `OpenSearchIndex`（`http` 字段 + `execute()` + `Machine`） | `OpenSearchIndexTest` 12 例全绿；`ai.opensearch.requests` 与"线程数不随请求数线性增长"配对人工验收（未做真集群压测） |
 | I5 | **V15 迁移落成真实 SQL 文件**（`attachment_ai_task` 扩 13 列 + 3 张流水线表） | §4.3 / §9.3-1（P0-β 的前置） | `backend/src/main/resources/db/migration-yashan/V15__ai_pipeline_flow.sql` | `mvn -o -f backend/pom.xml -DskipTests package` 通过，且 `jar tf` 确认 `BOOT-INF/classes/db/migration-yashan/V15__ai_pipeline_flow.sql` 已随包发布；**未在真实崖山库执行**（下次启动/部署由 `YashanMigrationRunner` 应用并登记 `schema_version`） |
+| I6 | **前端任务流视图 + 可溯源入口 + 轻量质量看板**（§4.8/§4.9 的交互落地）：`/ai` 页新增**「解析流水线」签 + 进行中角标**；**进行中/历史两段** + "只看失败" + 失败行红底；行内「详情」→ **任务流抽屉**（五段阶段条 `Steps` + 阶段卡片 + 产物抽屉）；列表 3s / 详情 1.5s 轮询，**打开抽屉即重取全量、终态与失败即停、页面不可见即暂停、连续 3 次失败自动停**；问答引用旁的**「溯源」**抽屉按 §4.5.1 六跳展示（`chunk_key` → 附件与页码 → `page_digest`/`clean_diff`/`chunk_manifest` 摘要 → 原文第 N 页），**缺哪一跳写"该环节未上报"**；顶部质量看板五项指标**只读后端字段**（缺字段显示"暂无数据"） | §4.8/§4.9 / §9.3-4 | `frontend/src/pages/ai/PipelineTab.tsx`、`frontend/src/components/ai/PipelineFlowDrawer.tsx`、`PipelineArtifactDrawer.tsx`、`PipelineQualityBoard.tsx`、`CitationTraceDrawer.tsx`、`useVisiblePolling.ts`、`usePipelineActiveCount.ts`、`pipelineFormat.ts`；`frontend/src/api/ai.ts`（`pipelineRuns`/`pipelineRunDetail`）、`frontend/src/types/ai.ts`（流水线类型 + snake_case 兼容归一化）、`frontend/src/pages/ai/AiPage.tsx`（新签 + 角标）、`frontend/src/components/ai/AiChatPanel.tsx`（引用「溯源」入口） | `cd frontend && npm run build` **0 错**；`node_modules\.bin\tsc.cmd --noEmit --noUnusedLocals --noUnusedParameters` **无输出**；**未在浏览器里跑过真实接口**（`/api/ai/pipeline/*` 由主系统侧并行实现，尚未落地 ⇒ 当前只能看到"读取失败/暂无数据"的降级外观） |
 
-**验证证据**：① `mvn -o -f ai-backend/pom.xml test` → **Tests run: 189, Failures: 0, Errors: 0**（改造前 181，新增 8 例）；② `mvn -o -f backend/pom.xml -DskipTests package` 通过 + V15 随包发布（见 I5）。
-**未做**：真集群（`10.254.212.110:9200`）压测与 top-k 一致性验证（步骤 19 ①-3）——**I1 的写请求数=0、I4 的复用效果都需要在真集群上复测**。
+**验证证据**：① `mvn -o -f ai-backend/pom.xml test` → **Tests run: 189, Failures: 0, Errors: 0**（改造前 181，新增 8 例）；② `mvn -o -f backend/pom.xml -DskipTests package` 通过 + V15 随包发布（见 I5）；③ 前端：`cd frontend && npm run build` **0 错**、`tsc --noEmit --noUnusedLocals --noUnusedParameters` **无输出**（见 I6）。
+**未做**：① 真集群（`10.254.212.110:9200`）压测与 top-k 一致性验证（步骤 19 ①-3）——**I1 的写请求数=0、I4 的复用效果都需要在真集群上复测**；② **I6 的前端没有在浏览器里跑过真实数据**：`/api/ai/pipeline/*` 的后端实现是并行推进的，本轮前端只按冻结契约写完调用与类型，**"打开抽屉能看到五段阶段条/产物摘要"这件事尚未被实际验证**（构建与类型检查通过 ≠ 运行时正确）。
 
 ### 9.2 未落地（仍为设计）
 
 | 章节 | 未落地的内容 | 为什么还没做 |
 | --- | --- | --- |
-| §3.2 | 七阶段契约与阶段行（PARSE/CLEAN/CHUNK/EMBED/INDEX 的"阶段"建模） | 依赖 V15 表与 AI→主系统阶段回调（见 §4.4.3 的 B/C 方案） |
+| §3.2 | 七阶段契约与阶段行（PARSE/CLEAN/CHUNK/EMBED/INDEX 的"阶段"建模） | 表已就绪（§9.1-I5）、前端视图已就绪（§9.1-I6）；缺的是**阶段回调上报**（AI→主系统）与主系统侧读写实现（见 §4.4.3 的 B/C 方案） |
 | §3.3 | **清洗阶段**（`TextCleaner` + C1~C8 + `clean_rev` 三层防护） | P1-α；前置是 G8 评测基线（页码标注 + recall@5/MRR） |
 | §3.4 | 切片改进（表格整块、重叠、结构感知、父子块、切片元数据补齐） | P1-α；前置同上 |
 | §3.5 | 混合型 PDF 逐页 OCR 回退、DOCX/XLSX 扩展、页级缓存 | P2 |
 | §3.6 | 查询改写、RRF、四类缓存、`/chat` 上下文预算、答案侧 `verification` | P2（作用域硬下推这一项**已落地**，见 9.1-I2） |
-| §4.3 | **V15 迁移**（扩 13 列 + 3 张流水线表）与 DDL | 未落成 SQL 文件；与 §9.3 的分批计划一起做 |
-| §4.4~4.8 | 状态机、阶段/产物上报、溯源接口 API-1~API-7、质量看板、任务流视图 | 依赖 V15 |
+| §4.3 | V15 迁移本身 | **已落地**（见 9.1-I5，`code-1.1`）；剩下的只是"在真实崖山库跑一次并由 `YashanMigrationRunner` 登记 `schema_version`" |
+| §4.4.3 | 阶段/产物/事件的**写入侧**：主系统实体 + Mapper + 阶段回调接口 + 投影兜底（C 方案） | 未落地；这是 `GET /api/ai/pipeline/runs*` 的数据来源，**I6 的前端要靠它才能显示真实内容** |
+| §4.5.2 | 溯源接口：API-3（两次解析对比）、**API-4（按 `chunk_key` 取切片全文）**、API-5（页级原文/清洗后对照）、API-6（质量看板聚合）、API-7（队列看板） | 未落地。I6 的溯源链因此**只用 `citations[]` + 详情里的产物摘要**：`chunk_key` 未回填时显示"该环节未上报"，`clean_diff` 等摘要缺失时逐个写明缺哪一类产物（**不伪造全文**） |
+| §4.8/§4.9 | 前端任务流视图与溯源交互 | **已落地**（见 9.1-I6，`code-1.3`）；`§4.9.3` 里"阶段卡片加『只重试本阶段』"仍属 P2（需 §3.3.3 的 rev 校验 + 后端重试端点） |
 | §5 | **统一并发管理**（L1 `PipelineGate`、优先级/公平/背压、抢占式领取） | P1-β；与 V15 的 `claimed_by`/`claim_expires_at` 一起做 |
 | §6 | P0-β / P1-α / P1-β / P2 的其余条目 | 见各自分期 |
 
@@ -1387,10 +1395,10 @@ effective_priority = task.priority (主系统写入，默认 0)
 
 | 顺序 | 内容 | 前置 | 验收 |
 | --- | --- | --- | --- |
-| 1 | **V15 迁移**（§4.3 的 DDL 落成 `backend/src/main/resources/db/migration-yashan/V15__ai_pipeline_flow.sql`） | 无 | 迁移在库外评审通过；`YashanMigrationRunner` 按文件名登记；存量行零影响 |
-| 2 | 主系统侧阶段/产物/事件表实体 + Mapper + 阶段回调接口（API-1/API-2 雏形） | 1 | 单测覆盖"回调幂等 upsert"与"投影兜底" |
+| 1 | **V15 迁移**（§4.3 的 DDL 落成 `backend/src/main/resources/db/migration-yashan/V15__ai_pipeline_flow.sql`） | 无 | ✅ **已落地**（`code-1.1`，见 9.1-I5）：迁移在库外评审通过；`YashanMigrationRunner` 按文件名登记；存量行零影响。**待做**：在真实崖山库执行一次 |
+| 2 | 主系统侧阶段/产物/事件表实体 + Mapper + 阶段回调接口 + **`GET /api/ai/pipeline/runs`（列表/详情）** | 1 | 单测覆盖"回调幂等 upsert"与"投影兜底"；列表只回表头、详情回 `stages[]/artifacts[]/events[]` 与 snake_case 字段名 |
 | 3 | AI 侧在 5 个阶段边界上报 + `run_id` 贯穿 | 2 | 每份新解析文档 5 条阶段行；`SUM(阶段耗时)/任务耗时 ≥ 0.9` |
-| 4 | 前端任务流视图（阶段条 + 阶段卡片 + 产物抽屉；交互参照 data-classification，见 §4.9.3） | 3 | `npm run build` 0 错；能回答"卡在哪一步/多久/为什么失败" |
+| 4 | 前端任务流视图（阶段条 + 阶段卡片 + 产物抽屉；交互参照 data-classification，见 §4.9.3） | 3 | ✅ **已落地**（`code-1.3`，见 9.1-I6）：`npm run build` 0 错；能回答"卡在哪一步/多久/为什么失败"。**待做**：接上第 2/3 项后做一次端到端人工验收（当前未连真实接口） |
 | 5 | L1 `PipelineGate` + 双机抢占式领取 | 1 | §5.8 的 V1~V8 |
 
 > 纪律：**每一批落地后必须在 §9.1 加一行**（条目 / 代码位置 / 验证方式），并同步 `ITERATION.md` 与 `ai-backend/README.md` 的接口/指标表——
