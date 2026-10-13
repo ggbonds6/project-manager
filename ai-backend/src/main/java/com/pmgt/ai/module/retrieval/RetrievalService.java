@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.model.ModelRegistry;
+import com.pmgt.ai.module.pipeline.PipelineRev;
 import com.pmgt.ai.module.store.DocStore;
 import com.pmgt.ai.module.store.StoredDoc;
 import io.micrometer.core.instrument.Counter;
@@ -144,6 +145,10 @@ public class RetrievalService implements SearchPort {
     /** 全部装配点（生产/测试最终都走这里）。 */
     public RetrievalService(AiSettings settings, VecApi vec, DocStore docStore, OpenSearchIndex openSearchIndex,
                             ModelRegistry models, MeterRegistry registry, DocMetaStore docMetaStore) {
+        // 切片键形态与流水线版本在这里"激活"（设计 §3.3.3）：chunkKey 是 static 纯函数，
+        // 它的调用点遍布入库/重建/检索/OpenSearch 文档组装，显式传参会漏传 ⇒ 同一份切片算出两个键。
+        // 所以用进程内唯一的当前口径（只有两个字段、启动后不再变化；"改配置要重启"与设计 §5.6 一致）。
+        PipelineRev.activate(settings);
         this.settings = settings;
         this.vec = vec;
         this.docStore = docStore;
@@ -600,10 +605,19 @@ public class RetrievalService implements SearchPort {
         return sb.toString();
     }
 
-    /** 切片唯一键：文档 + 页 + <b>内容指纹</b>。 */
+    /**
+     * 切片唯一键：文档 + 页 + <b>内容指纹</b>（+ 版本段，见 {@link PipelineRev}）。
+     *
+     * <p>形态由 {@code ai.pipeline.chunk-key-format} 决定（设计 §3.3.3 L1）：
+     * <ul>
+     *   <li>{@code legacy}（默认）：{@code docId:pageNo:sha1(文本)[0:12]}，与接入前逐字节一致；</li>
+     *   <li>{@code rev}：{@code d=<docId>:p=<pageNo>:h=<sha1>:c=<cleanRev>:k=<chunkRev>}，
+     *       清洗/切片规则版本变化即换键 ⇒ 旧索引不会被误当命中。</li>
+     * </ul>
+     * 两种形态都能被 {@link PipelineRev#parseChunkKey(String)} 解析（兼容读）。
+     */
     public static String chunkKey(DocStore.Chunk chunk) {
-        String digest = sha1Hex(chunk.text() == null ? "" : chunk.text()).substring(0, 12);
-        return chunk.docId() + ":" + chunk.pageNo() + ":" + digest;
+        return PipelineRev.chunkKeyOf(chunk);
     }
 
     /**
@@ -804,7 +818,8 @@ public class RetrievalService implements SearchPort {
     }
 
     /**
-     * 读本地向量缓存。<b>模型名变了、或切片内容变了（键里的 sha1 变了）→ 视为失效。</b>
+     * 读本地向量缓存。<b>模型名变了、维度不符、或流水线版本（{@code clean_rev/chunk_rev}）变了
+     * → 视为失效</b>（设计 §3.3.3 的 L2 防护：不匹配即整体失效并重算）。
      *
      * <p>{@code VEC_EMBED_DIMENSIONS=0}（不传维度、用平台默认）时<b>不校验维度</b>：
      * 缓存里存的是实际维度，换部署导致维度变化会让余弦算不出来（长度不等 → 0 分），
@@ -825,6 +840,17 @@ public class RetrievalService implements SearchPort {
             }
             int configured = settings.getVec().getDimensions();
             if (configured > 0 && payload.path("dimensions").asInt(0) != configured) {
+                return Map.of();
+            }
+            // ── 流水线版本校验（T7 / §3.3.3 L2）──
+            // 清洗或切分规则版本变了 ⇒ 旧向量配不上新文本，必须整体重算。
+            // 缺这两个字段 = 本版本之前写的缓存 ⇒ 同样视为失效（宁可重算一次，也不能拿旧向量配新文本）。
+            PipelineRev.Revisions rev = PipelineRev.current();
+            if (payload.path("clean_rev").asInt(-1) != rev.cleanRev()
+                    || payload.path("chunk_rev").asInt(-1) != rev.chunkRev()) {
+                log.info("向量缓存失效（流水线版本变化）：docId={} 缓存={} 当前={}；将重算",
+                        docId, payload.path("clean_rev").asInt(-1) + "/" + payload.path("chunk_rev").asInt(-1),
+                        rev.cleanRev() + "/" + rev.chunkRev());
                 return Map.of();
             }
             Map<String, float[]> out = new LinkedHashMap<>();
@@ -858,6 +884,9 @@ public class RetrievalService implements SearchPort {
             payload.put("model", settings.getVec().getEmbedModel());
             int dims = items.isEmpty() ? 0 : items.values().iterator().next().length;
             payload.put("dimensions", dims);
+            // 流水线版本写进缓存头部：下次读的时候版本不符即整体失效（§3.3.3 L2）。
+            payload.put("clean_rev", PipelineRev.current().cleanRev());
+            payload.put("chunk_rev", PipelineRev.current().chunkRev());
             ObjectNode rows = payload.putObject("items");
             for (Map.Entry<String, float[]> item : new TreeMap<>(items).entrySet()) {
                 var array = rows.putArray(item.getKey());

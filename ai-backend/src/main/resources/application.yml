@@ -116,6 +116,85 @@ ai:
   #    AI 侧不持有长期凭据（§11.1"反向回调"）。不传 biz_query 时不注册 query_business_data 工具。
   biz-query:
     timeout-seconds: ${BIZ_QUERY_TIMEOUT:20}
+  # ── L1 业务并发闸门（设计 §5；与上面 ai.limits 的 L2 是"两层、单向"：先 L1 后 L2，L1 permit 全程持有）──
+  # 三条防死锁硬规则：H1 顺序统一 / H2 排队不嵌套 / H3 优先级只在 L1（L2 恒为公平信号量）。
+  # 顺序写反时 ModelRegistry 会立刻抛错而不是静默死锁（ai.model.h1.violations，正常恒 0）。
+  gate:
+    # false = 直接放行（只用于灰度对照/排障）：不建队列、不排队、不计数。
+    enabled: ${AI_GATE_ENABLED:true}
+    # 交互式（/chat、自检、检索调试）：并发 = 平台 4 个对话副本；**队列 0** ⇒ 等不到就 503 快速失败。
+    interactive:
+      max: ${AI_GATE_INTERACTIVE_MAX:4}
+      queue: ${AI_GATE_INTERACTIVE_QUEUE:0}
+      wait-ms: ${AI_GATE_INTERACTIVE_WAIT_MS:1500}
+    # 批量解析：默认值与既有 uploadTaskExecutor（max 4 + 队列 100）逐字对齐 ⇒ 接入 L1 不改变既有行为。
+    batch-parse:
+      max: ${AI_GATE_BATCH_PARSE_MAX:4}
+      queue: ${AI_GATE_BATCH_PARSE_QUEUE:100}
+      wait-ms: ${AI_GATE_BATCH_PARSE_WAIT_MS:0}
+      per-project-max: ${AI_GATE_BATCH_PARSE_PER_PROJECT_MAX:4}
+    # 重建索引串行（现状 ReindexService 单 job，这里把该语义显式化）。
+    batch-reindex:
+      max: ${AI_GATE_BATCH_REINDEX_MAX:1}
+      queue: ${AI_GATE_BATCH_REINDEX_QUEUE:2}
+      wait-ms: ${AI_GATE_BATCH_REINDEX_WAIT_MS:1500}
+      per-project-max: ${AI_GATE_BATCH_REINDEX_PER_PROJECT_MAX:1}
+    # 批量向量化：4（不是 L2 的 8）——向量化是批内并行，L1 再放 8 个进来只会在 L2 排队。
+    batch-embed:
+      max: ${AI_GATE_BATCH_EMBED_MAX:4}
+      queue: ${AI_GATE_BATCH_EMBED_QUEUE:100}
+      wait-ms: ${AI_GATE_BATCH_EMBED_WAIT_MS:60000}
+      per-project-max: ${AI_GATE_BATCH_EMBED_PER_PROJECT_MAX:4}
+    # 评测跑批：最低优先级、无人在等。
+    batch-eval:
+      max: ${AI_GATE_BATCH_EVAL_MAX:1}
+      queue: ${AI_GATE_BATCH_EVAL_QUEUE:100}
+      wait-ms: ${AI_GATE_BATCH_EVAL_WAIT_MS:60000}
+      per-project-max: ${AI_GATE_BATCH_EVAL_PER_PROJECT_MAX:1}
+    # 每项目在飞上限的兜底值（按项目公平调度，设计 §5.3）。
+    per-project-inflight-max: ${AI_GATE_PER_PROJECT_MAX:4}
+    # 软闸门：交互式有等待者时暂停派发新的 BATCH.PARSE（只影响新任务，**绝不踢掉在跑的批量**）。
+    pause-batch-when-interactive: ${AI_GATE_PAUSE_BATCH_WHEN_INTERACTIVE:true}
+    # 老化：每等满 step 秒加 bonus 分、上限 max（防饥饿；effective_priority = 任务优先级 + 通道权重 + 老化）。
+    # 这几项是设计 §5.6 允许的"运行时白名单"（重启回默认）。
+    priority:
+      interactive-weight: ${AI_GATE_WEIGHT_INTERACTIVE:100}
+      batch-parse-weight: ${AI_GATE_WEIGHT_BATCH_PARSE:20}
+      batch-reindex-weight: ${AI_GATE_WEIGHT_BATCH_REINDEX:10}
+      batch-embed-weight: ${AI_GATE_WEIGHT_BATCH_EMBED:5}
+      batch-eval-weight: ${AI_GATE_WEIGHT_BATCH_EVAL:0}
+      aging-step-seconds: ${AI_GATE_AGING_STEP_SECONDS:30}
+      aging-bonus-per-step: ${AI_GATE_AGING_BONUS_PER_STEP:2}
+      aging-bonus-max: ${AI_GATE_AGING_BONUS_MAX:40}
+  # ── 阶段上报（设计 §4；AI 服务不直连库，一律回调主系统的 /api/ai/pipeline/**）──
+  # 鉴权头 X-AI-Service-Token = AI_SERVICE_TOKEN：**只从环境变量/.env 读**，绝不进仓库/日志/异常/指标/自检。
+  # 上报失败不影响主流程（best-effort：只 WARN + 计数 ai.pipeline.report_failed）；**只有终态会重试**。
+  pipeline:
+    # 默认 false：没配地址/令牌时不做任何外呼，行为与接入前一致。
+    enabled: ${AI_PIPELINE_ENABLED:false}
+    # 主系统基地址（AI 是回调方；与 LLM_BASE_URL=平台网关不是一回事）。
+    base-url: ${AI_PIPELINE_BASE_URL:}
+    service-token: ${AI_SERVICE_TOKEN:}
+    # 单次上报超时（秒）：取小值，上报是 best-effort，不能拖慢主流程。
+    timeout-seconds: ${AI_PIPELINE_TIMEOUT:3}
+    # 非终态上报**不重试**（失败只 WARN + 计数）；终态重试次数默认 2（共 3 次尝试）。
+    max-retries: ${AI_PIPELINE_MAX_RETRIES:0}
+    retry-backoff-ms: ${AI_PIPELINE_RETRY_BACKOFF_MS:200}
+    finish-retries: ${AI_PIPELINE_FINISH_RETRIES:2}
+    # 领取租约与心跳（契约字段 lease_seconds；409 ⇒ 立即停止该任务并放回）。
+    heartbeat-seconds: ${AI_PIPELINE_HEARTBEAT_SECONDS:30}
+    lease-seconds: ${AI_PIPELINE_LEASE_SECONDS:90}
+    # 把 run_id 写进日志 MDC（排障时按一次任务过滤日志）。
+    mdc: ${AI_PIPELINE_MDC:true}
+    # 切片键形态（设计 §3.3.3 L1）：legacy = 三段（与接入前逐字节一致，升级不使既有索引/缓存失效）；
+    # rev = d=<docId>:p=<pageNo>:h=<sha1>:c=<cleanRev>:k=<chunkRev>（规则变更即换键；切换后跑一次
+    # POST /admin/reindex 统一）。解析器两种都认（兼容读）。
+    chunk-key-format: ${AI_PIPELINE_CHUNK_KEY_FORMAT:legacy}
+    # 流水线版本段（设计 §3.3.3）：任一变化 ⇒ 向量缓存整体失效重算。
+    # clean-rev=0 = **本轮尚无清洗阶段**（CLEAN 阶段如实上报 SKIPPED 并写明原因）。
+    parse-rev: ${AI_PIPELINE_PARSE_REV:1}
+    clean-rev: ${AI_PIPELINE_CLEAN_REV:0}
+    chunk-rev: ${AI_PIPELINE_CHUNK_REV:0}
 
 # 指标（P0-6，唯一的本轮新增依赖 spring-boot-starter-actuator + micrometer）。
 # 读法：
@@ -123,6 +202,9 @@ ai:
 #   · 延迟分位 P50/95/99 /actuator/metrics/ai.model.latency        （publishPercentiles 在代码里开，不依赖配置）
 #   · 在途 / 排队 / 上限  /actuator/metrics/ai.model.inflight、ai.model.queue.depth、ai.model.concurrency.limit
 #   · 解析队列深度       /actuator/metrics/ai.upload.queue.depth、ai.upload.inflight
+#   · L1 业务闸门（10 项）/actuator/metrics/ai.gate.depth、inflight、limit、admitted、rejected、
+#                        waiting_ms、fairness.per_project、aging.bonus（+ per_project.inflight.max、aging.bonus.awarded）
+#   · 阶段上报           /actuator/metrics/ai.pipeline.report_failed、report_sent、report_latency
 #   · 聚合视图（一眼看全）curl 'http://127.0.0.1:8100/health?with_metrics=true'
 management:
   endpoints:

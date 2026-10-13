@@ -29,6 +29,21 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class ModelRegistryTest {
 
+    /**
+     * 本测试类只测 <b>L2</b>（每模型信号量）本身的语义，不建 L1 闸门，因此显式关掉 H1 顺序守卫。
+     * H1 的判据（"先拿 L2 再等 L1"必须立刻失败、"先 L1 后 L2"必须跑通）由 {@code PipelineGateTest}
+     * 正面覆盖；生产恒为开启（见 {@code ModelRegistry.H1_GUARD_ENABLED}）。
+     */
+    @org.junit.jupiter.api.BeforeAll
+    static void l2OnlyTestsDisableH1Guard() {
+        ModelRegistry.setH1GuardEnabled(false);
+    }
+
+    @org.junit.jupiter.api.AfterAll
+    static void restoreH1Guard() {
+        ModelRegistry.setH1GuardEnabled(true);
+    }
+
     private static AiSettings settings() {
         AiSettings settings = new AiSettings();
         settings.getLimits().setRetryBackoffMs(1);      // 测试不等待真实退避（1s → 4s）

@@ -3,6 +3,7 @@ package com.pmgt.ai.module.retrieval;
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.model.ModelRegistry;
 import com.pmgt.ai.common.util.ProgressFn;
+import com.pmgt.ai.testutil.TstRegistry;
 import com.pmgt.ai.module.doc.DocumentText;
 import com.pmgt.ai.module.doc.PageText;
 import com.pmgt.ai.module.store.DocStore;
@@ -218,14 +219,14 @@ class RetrievalBackendParityTest {
         InMemoryIndex cluster = new InMemoryIndex(settings, vec);
 
         RetrievalService local = new RetrievalService(settings, vec, store, null,
-                ModelRegistry.offline(settings), new SimpleMeterRegistry(), metaStore);
+                TstRegistry.l2(settings), new SimpleMeterRegistry(), metaStore);
 
         AiSettings osSettings = new AiSettings();
         osSettings.setWorkDir(tmp);
         osSettings.getRetrieval().setBackend("opensearch");
         osSettings.getOpenSearch().setUrl("http://in-memory:9200");
         RetrievalService openSearch = new RetrievalService(osSettings, vec, store, cluster,
-                ModelRegistry.offline(osSettings), new SimpleMeterRegistry(), metaStore);
+                TstRegistry.l2(osSettings), new SimpleMeterRegistry(), metaStore);
         return new Fixture(local, openSearch, cluster, store, docA, docB, docC);
     }
 
@@ -307,7 +308,7 @@ class RetrievalBackendParityTest {
         SimpleMeterRegistry registry = new SimpleMeterRegistry();
 
         RetrievalService service = new RetrievalService(settings, new FakeVec(), store, null,
-                ModelRegistry.offline(settings), registry, new DocMetaStore(tmp.resolve("cold")));
+                TstRegistry.l2(settings), registry, new DocMetaStore(tmp.resolve("cold")));
         service.search("合同金额", 3, null);
 
         double backfilled = registry.get("ai.vector.lazy_backfill").counter().count();
@@ -321,7 +322,7 @@ class RetrievalBackendParityTest {
         AiSettings settings = new AiSettings();
         settings.setWorkDir(tmp);
         RetrievalService service = new RetrievalService(settings, new FakeVec(),
-                new DocStore(tmp.resolve("docs")), null, ModelRegistry.offline(settings),
+                new DocStore(tmp.resolve("docs")), null, TstRegistry.l2(settings),
                 new SimpleMeterRegistry(), new DocMetaStore(tmp));
         assertEquals(50, service.effectiveRecall());
         assertEquals(25, settings.getRetrieval().getRecallLow());

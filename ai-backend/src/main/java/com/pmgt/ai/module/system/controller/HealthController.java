@@ -1,11 +1,13 @@
 package com.pmgt.ai.module.system.controller;
 
 import com.pmgt.ai.common.config.AiSettings;
+import com.pmgt.ai.common.gate.PipelineGate;
 import com.pmgt.ai.common.model.ModelRegistry;
 import com.pmgt.ai.module.admin.ReindexService;
 import com.pmgt.ai.module.llm.LlmClient;
 import com.pmgt.ai.module.ocr.OcrHealth;
 import com.pmgt.ai.module.ocr.PlatformOcrClient;
+import com.pmgt.ai.module.pipeline.PipelineReporter;
 import com.pmgt.ai.module.retrieval.OpenSearchIndex;
 import com.pmgt.ai.module.retrieval.VecClient;
 import com.pmgt.ai.module.retrieval.VecHealth;
@@ -46,6 +48,8 @@ public class HealthController {
     private final OpenSearchIndex openSearchIndex;
     private final ModelRegistry modelRegistry;
     private final ReindexService reindexService;
+    private final PipelineGate pipelineGate;
+    private final PipelineReporter pipelineReporter;
 
     @GetMapping("/health")
     public Map<String, Object> health(
@@ -91,6 +95,9 @@ public class HealthController {
             body.put("limits", modelRegistry.configSummary());
             Map<String, Object> queue = new LinkedHashMap<>();
             queue.put("reindex", reindexService.configSummary());
+            // L1 业务闸门（设计 §5.5 的 10 项 ai.gate.* 聚合）+ 流水线上报状态（**不含令牌**）
+            queue.put("gate", pipelineGate.snapshot());
+            queue.put("pipeline", pipelineReporter.configSummary());
             body.put("queues", queue);
         }
         return body;
@@ -169,6 +176,21 @@ public class HealthController {
         config.put("open_search_index", settings.getOpenSearch().getIndex());
         // 只报"配没配"，不回显地址里的凭据与口令本体
         config.put("open_search_auth", mask(settings.getOpenSearch().getPassword()));
+        // L1 业务闸门的关键取值（**逐项与 ai.gate.* 三处一致核对**，见 ai-backend/README.md）
+        config.put("gate_enabled", settings.getGate().isEnabled());
+        config.put("gate_interactive", settings.getGate().getInteractive().getMax() + "并发/"
+                + settings.getGate().getInteractive().getQueue() + "队列/"
+                + settings.getGate().getInteractive().getWaitMs() + "ms");
+        config.put("gate_batch_parse", settings.getGate().getBatchParse().getMax() + "并发/"
+                + settings.getGate().getBatchParse().getQueue() + "队列");
+        config.put("gate_batch_reindex", settings.getGate().getBatchReindex().getMax() + "并发");
+        config.put("gate_pause_batch_when_interactive", settings.getGate().isPauseBatchWhenInteractive());
+        // 流水线上报（**只报"配没配"，绝不回显令牌**）
+        config.put("pipeline_report_enabled", pipelineReporter.enabled());
+        config.put("pipeline_token", mask(settings.getPipeline().getServiceToken()));
+        config.put("pipeline_chunk_key_format", settings.getPipeline().getChunkKeyFormat());
+        config.put("pipeline_clean_rev", settings.getPipeline().getCleanRev());
+        config.put("pipeline_rev", com.pmgt.ai.module.pipeline.PipelineRev.pipelineRev());
         config.put("work_dir", settings.getWorkDir().toAbsolutePath().toString());
         return config;
     }

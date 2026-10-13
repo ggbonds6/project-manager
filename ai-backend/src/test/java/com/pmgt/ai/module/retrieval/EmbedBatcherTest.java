@@ -2,6 +2,7 @@ package com.pmgt.ai.module.retrieval;
 
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.model.ModelRegistry;
+import com.pmgt.ai.testutil.TstRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -103,7 +104,7 @@ class EmbedBatcherTest {
         int concurrency = 4;
         AiSettings settings = settings(concurrency);
         CountingVec vec = new CountingVec(concurrency);           // 屏障 4：少于 4 个并发就会超时
-        EmbedBatcher batcher = new EmbedBatcher(vec, ModelRegistry.offline(settings));
+        EmbedBatcher batcher = new EmbedBatcher(vec, TstRegistry.l2(settings));
         try {
             List<String> texts = new ArrayList<>();
             for (int i = 0; i < EmbedBatcher.BATCH * 13 + 1; i++) {   // 417 条 → 14 批
@@ -126,7 +127,7 @@ class EmbedBatcherTest {
     void vectorsStayPairedWithTheirTexts() {
         AiSettings settings = settings(2);
         CountingVec vec = new CountingVec(1);
-        EmbedBatcher batcher = new EmbedBatcher(vec, ModelRegistry.offline(settings));
+        EmbedBatcher batcher = new EmbedBatcher(vec, TstRegistry.l2(settings));
         try {
             List<String> texts = new ArrayList<>();
             for (int i = 0; i < 100; i++) {
@@ -147,7 +148,7 @@ class EmbedBatcherTest {
     @DisplayName("空入参不发请求；返回条数与入参不一致时明确报错（拒绝用错配向量继续）")
     void emptyInputAndMismatchAreExplicit() {
         AiSettings settings = settings(2);
-        EmbedBatcher batcher = new EmbedBatcher(new CountingVec(1), ModelRegistry.offline(settings));
+        EmbedBatcher batcher = new EmbedBatcher(new CountingVec(1), TstRegistry.l2(settings));
         try {
             assertTrue(batcher.embedAll(List.of()).isEmpty());
             assertTrue(batcher.embedAll(null).isEmpty());
@@ -176,7 +177,7 @@ class EmbedBatcherTest {
                 return 0;
             }
         };
-        EmbedBatcher shortBatcher = new EmbedBatcher(shortVec, ModelRegistry.offline(settings(1)));
+        EmbedBatcher shortBatcher = new EmbedBatcher(shortVec, TstRegistry.l2(settings(1)));
         try {
             VecClient.VecException error = org.junit.jupiter.api.Assertions.assertThrows(
                     VecClient.VecException.class, () -> shortBatcher.embedAll(List.of("a", "b")));

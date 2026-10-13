@@ -1,5 +1,6 @@
 package com.pmgt.ai.common.config;
 
+import com.pmgt.ai.common.gate.PipelineGate;
 import com.pmgt.ai.common.model.ModelRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -8,6 +9,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 启动自检：把"配置错了但服务照样起得来"的情况**在启动日志里喊出来**。
@@ -32,6 +34,7 @@ public class StartupDiagnostics implements ApplicationRunner {
 
     private final AiSettings settings;
     private final ModelRegistry modelRegistry;
+    private final PipelineGate pipelineGate;
 
     @Override
     public void run(ApplicationArguments args) {
@@ -60,6 +63,97 @@ public class StartupDiagnostics implements ApplicationRunner {
         checkTimeoutChain();
         logModelTable();
         checkRecallMode();
+        logGateTable();
+        checkGateAgainstL2();
+        checkPipelineReporting();
+    }
+
+    /**
+     * L1 通道一览（设计 §5.2 的最终取值；**改这些数字前先想清楚依据**）。
+     *
+     * <p>为什么要在启动日志里打印：准入上限、队列上限、等待超时直接决定"什么情况下会被拒"，
+     * 而这些值散在 yml/环境变量里，出问题时第一反应是"到底配的多少"——一眼能看到比翻文件快。
+     */
+    private void logGateTable() {
+        Map<String, Object> summary = pipelineGate.configSummary();
+        log.info("L1 业务闸门 PipelineGate：{}（先 L1 后 L2，L1 permit 全程持有 / L1 排队在任务开始之前 / "
+                        + "优先级只在 L1，L2 恒为公平信号量 —— 三条防死锁硬规则）",
+                Boolean.TRUE.equals(summary.get("enabled")) ? "启用" : "禁用（灰度对照；不建队列、不排队）");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> queues = (List<Map<String, Object>>) summary.get("queues");
+        if (queues != null) {
+            for (Map<String, Object> queue : queues) {
+                log.info("  L1 通道 {}：并发 {}｜队列 {}｜等待超时 {}ms｜每项目在飞上限 {}",
+                        queue.get("queue"), queue.get("max"), queue.get("queue_limit"),
+                        queue.get("wait_ms"), queue.get("per_project_max"));
+            }
+        }
+        log.info("L1 调度：有效优先级 = 任务优先级 + 通道权重 + 老化补偿（每 {}s +{}，上限 {}）；"
+                        + "按 project_id 轮转派发；软闸门（交互式有等待者时暂停派发新的 BATCH.PARSE）={}",
+                settings.getGate().getPriority().getAgingStepSeconds(),
+                settings.getGate().getPriority().getAgingBonusPerStep(),
+                settings.getGate().getPriority().getAgingBonusMax(),
+                summary.get("pause_batch_when_interactive"));
+    }
+
+    /**
+     * L1 上限与 L2 之和的交叉校验（设计 §5.10.2 第 6 条）：<b>不允许 L1 上限 &gt; L2 之和</b>。
+     *
+     * <p>超了不会死锁，但多出来的任务只是在 L2 排队——指标会误导（L1 显示"已准入"，
+     * 用户却还在等），而且这正是设计里明确的"启动期防超订检查"该管的事。
+     * 只 WARN 不退出：配置写错不该让服务起不来（与超时链校验同一取向）。
+     */
+    private void checkGateAgainstL2() {
+        if (!settings.getGate().isEnabled()) {
+            return;
+        }
+        int l2 = 0;
+        for (ModelRegistry.Kind kind : ModelRegistry.Kind.values()) {
+            l2 += modelRegistry.limitOf(kind);
+        }
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> queues = (List<Map<String, Object>>) pipelineGate.configSummary().get("queues");
+        int l1 = 0;
+        if (queues != null) {
+            for (Map<String, Object> queue : queues) {
+                Object max = queue.get("max");
+                if (max instanceof Number number) {
+                    l1 += number.intValue();
+                }
+            }
+        }
+        if (l1 > l2) {
+            log.warn("L1 准入上限之和（{}）> L2 模型在飞上限之和（{}）：多出来的任务只会在 L2 排队，"
+                            + "而 L1 指标会显示“已准入” ⇒ 指标误导。请调小 ai.gate.*.max 或调大 ai.model.limit.*。",
+                    l1, l2);
+        } else {
+            log.info("L1/L2 交叉校验通过：L1 准入上限之和 {} ≤ L2 模型在飞上限之和 {}（chat 4 + ocr 12 + embed 8"
+                            + " + rerank 2；设计 §5.10.2 第 6 条）", l1, l2);
+        }
+    }
+
+    /** 阶段上报的自检：**配没配**要说清，且绝不回显令牌本体。 */
+    private void checkPipelineReporting() {
+        AiSettings.Pipeline pipeline = settings.getPipeline();
+        boolean configured = pipeline.isEnabled()
+                && !isBlank(pipeline.getBaseUrl()) && !isBlank(pipeline.getServiceToken());
+        if (!configured) {
+            log.info("流水线阶段上报未启用（ai.pipeline.enabled={}，地址{}，AI_SERVICE_TOKEN{}）："
+                            + "解析链路照常工作，只是不回调主系统的 /api/ai/pipeline/**——"
+                            + "任务流视图会看不到阶段行。要启用：配 AI_PIPELINE_BASE_URL + AI_SERVICE_TOKEN 并置 "
+                            + "AI_PIPELINE_ENABLED=true。",
+                    pipeline.isEnabled(), isBlank(pipeline.getBaseUrl()) ? "未配" : "已配",
+                    isBlank(pipeline.getServiceToken()) ? "未配" : "已配");
+            return;
+        }
+        log.info("流水线阶段上报已启用：{}（阶段 {}；chunk_key_format={}，clean_rev={}，pipeline_rev={}；"
+                        + "终态重试 {} 次，心跳 {}s，令牌已配置）",
+                pipeline.getBaseUrl(),
+                java.util.Arrays.stream(com.pmgt.ai.module.pipeline.StageKey.reported())
+                        .map(com.pmgt.ai.module.pipeline.StageKey::key).toList(),
+                pipeline.getChunkKeyFormat(), pipeline.getCleanRev(),
+                com.pmgt.ai.module.pipeline.PipelineRev.pipelineRev(),
+                pipeline.getFinishRetries(), pipeline.getHeartbeatSeconds());
     }
 
     /**

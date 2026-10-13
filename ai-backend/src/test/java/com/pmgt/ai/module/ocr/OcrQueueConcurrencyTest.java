@@ -1,5 +1,6 @@
 package com.pmgt.ai.module.ocr;
 
+import com.pmgt.ai.testutil.TstRegistry;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pmgt.ai.common.config.AiSettings;
@@ -91,7 +92,7 @@ class OcrQueueConcurrencyTest {
             return "{\"status\":\"ok\",\"workers\":12,\"idle\":12}";
         })) {
             AiSettings settings = settings(server.baseUrl(), concurrency, 8);
-            PlatformOcrClient client = new PlatformOcrClient(settings, ModelRegistry.offline(settings));
+            PlatformOcrClient client = new PlatformOcrClient(settings, TstRegistry.l2(settings));
 
             List<PlatformPage> pages = client.recognize(images(8), ProgressFn.NONE);
 
@@ -125,7 +126,7 @@ class OcrQueueConcurrencyTest {
             return "{}";
         })) {
             AiSettings settings = settings(server.baseUrl(), concurrency, 8);
-            PlatformOcrClient client = new PlatformOcrClient(settings, ModelRegistry.offline(settings));
+            PlatformOcrClient client = new PlatformOcrClient(settings, TstRegistry.l2(settings));
 
             List<PlatformPage> pages = client.recognize(images(40));
 
@@ -148,7 +149,7 @@ class OcrQueueConcurrencyTest {
             server.setStatusSupplier(() -> attempts.get() <= 2 ? 503 : 200);
             AiSettings settings = settings(server.baseUrl(), 2, 8);
             settings.getLimits().setRetryMax(2);
-            PlatformOcrClient client = new PlatformOcrClient(settings, ModelRegistry.offline(settings));
+            PlatformOcrClient client = new PlatformOcrClient(settings, TstRegistry.l2(settings));
 
             // 单页 = 单批：于是"尝试次数"就是这一批的尝试次数（多批会各自重试，计数会叠加）
             List<PlatformPage> pages = client.recognize(images(1));
@@ -167,7 +168,7 @@ class OcrQueueConcurrencyTest {
             server.setStatus(503);
             AiSettings settings = settings(server.baseUrl(), 2, 8);
             settings.getLimits().setRetryMax(0);
-            PlatformOcrClient client = new PlatformOcrClient(settings, ModelRegistry.offline(settings));
+            PlatformOcrClient client = new PlatformOcrClient(settings, TstRegistry.l2(settings));
 
             List<PlatformPage> pages = client.recognize(images(3));
 
@@ -184,7 +185,7 @@ class OcrQueueConcurrencyTest {
     void progressReportsCompletedPages() throws Exception {
         try (StubHttpServer server = new StubHttpServer((method, path, body) -> responseFor(body))) {
             AiSettings settings = settings(server.baseUrl(), 2, 4);
-            PlatformOcrClient client = new PlatformOcrClient(settings, ModelRegistry.offline(settings));
+            PlatformOcrClient client = new PlatformOcrClient(settings, TstRegistry.l2(settings));
 
             List<String> calls = java.util.Collections.synchronizedList(new ArrayList<>());
             List<PlatformPage> pages = client.recognize(images(6),
@@ -201,7 +202,7 @@ class OcrQueueConcurrencyTest {
     void emptyInputDoesNotTouchThePlatform() throws Exception {
         try (StubHttpServer server = new StubHttpServer((method, path, body) -> "{}")) {
             AiSettings settings = settings(server.baseUrl(), 4, 8);
-            PlatformOcrClient client = new PlatformOcrClient(settings, ModelRegistry.offline(settings));
+            PlatformOcrClient client = new PlatformOcrClient(settings, TstRegistry.l2(settings));
             assertTrue(client.recognize(List.of()).isEmpty());
             assertEquals(0, server.calls());
         }
@@ -213,7 +214,7 @@ class OcrQueueConcurrencyTest {
         try (StubHttpServer server = new StubHttpServer((method, path, body) ->
                 "{\"status\":\"ok\",\"workers\":80,\"idle\":80,\"options\":[\"seal\"]}")) {
             AiSettings settings = settings(server.baseUrl(), 4, 8);
-            PlatformOcrClient client = new PlatformOcrClient(settings, ModelRegistry.offline(settings));
+            PlatformOcrClient client = new PlatformOcrClient(settings, TstRegistry.l2(settings));
             OcrHealth health = client.health(true);
             assertTrue(health.ok());
             assertEquals(80, health.workers());

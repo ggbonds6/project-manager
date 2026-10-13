@@ -2,6 +2,7 @@ package com.pmgt.ai.module.retrieval;
 
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.model.ModelRegistry;
+import com.pmgt.ai.testutil.TstRegistry;
 import com.pmgt.ai.module.admin.ReindexService;
 import com.pmgt.ai.module.doc.DocumentText;
 import com.pmgt.ai.module.doc.PageText;
@@ -142,7 +143,7 @@ class DocIndexerReindexTest {
         StubIndex index = new StubIndex(settings);
         DocMetaStore metaStore = new DocMetaStore(work);
         RetrievalService retrieval = new RetrievalService(settings, vec, store, index,
-                ModelRegistry.offline(settings), new SimpleMeterRegistry(), metaStore);
+                TstRegistry.l2(settings), new SimpleMeterRegistry(), metaStore);
         DocIndexer indexer = new DocIndexer(settings, store, retrieval, index,
                 new SimpleMeterRegistry(), metaStore);
         return new Fixture(store, index, vec, retrieval, indexer);
@@ -350,7 +351,7 @@ class DocIndexerReindexTest {
         };
         AiSettings settings = settingsOf(fixture);
         RetrievalService retrieval = new RetrievalService(settings, failing, fixture.store(), fixture.index(),
-                ModelRegistry.offline(settings), new SimpleMeterRegistry(), new DocMetaStore(tmp.resolve("job2")));
+                TstRegistry.l2(settings), new SimpleMeterRegistry(), new DocMetaStore(tmp.resolve("job2")));
         DocIndexer indexer = new DocIndexer(settings, fixture.store(), retrieval, fixture.index(),
                 new SimpleMeterRegistry(), new DocMetaStore(tmp.resolve("job2")));
         ReindexService reindex = new ReindexService(settings, fixture.store(), indexer, fixture.index());

@@ -2,12 +2,15 @@ package com.pmgt.ai.module.llm.controller;
 
 import com.fasterxml.jackson.annotation.JsonAlias;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.pmgt.ai.common.gate.GateChannel;
+import com.pmgt.ai.common.gate.GateResult;
+import com.pmgt.ai.common.gate.PipelineGate;
+import com.pmgt.ai.common.web.ApiException;
 import com.pmgt.ai.common.web.ApiResponse;
 import com.pmgt.ai.module.llm.BizQuerySpec;
 import com.pmgt.ai.module.llm.QaService;
 import com.pmgt.ai.module.retrieval.SearchScope;
 import lombok.Data;
-import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -27,12 +30,30 @@ import java.util.Map;
  * （{@code index / doc_id / filename / page_no / snippet / score}，顺序 = 编号顺序），
  * 前端据此把答案里的 {@code [1]} 变成"跳到该附件第 N 页"的链接；
  * 既有字段一个都没动（只增不改）。
+ *
+ * <h2>L1 交互式准入（设计 §5.2，本批新增）</h2>
+ * <p>{@code /chat} 走 L1 的 {@code INTERACTIVE} 通道：<b>1.5s 内拿不到准入就 503 快速失败</b>
+ * （等待上限 = {@code ai.gate.interactive.wait-ms}，默认沿用 {@code MODEL_ACQUIRE_TIMEOUT_MS}）。
+ * 这条纪律<b>必须保住</b>：交互式绝不排在几十分钟的解析任务后面，
+ * 也绝不"排到前端 180s 超时"——宁可明确 503 让用户重试。
+ * 拿到准入后，L1 permit <b>在整个问答期间持有</b>（H1：先 L1 后 L2，且 L1 不提前释放）。
  */
 @RestController
-@RequiredArgsConstructor
 public class ChatController {
 
     private final QaService qaService;
+    /** 可为 null（单测里的"只有 L2"装配）；生产恒为非空。 */
+    private final PipelineGate gate;
+
+    public ChatController(QaService qaService) {
+        this(qaService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ChatController(QaService qaService, PipelineGate gate) {
+        this.qaService = qaService;
+        this.gate = gate;
+    }
 
     /**
      * 问答入口。
@@ -49,13 +70,43 @@ public class ChatController {
     public Map<String, Object> chat(@RequestBody ChatIn payload) {
         BizQuerySpec bizQuery = payload.getBizQuery();
         SearchScope scope = payload.searchScope();
-        QaService.QaResult result = bizQuery == null
-                ? qaService.ask(payload.getQuestion(), payload.getDocIds(), payload.getHistory(), null,
-                        null, scope)
-                : qaService.ask(
-                        payload.getQuestion(), payload.getDocIds(), payload.getHistory(), null, bizQuery,
-                        scope);
-        return ApiResponse.ok(result.toDict());
+        String projectId = projectIdOf(scope);
+
+        // L1 交互式准入：拿不到就 503（快速失败），绝不排队到用户超时（设计 §5.2/§5.4）
+        GateResult admission = null;
+        if (gate != null) {
+            admission = gate.admitInteractive(projectId);
+            if (!admission.admitted()) {
+                throw ApiException.unavailable(admission.describe());
+            }
+        }
+        try {
+            QaService.QaResult result = bizQuery == null
+                    ? qaService.ask(payload.getQuestion(), payload.getDocIds(), payload.getHistory(), null,
+                            null, scope)
+                    : qaService.ask(
+                            payload.getQuestion(), payload.getDocIds(), payload.getHistory(), null, bizQuery,
+                            scope);
+            return ApiResponse.ok(result.toDict());
+        } finally {
+            // L1 permit 覆盖整个问答期间（H1）；失败/异常路径也必须归还（否则就是 permit 泄漏）
+            if (admission != null) {
+                admission.close();
+            }
+        }
+    }
+
+    /** 项目维度（按项目公平调度的输入）：作用域里给了唯一 project_id 就用它，否则归默认桶。 */
+    private static String projectIdOf(SearchScope scope) {
+        if (scope == null || scope.projectIds() == null || scope.projectIds().size() != 1) {
+            return null;
+        }
+        return scope.projectIds().iterator().next();
+    }
+
+    /** 让 L1 通道常量在编译期可见（自检/文档引用它，避免"字符串散落"）。 */
+    public static GateChannel channel() {
+        return GateChannel.INTERACTIVE;
     }
 
     /**

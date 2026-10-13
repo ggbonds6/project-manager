@@ -102,6 +102,13 @@ public class ModelRegistry {
     /** 进程启动时刻（QPS 的分母；用"启动至今均值"而不是瞬时速率，避免抖动误导）。 */
     private final long startedAtMillis = System.currentTimeMillis();
 
+    /** H1 守卫的违规计数（>0 即"有人把 L1/L2 的获取顺序写反了"，必须改代码而不是调参）。 */
+    private final java.util.concurrent.atomic.AtomicLong h1Violations =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** H1 守卫的静态开关：单元测试"只测某一层"时可以关掉（见 {@link #setH1GuardEnabled(boolean)}）。 */
+    private static volatile boolean H1_GUARD_ENABLED = true;
+
     /** 生产装配：有 actuator 时注入真实 {@link MeterRegistry}，没有时自建进程内简单注册表。 */
     @org.springframework.beans.factory.annotation.Autowired
     public ModelRegistry(AiSettings settings, ObjectProvider<MeterRegistry> registries) {
@@ -205,6 +212,27 @@ public class ModelRegistry {
         return permits.get(kind);
     }
 
+    /** H1 守卫的违规计数（自检用；**正常恒为 0**，>0 说明有代码把 L1/L2 顺序写反了）。 */
+    public long h1Violations() {
+        return h1Violations.get();
+    }
+
+    /**
+     * H1 守卫开关（<b>只给单元测试用</b>）。
+     *
+     * <p>为什么需要它：L2 的信号量行为（在飞上限、重试、繁忙语义）是**独立于 L1** 的正确性，
+     * 那些测试不该被迫先建一个 {@code PipelineGate}；而 H1 本身的判据由
+     * {@code PipelineGateTest} 用"顺序反了必须立刻失败"正面覆盖。
+     * 生产恒为 {@code true}（默认），没有任何配置项能关掉它。
+     */
+    public static void setH1GuardEnabled(boolean enabled) {
+        H1_GUARD_ENABLED = enabled;
+    }
+
+    public static boolean h1GuardEnabled() {
+        return H1_GUARD_ENABLED;
+    }
+
     // ══════════════════════════════════════════════════════════════
     // 调用入口
     // ══════════════════════════════════════════════════════════════
@@ -247,11 +275,27 @@ public class ModelRegistry {
 
     /** 取一次 permit 执行；计时与成败计数都在这里，保证"所有调用都被计入"。 */
     public <T> T callOnce(Kind kind, long acquireMs, Supplier<T> body) {
+        // ── H1 守卫（防死锁的"可检不变式"）────────────────────────────
+        // 顺序必须全局统一：**先拿 L1 业务 permit，再拿 L2 模型 permit**（设计 §5.1）。
+        // 允许"先 L2 再等 L1"就会形成环形等待：批量任务持着 embed permit 去等 L1 批量槽位，
+        // 而槽位被同样在等 embed permit 的交互式占着。这里把不变式变成一条**断言**：
+        // 已经持有 L2 permit 的调用（可重入的嵌套调用）不受影响，其余的必须已持 L1。
+        // 违反时**立刻失败**（比静默死锁好排查太多），并在消息里说明正确的顺序。
+        Map<Kind, Integer> held = HELD.get();
+        int depth = held.getOrDefault(kind, 0);
+        if (depth == 0 && H1_GUARD_ENABLED
+                && com.pmgt.ai.common.gate.PipelineGate.currentAdmission() == null) {
+            h1Violations.incrementAndGet();
+            throw new IllegalStateException("违反 L1→L2 获取顺序（H1）：模型 " + kind.key()
+                    + " 的调用发生在本线程持有 L1 业务 permit 之前。"
+                    + "正确写法：先 PipelineGate.admit(...) 拿到 L1 permit（任务期间持有，见 H2），"
+                    + "再在本方法里取 L2 permit；反之会与「持 L2 等 L1」的任务形成环形等待（死锁）。"
+                    + "若这是无需 L1 的旁路调用（如 /health 探活），请显式用 withL1Bypass(...) 包裹。");
+        }
+
         // 同一线程内的嵌套调用直接放行：java.util.concurrent.Semaphore **不可重入**，
         // 若内层再取一次 permit，8 个 embed 线程各持 1 个再抢第 2 个就会自锁（死锁）。
         // 典型嵌套：EmbedBatcher（批量编排）→ VecClient.embedTexts（HTTP 出口）。
-        Map<Kind, Integer> held = HELD.get();
-        int depth = held.getOrDefault(kind, 0);
         if (depth > 0) {
             held.put(kind, depth + 1);
             try {

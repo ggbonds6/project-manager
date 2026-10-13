@@ -1,5 +1,6 @@
 package com.pmgt.ai.module.llm;
 
+import com.pmgt.ai.testutil.TstRegistry;
 import com.pmgt.ai.common.config.AiSettings;
 import com.pmgt.ai.common.model.ModelRegistry;
 import com.pmgt.ai.testutil.StubHttpServer;
@@ -41,7 +42,7 @@ class LlmClientTimeoutTest {
     @DisplayName("超时优先级：传入值 > 每模型超时（chat 150s）> 网关兜底值")
     void timeoutPrecedence() {
         AiSettings settings = new AiSettings();
-        LlmClient client = new LlmClient(settings, ModelRegistry.offline(settings));
+        LlmClient client = new LlmClient(settings, TstRegistry.l2(settings));
 
         assertEquals(150_000L, client.effectiveTimeoutMillis(null), "不传就用每模型超时（chat 150s）");
         assertEquals(15_000L, client.effectiveTimeoutMillis(15.0), "ping(15) 必须真的用 15s");
@@ -61,7 +62,7 @@ class LlmClientTimeoutTest {
         })) {
             AiSettings settings = settings(server.baseUrl(), 0);
             settings.getGateway().setTimeoutSeconds(1);      // 1s
-            LlmClient client = new LlmClient(settings, ModelRegistry.offline(settings));
+            LlmClient client = new LlmClient(settings, TstRegistry.l2(settings));
 
             long started = System.nanoTime();
             LlmClient.LlmException error = assertThrows(LlmClient.LlmException.class,
@@ -82,7 +83,7 @@ class LlmClientTimeoutTest {
             return chatResponse();
         })) {
             AiSettings settings = settings(server.baseUrl(), 150);   // 每模型超时是 150s
-            LlmClient client = new LlmClient(settings, ModelRegistry.offline(settings));
+            LlmClient client = new LlmClient(settings, TstRegistry.l2(settings));
 
             long started = System.nanoTime();
             LlmClient.LlmPing ping = client.ping(1.0);
@@ -98,7 +99,7 @@ class LlmClientTimeoutTest {
     void successfulCallStillWorks() throws Exception {
         try (StubHttpServer server = new StubHttpServer((method, path, body) -> chatResponse())) {
             AiSettings settings = settings(server.baseUrl(), 150);
-            LlmClient client = new LlmClient(settings, ModelRegistry.offline(settings));
+            LlmClient client = new LlmClient(settings, TstRegistry.l2(settings));
 
             LlmClient.ChatResult result = client.chat("你好", "system");
 

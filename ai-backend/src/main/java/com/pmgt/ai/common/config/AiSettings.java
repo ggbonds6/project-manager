@@ -29,6 +29,8 @@ public class AiSettings {
     private OpenSearch openSearch = new OpenSearch();
     private Limits limits = new Limits();
     private BizQuery bizQuery = new BizQuery();
+    private Gate gate = new Gate();
+    private Pipeline pipeline = new Pipeline();
 
     /** 平台网关（OCR / 对话 / 向量化 / 重排共用）。 */
     @Getter
@@ -243,5 +245,202 @@ public class AiSettings {
          * （工具调用是问答链路里的一环，它慢，用户就一起等）。
          */
         private int timeoutSeconds = 20;
+    }
+
+    /**
+     * L1 <b>业务并发闸门</b>（{@code PipelineGate}）的配置（设计 §5，P1-β）。
+     *
+     * <p>与 {@link Limits}（L2 每模型信号量）的分工是<b>两层、单向</b>：
+     * L1 决定"哪个任务可以开始干活"（准入、排队、公平、背压），
+     * L2 决定"一次模型调用能不能打到平台"（4/12/8/2 的公平信号量）。
+     * <b>先 L1 后 L2，且 L1 的 permit 全程持有</b>（硬规则 H1）——顺序反了就是经典死锁。
+     *
+     * <p>取值的依据一律写在各字段上；**默认值刻意与既有行为对齐**（PARSE 4 = 既有
+     * {@code uploadTaskExecutor} 的 maxPoolSize 4、队列 100 = 既有队列容量），
+     * 这样"接入 L1"不改变今天已经跑通的行为，只把"谁先跑"变得可控、可观测。
+     */
+    @Getter
+    @Setter
+    public static class Gate {
+        /** 是否启用 L1 闸门。false = 完全退回接入前的行为（仅用于灰度对照/排障）。 */
+        private boolean enabled = true;
+
+        /** 交互式（{@code /chat}、自检、检索调试）通道。 */
+        private Interactive interactive = new Interactive();
+        /** 批量上传解析（{@code BATCH.PARSE}）通道。 */
+        private BatchParse batchParse = new BatchParse();
+        /** 重建索引（{@code BATCH.REINDEX}）通道。 */
+        private BatchReindex batchReindex = new BatchReindex();
+        /** 批量向量化（{@code BATCH.EMBED}）通道。 */
+        private BatchEmbed batchEmbed = new BatchEmbed();
+        /** 评测跑批（{@code BATCH.EVAL}）通道。 */
+        private BatchEval batchEval = new BatchEval();
+
+        /** 按项目公平调度（设计 §5.3）：每个项目在飞上限的兜底值（各通道可覆盖）。 */
+        private int perProjectInflightMax = 4;
+
+        /**
+         * 软闸门（设计 §5.2 唯一需要"抢占"语义的地方）：**交互式队列非空时暂停派发新的
+         * {@code BATCH.PARSE}**。它只影响"新任务能不能开始"，**绝不踢掉正在跑的批量任务**。
+         */
+        private boolean pauseBatchWhenInteractive = true;
+
+        /**
+         * 运行时调整（设计 §5.6 白名单）：只支持**优先级权重 / 老化参数 / 软闸门开关**三项。
+         * 准入上限与队列上限<b>不支持热更新</b>（要重启），理由见设计 §5.6（改了要重跑验收指标）。
+         * 这里放的是"运行时可改字段"的初值。
+         */
+        private Priority priority = new Priority();
+
+        /** 优先级权重与老化参数（{@code effective_priority} 的三个组成项，见设计 §5.2）。 */
+        @Getter
+        @Setter
+        public static class Priority {
+            private int interactiveWeight = 100;
+            private int batchParseWeight = 20;
+            private int batchReindexWeight = 10;
+            private int batchEmbedWeight = 5;
+            private int batchEvalWeight = 0;
+
+            /** 老化：每等满 {@link #agingStepSeconds} 秒加 {@link #agingBonusPerStep} 分（防饥饿）。 */
+            private int agingStepSeconds = 30;
+            private int agingBonusPerStep = 2;
+            /** 老化补偿上限（避免"等得久"直接压过交互式）。 */
+            private int agingBonusMax = 40;
+        }
+
+        /** 交互式通道：**不排队**（队列 0），等不到 permit 就是 503 快速失败。 */
+        @Getter
+        @Setter
+        public static class Interactive {
+            /**
+             * 在飞上限。<b>默认 = {@code LLM_CHAT_CONCURRENCY}（4）</b>：交互式的瓶颈是平台 4 个
+             * 对话副本，L1 若给更大的值，多出来的请求只是在 L2 排队，指标会误导（设计 §5.10.2 第 6 条）。
+             */
+            private int max = 4;
+            /**
+             * 队列上限（个）。<b>默认 0</b>，理由：交互式的纪律是"要么 1.5s 内开始、要么 503"，
+             * 一个"能进但等不到"的队列只会制造"看起来接受了、其实永远在等"的假象（诚实失败的反面）。
+             */
+            private int queue = 0;
+            /**
+             * 等待时长（毫秒）。默认沿用 {@code MODEL_ACQUIRE_TIMEOUT_MS}（1500），
+             * 即 {@code /chat} 的"1.5s 快速失败"语义。
+             */
+            private long waitMs = 1500;
+        }
+
+        /** 批量上传解析通道（现状：线程池 max 4 + 队列 100 —— 这两个默认值与它逐字对齐）。 */
+        @Getter
+        @Setter
+        public static class BatchParse {
+            private int max = 4;
+            private int queue = 100;
+            private long waitMs = 0;
+            /** 每项目在飞上限（{@code ceil(max/2)} = 2 起，这里默认 4 = 设计 §5.3 的建议值）。 */
+            private int perProjectMax = 4;
+        }
+
+        /** 重建索引通道：**串行**（现状 {@code ReindexService} 单 job，这里只是把该语义显式化）。 */
+        @Getter
+        @Setter
+        public static class BatchReindex {
+            private int max = 1;
+            private int queue = 2;
+            private long waitMs = 1500;
+            private int perProjectMax = 1;
+        }
+
+        /**
+         * 批量向量化通道。默认 4（不是 L2 的 8）——理由是**向量化是批内并行**：
+         * 每个文档的向量化在 L2 内部已经把 embed 信号量打满（批 32 × 并发 8），
+         * L1 再放 8 个文档进来只会让它们在 L2 排队（设计 §5.10.2 第 6 条"不允许 L1 上限 > L2 之和"）。
+         */
+        @Getter
+        @Setter
+        public static class BatchEmbed {
+            private int max = 4;
+            private int queue = 100;
+            private long waitMs = 60000;
+            private int perProjectMax = 4;
+        }
+
+        /** 评测跑批通道：最低优先级、并发 1（设计 §5.2）。 */
+        @Getter
+        @Setter
+        public static class BatchEval {
+            private int max = 1;
+            private int queue = 100;
+            private long waitMs = 60000;
+            private int perProjectMax = 1;
+        }
+    }
+
+    /**
+     * 流水线阶段上报（设计 §4，P0-β 的 AI 侧）配置。
+     *
+     * <p>AI 服务不直连库：阶段/产物/事件一律<b>回调主系统</b>
+     * （{@code POST /api/ai/pipeline/**}，鉴权头 {@code X-AI-Service-Token}）。
+     * 契约（snake_case，兼容 camelCase，真实 HTTP 状态码，响应体 {@code {code,message,data}}）冻结在
+     * 设计文档 §4.4.3；两侧必须逐字一致。
+     *
+     * <p><b>令牌只从环境变量 / .env 读</b>（{@code AI_SERVICE_TOKEN}）：
+     * 绝不写进仓库、日志、异常消息、指标与测试断言——与 {@code OPENSEARCH_PASSWORD} 同一条纪律。
+     */
+    @Getter
+    @Setter
+    public static class Pipeline {
+        /**
+         * 主系统基地址，例如 {@code http://10.254.208.36:8080}
+         * （AI 服务是**回调方**，所以这里配主系统的地址，与 {@code gateway.base-url} 不是一回事）。
+         */
+        private String baseUrl = "";
+        /** 阶段上报开关。默认 false：没配 token/地址时不做任何外呼，行为与接入前一致。 */
+        private boolean enabled = false;
+        /** 上报令牌（{@code X-AI-SERVICE-Token}）。只从环境变量/.env 读。 */
+        private String serviceToken = "";
+        /** 单次上报的超时（秒）。上报是 best-effort，**不能拖慢主流程**，故取小值。 */
+        private double timeoutSeconds = 3;
+        /**
+         * 阶段上报失败的重试次数。默认 0：非终态上报**不重试**（失败只 WARN + 计数，
+         * 设计 §4.4.3 "上报失败不得影响主流程"）。
+         */
+        private int maxRetries = 0;
+        /** 首次退避（毫秒），仅用于**终态**上报（终态丢失会让任务永远停在 RUNNING）。 */
+        private long retryBackoffMs = 200;
+        /**
+         * 终态（{@code /finish}）上报的额外重试次数。默认 2（共 3 次尝试），
+         * 设计明确要求"终态上报失败要重试"——终态以主系统为准，丢了就是脏状态。
+         */
+        private int finishRetries = 2;
+        /** 心跳续约间隔（秒），设计 §5.9 定的是 30s。 */
+        private int heartbeatSeconds = 30;
+        /** 领取租约时长（秒）。 */
+        private int leaseSeconds = 90;
+        /** 是否把 {@code run_id} 写进日志 MDC（便于按任务排障）。 */
+        private boolean mdc = true;
+
+        /**
+         * 切片键形态（设计 §3.3.3 的三层防护 L1）。
+         *
+         * <ul>
+         *   <li>{@code legacy}（<b>默认</b>）：{@code docId:pageNo:sha1(文本)[0:12]}，三段；
+         *       与接入前逐字节一致 ⇒ <b>升级不使既有索引与向量缓存失效</b>；</li>
+         *   <li>{@code rev}：{@code d=<docId>:p=<pageNo>:h=<sha1>:c=<cleanRev>:k=<chunkRev>}，五段。
+         *       清洗/切片规则版本变化 ⇒ 切片键变化 ⇒ 旧索引不会被误当命中。切换后需跑一次
+         *       {@code POST /admin/reindex} 把索引与缓存改写为新键。</li>
+         * </ul>
+         *
+         * <p>两种形态的解析器都在 {@code PipelineRev.parseChunkKey}（兼容读），所以切换期间
+         * 新旧键可以共存而不报错。
+         */
+        private String chunkKeyFormat = "legacy";
+
+        /** 解析版本（{@code parse_rev}）：改进解析逻辑（渲染/OCR 路由）时 +1。 */
+        private int parseRev = 1;
+        /** 清洗版本（{@code clean_rev}）：<b>0 = 本轮尚无清洗阶段</b>（规则清单/开关/阈值任一变化即 +1）。 */
+        private int cleanRev = 0;
+        /** 切片版本（{@code chunk_rev}）：切分参数或算法变化时 +1。 */
+        private int chunkRev = 0;
     }
 }
