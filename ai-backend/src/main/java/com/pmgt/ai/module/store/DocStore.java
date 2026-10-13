@@ -230,7 +230,14 @@ public class DocStore {
         return com.pmgt.ai.module.chunk.DocumentChunker.legacy(doc, chunkChars);
     }
 
-    /** 全库（或单文档）切片，检索入口用。 */
+    /**
+     * 全库（或单文档）切片，<b>回退口径</b>（= {@link #iterChunks(StoredDoc)} 的批量版）。
+     *
+     * <p>⚠️ P1-α 起检索链路<b>不再走这里</b>：它用的是 {@code DocumentChunker.chunksOf(doc, settings)}
+     * （清洗 + 结构感知 + 表格整块 + 重叠 + 硬上限），与入库/重建同一口径。
+     * 本方法保留是因为它是"接入前口径"的公开入口（历史文档与对照实验引用它，见
+     * {@code docs/RAG流程完整性评估.md} §2 的证据行）——<b>新代码不要用它</b>。
+     */
     public List<Chunk> loadChunks(String docId) {
         List<StoredDoc> docs = new ArrayList<>();
         if (docId != null && !docId.isBlank()) {
