@@ -4,6 +4,10 @@
  * 本轮为 P0：页签只做**文档库 / 任务队列 / 服务自检 / 问答助手**四块，且四态（加载/空/错误/有数据）齐全。
  * 检索调试、评测与指标属 P1/P2（方案 §5、§8.3），本轮**不放占位页签**——放个点不动的按钮比没有更糟。
  *
+ * P0-β 追加「解析流水线」签（《RAG流水线设计与并发管理》§4.9）：任务流视图（阶段条/阶段卡片/产物抽屉）
+ * + 质量看板 + 进行中角标。它**不改**既有「任务队列」签——两者读的是两套接口
+ * （`/api/ai/tasks` vs `/api/ai/pipeline/runs`），理由见 `pages/ai/PipelineTab.tsx` 顶部注释。
+ *
  * 数据来源全部是主系统后端的 `/api/ai/*`（§9 冻结契约），前端不直连 AI 服务。
  * 一处刻意的行为：AI 服务不可用时，文档库/任务队列显示"不可用"提示，而不是显示成"暂无数据"——
  * 方案 §6 要求"不让用户以为没找到"。
@@ -11,6 +15,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
+  Badge,
   Button,
   Card,
   Col,
@@ -36,6 +41,7 @@ import {
   CloseCircleOutlined,
   DeleteOutlined,
   ExperimentOutlined,
+  NodeIndexOutlined,
   ReloadOutlined,
   RobotOutlined,
   SearchOutlined,
@@ -45,9 +51,11 @@ import { aiApi, clearDocAttachmentCache } from '@/api/ai';
 import AiChatPanel from '@/components/ai/AiChatPanel';
 import { useAttachmentPreview, buildAttachmentPreviewPath } from '@/components/ai/useAttachmentPreview';
 import { useAiScope } from '@/components/ai/AiScopePicker';
+import { usePipelineActiveCount } from '@/components/ai/usePipelineActiveCount';
 import { useAiProjects } from '@/hooks/useAiProjects';
 import { useAuth } from '@/store/auth';
 import { fmtDateTime, fmtFileSize } from '@/utils/format';
+import PipelineTab from '@/pages/ai/PipelineTab';
 import {
   aiIndexStatusMeta,
   aiTaskStatusMeta,
@@ -63,13 +71,38 @@ export default function AiPage() {
   const canManage = user?.role === 'ADMIN' || user?.role === 'MANAGER';
   // 与 MainLayout 菜单同一判定（前端隐藏只是顺手，真正拦截在后端）
   const scope = useAiScope();
+  /**
+   * 页签受控：进行中角标的轮询需要知道"用户是不是已经站在流水线签上"——
+   * 在的话列表自己会 3s 轮询，角标就不必再打一次接口（省一份请求）。
+   */
+  const [activeKey, setActiveKey] = useState('documents');
+  const activePipelineCount = usePipelineActiveCount(activeKey !== 'pipeline');
 
   return (
     <Tabs
-      defaultActiveKey="documents"
+      activeKey={activeKey}
+      onChange={setActiveKey}
       items={[
         { key: 'documents', label: '文档库', children: <DocumentsTab canManage={canManage} /> },
         { key: 'tasks', label: '任务队列', children: <TasksTab canManage={canManage} /> },
+        {
+          key: 'pipeline',
+          label: (
+            <span>
+              <NodeIndexOutlined /> 解析流水线
+              {activePipelineCount > 0 ? (
+                <Badge
+                  count={activePipelineCount}
+                  size="small"
+                  offset={[6, -2]}
+                  title={`有 ${activePipelineCount} 个解析任务在跑`}
+                />
+              ) : null}
+            </span>
+          ),
+          // 任务流视图：进行中/历史两段 + 只看失败 + 阶段条/阶段卡片/产物抽屉 + 质量看板
+          children: <PipelineTab />,
+        },
         { key: 'health', label: '服务自检', children: <HealthTab /> },
         {
           key: 'chat',

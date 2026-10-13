@@ -9,13 +9,17 @@
  *  - 引用可点击：直接复用主系统既有 `AttachmentPreviewModal` 打开附件原文，并用其 `pageNo`
  *    参数定位到引用页码（PDF 走 `#page=N`）。引用缺 attachmentId 时用文档列表接口映射一次
  *    （见 `api/ai.ts` 的 resolveCitationAttachment）；映射不到就按"附件已删除"提示，**不做成坏链接**。
+ *  - 引用还带一个「溯源」入口（《RAG流水线设计与并发管理》§4.5.1）：展开"答案 [n] → 切片 chunk_key
+ *    → 该附件的产物摘要 → 原文第 N 页"的每一跳，缺哪一跳就写明"该环节未上报"。
+ *    它**不改动**上面那条点击语义（点标签仍然是打开原文），只是并排多一个入口。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Alert, App, Button, Collapse, Empty, Input, Space, Spin, Tag, Typography } from 'antd';
+import { Alert, App, Button, Collapse, Empty, Input, Space, Spin, Tag, Tooltip, Typography } from 'antd';
 import { ClearOutlined, DatabaseOutlined, SendOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import { aiApi } from '@/api/ai';
 import AiScopePicker, { AiScopeState } from '@/components/ai/AiScopePicker';
+import CitationTraceDrawer from '@/components/ai/CitationTraceDrawer';
 import { useAttachmentPreview } from '@/components/ai/useAttachmentPreview';
 import { AiChatAnswer, AiCitation, AiSystemDatum } from '@/types/ai';
 
@@ -47,6 +51,7 @@ const WELCOME: AiChatMessage = {
     '- 问题里的金额、页数等以原文为准；查不到我会直接说**未找到**，不会猜。',
     '- 顶部可选择提问范围（默认跟随当前项目页），范围之外的文档我不会读到。',
     '- 点击答案下方的出处标签，可直接打开附件原文并跳到对应页码。',
+    '- 出处旁边的「溯源」会展开这条引用的完整链路（切片键 → 附件与页码 → 产物摘要 → 原文页），取不到的环节会写明"该环节未上报"。',
   ].join('\n'),
 };
 
@@ -63,6 +68,9 @@ export default function AiChatPanel({ scope, scopeKey, height }: Props) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   /** 正在解析附件 id 的引用 key（防止连点重复触发映射请求） */
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  /** 溯源抽屉：当前要溯源的那条引用（null = 关闭） */
+  const [traceCitation, setTraceCitation] = useState<AiCitation | null>(null);
+  const [traceOpen, setTraceOpen] = useState(false);
   const listRef = useRef<HTMLDivElement | null>(null);
 
   // 上下文切换（如从项目 A 页到项目 B 页、或用户手工改了范围）：清空会话，
@@ -152,6 +160,16 @@ export default function AiChatPanel({ scope, scopeKey, height }: Props) {
     setConversationId(null);
   };
 
+  /**
+   * 溯源入口：打开"这一条引用是怎么来的"抽屉。
+   * 与 `openCitation` 是**两个动作**——一个去原文（现状语义不变），一个看链路（新增），
+   * 因此抽屉不预取原文、也不影响引用标签本身的点击行为。
+   */
+  const openTrace = useCallback((citation: AiCitation) => {
+    setTraceCitation(citation);
+    setTraceOpen(true);
+  }, []);
+
   // 高度：抽屉里给满高，页面内默认 60vh
   const bodyHeight = height ?? '60vh';
 
@@ -179,7 +197,13 @@ export default function AiChatPanel({ scope, scopeKey, height }: Props) {
       <div ref={listRef} style={{ flex: 1, overflow: 'auto', padding: 12, background: '#fafbfc' }}>
         {messages.length === 0 ? <Empty description="还没有对话" /> : null}
         {messages.map((m) => (
-          <MessageBubble key={m.id} msg={m} onCitationClick={openCitation} openingKey={openingKey} />
+          <MessageBubble
+            key={m.id}
+            msg={m}
+            onCitationClick={openCitation}
+            onCitationTrace={openTrace}
+            openingKey={openingKey}
+          />
         ))}
         {sending ? (
           <div style={{ padding: '8px 4px', color: '#8c8c8c', fontSize: 12 }}>
@@ -222,6 +246,13 @@ export default function AiChatPanel({ scope, scopeKey, height }: Props) {
 
       {/* 引用预览：就地打开，不跳页、不打断当前范围与对话 */}
       {preview.el}
+
+      {/* 溯源抽屉：答案 [n] → 切片 → 产物摘要 → 原文页（§4.5.1 的每一跳） */}
+      <CitationTraceDrawer
+        citation={traceCitation}
+        open={traceOpen}
+        onClose={() => setTraceOpen(false)}
+      />
     </div>
   );
 }
@@ -316,10 +347,13 @@ function SystemDataBlock({ data }: { data: AiSystemDatum[] }) {
 function MessageBubble({
   msg,
   onCitationClick,
+  onCitationTrace,
   openingKey,
 }: {
   msg: AiChatMessage;
   onCitationClick: (c: AiCitation) => void;
+  /** 溯源入口：看"这条引用是怎么来的"（点标签仍是打开原文，两者互不影响） */
+  onCitationTrace: (c: AiCitation) => void;
   openingKey: string | null;
 }) {
   const isUser = msg.role === 'user';
@@ -386,7 +420,7 @@ function MessageBubble({
             {msg.answer?.citations?.length ? (
               <div style={{ marginTop: 8 }}>
                 <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  出处（点击打开附件原文并跳到对应页）：
+                  出处（点标签打开附件原文并跳到对应页；点「溯源」看这一条是怎么来的）：
                 </Typography.Text>
                 <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {msg.answer.citations.map((c) => {
@@ -395,23 +429,37 @@ function MessageBubble({
                     const label = `${c.filename || c.docId || '未知文档'}${
                       c.pageNo ? ` 第 ${c.pageNo} 页` : ''
                     }`;
-                    return clickable ? (
-                      <Tag
-                        key={key}
-                        color="blue"
-                        style={{ cursor: 'pointer', marginInlineEnd: 0 }}
-                        title={c.snippet || '点击打开附件原文'}
-                        onClick={() => onCitationClick(c)}
-                      >
-                        [{c.index}] {label}
-                        {openingKey === key ? ' 打开中…' : ''}
-                        {typeof c.score === 'number' ? ` · ${c.score.toFixed(2)}` : ''}
-                      </Tag>
-                    ) : (
-                      // 拿不到任何可定位信息：如实说明，不做成可点的坏链接
-                      <Tag key={key} style={{ marginInlineEnd: 0 }}>
-                        [{c.index}] {label}（附件已删除）
-                      </Tag>
+                    return (
+                      // Tag 与「溯源」并排：Tag 的既有语义（打开原文）不动，溯源是新增的第二个入口
+                      <Space key={key} size={2}>
+                        {clickable ? (
+                          <Tag
+                            color="blue"
+                            style={{ cursor: 'pointer', marginInlineEnd: 0 }}
+                            title={c.snippet || '点击打开附件原文'}
+                            onClick={() => onCitationClick(c)}
+                          >
+                            [{c.index}] {label}
+                            {openingKey === key ? ' 打开中…' : ''}
+                            {typeof c.score === 'number' ? ` · ${c.score.toFixed(2)}` : ''}
+                          </Tag>
+                        ) : (
+                          // 拿不到任何可定位信息：如实说明，不做成可点的坏链接
+                          <Tag style={{ marginInlineEnd: 0 }}>
+                            [{c.index}] {label}（附件已删除）
+                          </Tag>
+                        )}
+                        <Tooltip title="看这一条引用的溯源链：切片键 → 所属附件与页码 → 产物摘要 → 原文页（缺哪一层都会写明「该环节未上报」）">
+                          <Button
+                            type="link"
+                            size="small"
+                            style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                            onClick={() => onCitationTrace(c)}
+                          >
+                            溯源
+                          </Button>
+                        </Tooltip>
+                      </Space>
                     );
                   })}
                 </div>

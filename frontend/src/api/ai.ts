@@ -16,8 +16,12 @@ import {
   AiDocument,
   AiHealth,
   AiParseResult,
+  AiPipelineRun,
+  AiPipelineRunDetail,
   AiRetryResult,
   AiTask,
+  normalizePipelineRun,
+  normalizePipelineRunDetail,
 } from '@/types/ai';
 import { PageResult } from '@/types';
 
@@ -33,6 +37,21 @@ export interface AiDocumentQuery {
 export interface AiTaskQuery {
   status?: string;
   projectId?: number | null;
+  page?: number;
+  size?: number;
+}
+
+/**
+ * 解析流水线（任务流）查询：`GET /api/ai/pipeline/runs`。
+ *
+ * 注意这是**用户 JWT** 的接口（与 `/ai/tasks` 同一鉴权族），不是 AI 服务的 `scope_token`；
+ * 路径前缀 `/api/ai/pipeline`，字段 snake_case（后端给 camelCase 时由 `types/ai.ts` 的归一化兜住）。
+ */
+export interface AiPipelineRunQuery {
+  /** 只看某个附件的流水线记录（溯源抽屉"查看该附件的任务流"用） */
+  attachmentId?: number | null;
+  /** 单值状态过滤（契约只允许一个值；"进行中/历史"两段由前端按状态分组） */
+  status?: string;
   page?: number;
   size?: number;
 }
@@ -149,6 +168,52 @@ export const aiApi = {
   chat(body: AiChatRequest): Promise<AiChatAnswer> {
     return api.post<AiChatAnswer>('/ai/chat', body, { timeoutMs: AI_CHAT_TIMEOUT_MS });
   },
+
+  /**
+   * 解析流水线列表（任务流视图的**表头**数据）。
+   *
+   * 列表接口**不带**阶段明细与产物 content（§4.9.2⑥"详情必须重新取全量"），
+   * 所以这里只归一化表头字段；打开抽屉时一定再打一次详情接口。
+   *
+   * 兼容两种响应形状：分页对象 `{total, records}` 与裸数组
+   * （后端未分页时也给得出结果，不至于整页空白）。
+   */
+  async pipelineRuns(params: AiPipelineRunQuery): Promise<{ total: number; records: AiPipelineRun[] }> {
+    const res = await api.get<PageResult<Record<string, unknown>> | Record<string, unknown>[]>(
+      '/ai/pipeline/runs',
+      {
+        attachment_id: params.attachmentId ?? undefined,
+        status: params.status || undefined,
+        page: params.page,
+        size: params.size,
+      },
+    );
+    const rawRecords = Array.isArray(res) ? res : res?.records ?? [];
+    const total = Array.isArray(res) ? rawRecords.length : Number(res?.total ?? rawRecords.length);
+    return {
+      total: Number.isFinite(total) ? total : rawRecords.length,
+      // run_id 缺失的行打不开详情（抽屉按 run_id 取数），留着只会是坏行：直接过滤
+      records: rawRecords.map(normalizePipelineRun).filter((r) => !!r.runId),
+    };
+  },
+
+  /** 流水线详情：任务字段 + `stages[]` + `artifacts[]` + `events[]`（打开抽屉与 1.5s 轮询都用它） */
+  async pipelineRunDetail(runId: string): Promise<AiPipelineRunDetail> {
+    const raw = await api.get<Record<string, unknown>>(`/ai/pipeline/runs/${encodeURIComponent(runId)}`);
+    return normalizePipelineRunDetail(raw);
+  },
+
+  /*
+   * ==================== 待接：流水线级动作端点（**后端尚未提供，故意不调用**） ====================
+   *
+   * 任务书要求"若主系统提供重试/取消端点则接上，未提供就只读展示并在代码注释里标注待接"。
+   * 本轮冻结契约只有两个 GET（列表 / 详情），因此：
+   *   * 阶段卡片与列表**只读展示**（不显示点不动的按钮——放个不能用的按钮比没有更糟）；
+   *   * 端点落地后在这里补两个方法，并把 PipelineFlowDrawer 底部的"待接"提示换成按钮：
+   *       retryPipelineRun(runId, onlyFailedStage?)  → POST /ai/pipeline/runs/{run_id}/retry
+   *       cancelPipelineRun(runId)                   → POST /ai/pipeline/runs/{run_id}/cancel
+   * 取消语义必须沿用现状口径：**已在跑的项会跑完，未开始的会跳过**（§4.9.2⑤）。
+   */
 };
 
 /* ==================== 引用 → 附件（跳转预览用） ==================== */
