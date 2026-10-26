@@ -14,6 +14,7 @@
  */
 import { useCallback, useState } from 'react';
 import { aiApi } from '@/api/ai';
+import { AI_PIPELINE_TASK_ACTIVE_QUERY } from '@/types/ai';
 import { useVisiblePolling } from '@/components/ai/useVisiblePolling';
 
 /** 角标轮询间隔（与参考项目 App.tsx 的 5s 一致） */
@@ -29,12 +30,21 @@ export function usePipelineActiveCount(enabled = true): number {
 
   const tick = useCallback(async () => {
     try {
-      const [running, pending] = await Promise.all([
-        aiApi.pipelineRuns({ status: 'RUNNING', page: 1, size: COUNT_WINDOW }),
-        aiApi.pipelineRuns({ status: 'PENDING', page: 1, size: COUNT_WINDOW }),
-      ]);
-      const n = (r: { total: number; records: unknown[] }) => Math.max(r.total || 0, r.records.length);
-      setCount(n(running) + n(pending));
+      /*
+       * **一次请求问完"进行中"**：任务级"进行中" = QUEUED + RUNNING 两个状态，
+       * 后端 `GET /api/ai/runs?status=` 支持逗号分隔多值。
+       *
+       * 以前这里是两次请求，其中一次发的是 **阶段级** 的 `PENDING`（"排队中"）——
+       * 那是 `ai_pipeline_stage.status` 的值，任务级没有它，真机后端直接 400：
+       * `status 非法：PENDING；合法值：QUEUED/RUNNING/…`（前端此前从未连真后端跑过，
+       * 构建与类型检查都发现不了）。现在类型上已把任务级/阶段级拆成两套枚举，见 `types/ai.ts`。
+       */
+      const res = await aiApi.pipelineRuns({
+        status: AI_PIPELINE_TASK_ACTIVE_QUERY,
+        page: 1,
+        size: COUNT_WINDOW,
+      });
+      setCount(Math.max(res.total || 0, res.records.length));
     } catch {
       setDegraded(true);
     }

@@ -284,26 +284,81 @@ export const AI_PIPELINE_STAGE_NAME: Record<string, string> = {
   GENERATE: '生成',
 };
 
-/** 任务/阶段状态（§4.4 状态机；PARTIAL = 部分成功，必须与 DONE 视觉区分） */
-export type AiPipelineStatus =
+/**
+ * **流水线任务级**状态（`attachment_ai_task.status`，§4.4.1 的 7 态）。
+ *
+ * 流水线的列表行、筛选参数（`GET /api/ai/runs?status=`）、角标计数、详情里的 `status` 一律用这一套。
+ * 注意：
+ *  - **`PENDING` 不在任务级里**（它只存在于阶段级）；任务级的"排队"叫 `QUEUED`；
+ *  - 与上面的 {@link AiTaskStatus}（`/api/ai/tasks` 冻结契约的 4 态）不是同一个东西：
+ *    那个接口只产出 QUEUED/RUNNING/DONE/FAILED，两套不要互相赋值。
+ */
+export type AiPipelineTaskStatus =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'DONE'
+  | 'PARTIAL'
+  | 'FAILED'
+  | 'CANCELLED'
+  | 'DEAD';
+
+/**
+ * **阶段级**状态（`ai_pipeline_stage.status`）：比任务级多 `PENDING`（还没开始）与 `SKIPPED`
+ * （按 rev 复用而跳过），且**没有 `QUEUED`**。阶段条/阶段卡片用这一套。
+ *
+ * ⚠️ 两套枚举**禁止共用**：把 `PENDING` 当任务级筛选值发给 `GET /api/ai/runs` 会 400
+ * （真机上撞过：`status 非法：PENDING`）。
+ */
+export type AiPipelineStageStatus =
   | 'PENDING'
   | 'RUNNING'
   | 'DONE'
   | 'PARTIAL'
   | 'SKIPPED'
   | 'FAILED'
-  | 'CANCELLED'
-  | 'DEAD';
+  | 'CANCELLED';
+
+/** 展示用的**并集**（`AI_PIPELINE_STATUS` 的键）：只用于"后端给什么就显示什么"，**不要拿它当筛选参数类型** */
+export type AiPipelineStatus = AiPipelineTaskStatus | AiPipelineStageStatus;
+
+/** 任务级"进行中"的两个状态（列表的「进行中」段、角标计数都用它） */
+export const AI_PIPELINE_TASK_ACTIVE: AiPipelineTaskStatus[] = ['QUEUED', 'RUNNING'];
 
 /**
- * 状态 → 标签。
- * `PARTIAL` 用 **warning（橙）**：它意味着"可用但不完整（有项需人工复核）"，
- * 与 `DONE` 的 success（绿）必须一眼可分（任务书硬要求）。
+ * 任务级"进行中"的**接口参数写法**：`GET /api/ai/runs?status=QUEUED,RUNNING`。
+ * 后端支持逗号分隔多值；以前前端为了表达"进行中"发了两次请求、还把阶段级的 `PENDING` 当任务级用（400）。
+ */
+export const AI_PIPELINE_TASK_ACTIVE_QUERY = AI_PIPELINE_TASK_ACTIVE.join(',');
+
+/** 任务级终态（到这些状态就停止轮询）；`SKIPPED` 是阶段级，不在任务级里 */
+export const AI_PIPELINE_TASK_TERMINAL: AiPipelineTaskStatus[] = [
+  'DONE',
+  'PARTIAL',
+  'FAILED',
+  'CANCELLED',
+  'DEAD',
+];
+
+/** 阶段级终态（阶段条的"已结束"判定用） */
+export const AI_PIPELINE_STAGE_TERMINAL: AiPipelineStageStatus[] = [
+  'DONE',
+  'PARTIAL',
+  'SKIPPED',
+  'FAILED',
+  'CANCELLED',
+];
+
+/**
+ * 状态码 → 标签（任务级与阶段级**共用一张显示字典**：同一个码在两级的含义一致）。
+ * 但**筛选参数**必须按级别取（任务级看 {@link AI_PIPELINE_TASK_ACTIVE_QUERY}）。
+ *
+ * `PARTIAL` 用 **warning（橙）**：它意味着"可用但不完整（有项需人工复核）"，与 `DONE` 的 success（绿）必须一眼可分。
  * `DEAD` 用 **深红**（`#a8071a`），与 `FAILED` 的红区分：前者是重试耗尽后的死信。
  * `SKIPPED` 用 default（灰）：它是"按 rev 复用而跳过"，不是失败；原因另在卡片里显示。
  */
 export const AI_PIPELINE_STATUS: Record<AiPipelineStatus, AiLabelMeta> = {
-  PENDING: { text: '排队中', color: 'default' },
+  QUEUED: { text: '排队中', color: 'default' },
+  PENDING: { text: '待开始', color: 'default' },
   RUNNING: { text: '进行中', color: 'processing' },
   DONE: { text: '已完成', color: 'success' },
   PARTIAL: { text: '部分成功', color: 'warning' },
@@ -361,34 +416,33 @@ export function aiPipelineArtifactHint(type?: string | null): string {
   return AI_PIPELINE_ARTIFACT_META[k]?.hint || '未知产物类型（后端新增时前端原样展示）';
 }
 
-/** 终态（终态一律停止轮询；与 §4.4.1 的任务级状态机一致） */
-const PIPELINE_TERMINAL: string[] = ['DONE', 'PARTIAL', 'SKIPPED', 'FAILED', 'CANCELLED', 'DEAD'];
-
 /**
- * 是否终态。
+ * 是否**任务级**终态（到这些状态就停止轮询）。
  * **未知状态按"未终态"处理**：宁可多轮询一次，也不要因为后端新增了一个状态
  * 就永久停在"进行中"的外观上（漏掉状态变化比多一次请求严重）。
  */
 export function isPipelineTerminal(code?: string | null): boolean {
-  return PIPELINE_TERMINAL.includes((code || '').toUpperCase());
+  return AI_PIPELINE_TASK_TERMINAL.includes((code || '').toUpperCase() as AiPipelineTaskStatus);
 }
 
-/** 进行中/排队中（列表"进行中"段与角标计数的判据） */
+/**
+ * 是否**任务级**"进行中/排队中"（列表"进行中"段与角标计数的判据）。
+ *
+ * 只认 `QUEUED`/`RUNNING`：`PENDING` 是**阶段级**的"还没开始"，任务行永远不会是 PENDING
+ * （以前把它算进来，既漏掉了 QUEUED 的行，又让人误以为筛选参数可以用 PENDING）。
+ */
 export function isPipelineActive(code?: string | null): boolean {
-  const k = (code || '').toUpperCase();
-  return k === 'RUNNING' || k === 'PENDING';
+  return AI_PIPELINE_TASK_ACTIVE.includes((code || '').toUpperCase() as AiPipelineTaskStatus);
 }
 
-/** 失败（含重试耗尽的死信）：列表"只看失败"的判据，失败行整行标红底 */
+/**
+ * 是否失败（含重试耗尽的死信），"只看失败"的判据，失败行整行标红底。
+ * 阶段级也适用（阶段没有 `DEAD`，多判一个不存在的值不影响）。
+ */
 export function isPipelineFailed(code?: string | null): boolean {
   const k = (code || '').toUpperCase();
   return k === 'FAILED' || k === 'DEAD';
 }
-
-/** 状态筛选项（下拉框复用；顺序即 §4.4.1 状态机顺序） */
-export const AI_PIPELINE_STATUS_OPTIONS: { value: AiPipelineStatus; label: string }[] = (
-  Object.keys(AI_PIPELINE_STATUS) as AiPipelineStatus[]
-).map((value) => ({ value, label: AI_PIPELINE_STATUS[value].text }));
 
 /** 流水线任务（列表行；详情继承本接口的字段） */
 export interface AiPipelineRun {
@@ -396,7 +450,8 @@ export interface AiPipelineRun {
   attachmentId?: number | null;
   /** 文件名：列表契约未强制给（`attachment_id` 是主键），后端给了就显示 */
   filename?: string | null;
-  status: AiPipelineStatus | string;
+  /** **流水线任务级**状态（`attachment_ai_task.status`）：QUEUED/RUNNING/DONE/PARTIAL/FAILED/CANCELLED/DEAD */
+  status: AiPipelineTaskStatus | string;
   taskType?: string | null;
   priority?: number | null;
   /** 当前阶段（`stage_key` 机器可读 / `stage` 中文名，二者后端至少给一个时显示） */
@@ -417,7 +472,8 @@ export interface AiPipelineStage {
   stageKey: string;
   stageName?: string | null;
   seq?: number | null;
-  status: AiPipelineStatus | string;
+  /** **阶段级**状态（`ai_pipeline_stage.status`）：PENDING/RUNNING/DONE/PARTIAL/SKIPPED/FAILED/CANCELLED */
+  status: AiPipelineStageStatus | string;
   elapsedMs?: number | null;
   itemCount?: number | null;
   itemFailed?: number | null;
@@ -510,7 +566,8 @@ export function normalizePipelineRun(rawInput: unknown): AiPipelineRun {
     runId: pickStr(raw, 'run_id', 'runId', 'id') ?? '',
     attachmentId: pickNum(raw, 'attachment_id', 'attachmentId'),
     filename: pickStr(raw, 'filename', 'file_name', 'fileName'),
-    status: (pickStr(raw, 'status') ?? 'PENDING').toUpperCase(),
+    // 任务级没有 PENDING：缺失就留空串（显示 '-'），不要伪装成某个具体状态
+    status: (pickStr(raw, 'status') ?? '').toUpperCase(),
     taskType: pickStr(raw, 'task_type', 'taskType'),
     priority: pickNum(raw, 'priority'),
     stageKey: pickStr(raw, 'stage_key', 'stageKey'),

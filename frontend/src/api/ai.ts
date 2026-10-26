@@ -55,7 +55,13 @@ export interface AiTaskQuery {
 export interface AiPipelineRunQuery {
   /** 只看某个附件的流水线记录（溯源抽屉"查看该附件的任务流"用） */
   attachmentId?: number | null;
-  /** 单值状态过滤（契约只允许一个值；"进行中/历史"两段由前端按状态分组） */
+  /**
+   * **任务级**状态过滤：单个值，或**逗号分隔多值**（如 `QUEUED,RUNNING` = 进行中）。
+   *
+   * 只认 `attachment_ai_task.status` 的 7 态（QUEUED/RUNNING/DONE/PARTIAL/FAILED/CANCELLED/DEAD）。
+   * ⚠️ **不要传阶段级的 `PENDING`/`SKIPPED`**：它们是 `ai_pipeline_stage.status` 的值，
+   * 后端会 400 并提示"这是阶段级状态"（真机上撞过）。常量见 `AI_TASK_STATUS_ACTIVE_QUERY`。
+   */
   status?: string;
   page?: number;
   size?: number;

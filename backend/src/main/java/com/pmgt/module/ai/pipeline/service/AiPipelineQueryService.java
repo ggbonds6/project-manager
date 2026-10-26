@@ -27,8 +27,11 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 任务流读取：详情 / 列表 / 产物（前端任务流视图与「{@code [n]} → 切片」溯源的读侧）。
@@ -50,6 +53,13 @@ public class AiPipelineQueryService {
 
     /** 列表单页上限（与仓库其它接口的 200 口径一致）。 */
     private static final int MAX_PAGE_SIZE = 200;
+
+    /**
+     * **阶段级独有**的状态：只出现在 {@code ai_pipeline_stage.status}，任务级没有。
+     * 收到它们说明调用方把两套枚举拿混了，报错要直接点明（否则只会看到"status 非法"）。
+     */
+    private static final Set<String> STAGE_ONLY_STATES =
+            Set.of(AiPipelineStage.PENDING, AiPipelineStage.SKIPPED);
 
     private final AttachmentAiTaskMapper taskMapper;
     private final AiPipelineStageMapper stageMapper;
@@ -112,19 +122,22 @@ public class AiPipelineQueryService {
         return detail(task);
     }
 
-    /** 列表（任务流视图的表格）。 */
+    /**
+     * 列表（任务流视图的表格）。
+     *
+     * <p>{@code status} 支持**逗号分隔多值**（如 {@code QUEUED,RUNNING} = "进行中"），
+     * 单值保持与改动前完全一致。这个多值是必须的：任务级"进行中"本来就包含两个状态，
+     * 前端以前为了凑出这个语义只能发两次请求（且发的是阶段级的 {@code PENDING} ⇒ 400）。
+     *
+     * <p>只认**任务级** 7 状态（{@link AiPipelineStateMachine#TASK_STATES}）；收到阶段级独有的
+     * {@code PENDING}/{@code SKIPPED} 时，报错会**直接点明"这是阶段级状态，任务级请用 QUEUED/RUNNING"**
+     * ——这条信息比"status 非法"有用得多：调用方一次就能改对。
+     */
     public PipelineRunPageVO list(Long attachmentId, String status, int page, int size) {
-        String normalizedStatus = null;
-        if (status != null && !status.isBlank()) {
-            normalizedStatus = status.trim().toUpperCase();
-            if (!AiPipelineStateMachine.TASK_STATES.contains(normalizedStatus)) {
-                throw AiPipelineException.badRequest("status 非法：" + status + "；合法值："
-                        + String.join("/", AiPipelineStateMachine.TASK_STATES));
-            }
-        }
+        List<String> statuses = parseStatuses(status);
         List<AttachmentAiTask> all = taskMapper.selectList(new LambdaQueryWrapper<AttachmentAiTask>()
                 .eq(attachmentId != null, AttachmentAiTask::getAttachmentId, attachmentId)
-                .eq(normalizedStatus != null, AttachmentAiTask::getStatus, normalizedStatus)
+                .in(!statuses.isEmpty(), AttachmentAiTask::getStatus, statuses)
                 .orderByDesc(AttachmentAiTask::getId));
         int p = Math.max(1, page);
         int s = Math.min(Math.max(1, size), MAX_PAGE_SIZE);
@@ -136,6 +149,45 @@ public class AiPipelineQueryService {
             records.add(summary(all.get(i), projectNames));
         }
         return PipelineRunPageVO.of(all.size(), p, s, records);
+    }
+
+    /**
+     * 解析 {@code status} 查询参数：逗号分隔 → 去重后的任务级状态列表（空 = 不过滤）。
+     *
+     * <p><b>为什么必须区分"任务级"与"阶段级"</b>：两级是两套枚举，任务级是
+     * {@code QUEUED/RUNNING/DONE/PARTIAL/FAILED/CANCELLED/DEAD}（{@code attachment_ai_task.status}），
+     * 阶段级是 {@code PENDING/RUNNING/DONE/PARTIAL/SKIPPED/FAILED/CANCELLED}（{@code ai_pipeline_stage.status}）。
+     * 前端曾把阶段级的 {@code PENDING} 当"排队中"发给本接口 ⇒ 400，而报错只说"status 非法"，
+     * 调用方很难自己想到是"枚举拿错了级"。所以这里对 {@code PENDING}/{@code SKIPPED}
+     * 单独给一句"这是阶段级状态，任务级请用 QUEUED/RUNNING"。
+     */
+    static List<String> parseStatuses(String status) {
+        if (status == null || status.isBlank()) {
+            return List.of();
+        }
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        for (String part : status.split(",")) {
+            String s = part.trim().toUpperCase(Locale.ROOT);
+            if (s.isEmpty()) {
+                continue;
+            }
+            if (STAGE_ONLY_STATES.contains(s)) {
+                throw AiPipelineException.badRequest("status 非法：" + s + "——" + s + " 是【阶段级】状态"
+                        + "（ai_pipeline_stage.status），任务级没有它；按任务级筛选「进行中」请用 "
+                        + "QUEUED,RUNNING。任务级合法值：" + String.join("/", AiPipelineStateMachine.TASK_STATES));
+            }
+            if (!AiPipelineStateMachine.TASK_STATES.contains(s)) {
+                throw AiPipelineException.badRequest("status 非法：" + s + "；任务级合法值："
+                        + String.join("/", AiPipelineStateMachine.TASK_STATES)
+                        + "（可用逗号分隔多值，如 QUEUED,RUNNING）");
+            }
+            out.add(s);
+        }
+        if (out.isEmpty()) {
+            throw AiPipelineException.badRequest("status 不能为空；任务级合法值："
+                    + String.join("/", AiPipelineStateMachine.TASK_STATES));
+        }
+        return new ArrayList<>(out);
     }
 
     // ══════════════════════════════════════════════════════════════════

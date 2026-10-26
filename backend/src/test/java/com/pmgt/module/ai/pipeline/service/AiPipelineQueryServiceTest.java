@@ -232,6 +232,72 @@ class AiPipelineQueryServiceTest {
         assertTrue(e.getMessage().contains("合法值"), e.getMessage());
     }
 
+    // ── 任务级 vs 阶段级：status 多值与"拿错枚举"的提示（真机 400 的回归） ──────
+
+    @Test
+    void 单值状态照旧可用() {
+        when(taskMapper.selectList(any())).thenReturn(List.of(task()));
+        when(scopeResolver.projectNames(any())).thenReturn(Map.of(56L, "某项目"));
+
+        PipelineRunPageVO page = service.list(34L, "RUNNING", 1, 20);
+
+        assertEquals(1, page.getTotal());
+        assertEquals(List.of("RUNNING"), AiPipelineQueryService.parseStatuses("RUNNING"));
+    }
+
+    @Test
+    void 多值状态逗号分隔且去重保序() {
+        when(taskMapper.selectList(any())).thenReturn(List.of(task(), task()));
+        when(scopeResolver.projectNames(any())).thenReturn(Map.of(56L, "某项目"));
+
+        PipelineRunPageVO page = service.list(34L, "queued, RUNNING,running", 1, 50);
+
+        assertEquals(2, page.getTotal(), "多值过滤不应报错（前端「进行中」= QUEUED,RUNNING）");
+        assertEquals(List.of("QUEUED", "RUNNING"), AiPipelineQueryService.parseStatuses("queued, RUNNING,running"),
+                "大小写归一 + 去重 + 保持请求顺序");
+    }
+
+    @Test
+    void 多值状态真的进where条件() {
+        when(taskMapper.selectList(any())).thenReturn(List.of());
+        when(scopeResolver.projectNames(any())).thenReturn(Map.of());
+
+        service.list(34L, "QUEUED,RUNNING", 1, 50);
+
+        org.mockito.ArgumentCaptor<com.baomidou.mybatisplus.core.conditions.Wrapper<AttachmentAiTask>> captor =
+                org.mockito.ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(taskMapper).selectList(captor.capture());
+        String sql = captor.getValue().getSqlSegment();
+        assertTrue(sql.contains("status"), "where 里必须有 status：" + sql);
+        assertTrue(sql.toUpperCase().contains("IN"), "两个值必须走 IN（两次 eq 是错的）：" + sql);
+    }
+
+    @Test
+    void 阶段级PENDING被拒且报错点明这是阶段级状态() {
+        AiPipelineException e = assertThrows(AiPipelineException.class,
+                () -> service.list(34L, "PENDING", 1, 50));
+        assertEquals(400, e.getStatus());
+        assertTrue(e.getMessage().contains("阶段级"), e.getMessage());
+        assertTrue(e.getMessage().contains("QUEUED,RUNNING"), "报错要直接给出任务级的「进行中」写法：" + e.getMessage());
+
+        // 混在合法值里也一样要拒绝（不能静默忽略其中一项）
+        AiPipelineException mixed = assertThrows(AiPipelineException.class,
+                () -> service.list(34L, "QUEUED,PENDING", 1, 50));
+        assertEquals(400, mixed.getStatus());
+        assertTrue(mixed.getMessage().contains("阶段级"), mixed.getMessage());
+    }
+
+    @Test
+    void 阶段级SKIPPED与空token也被拒() {
+        assertTrue(assertThrows(AiPipelineException.class, () -> service.list(34L, "SKIPPED", 1, 50))
+                .getMessage().contains("阶段级"));
+        AiPipelineException empty = assertThrows(AiPipelineException.class,
+                () -> service.list(34L, " , ", 1, 50));
+        assertEquals(400, empty.getStatus());
+        assertEquals(List.of(), AiPipelineQueryService.parseStatuses(null));
+        assertEquals(List.of(), AiPipelineQueryService.parseStatuses("   "));
+    }
+
     @Test
     void 产物内容被截断时给出取全文的指路() {
         when(taskMapper.selectById(12L)).thenReturn(task());

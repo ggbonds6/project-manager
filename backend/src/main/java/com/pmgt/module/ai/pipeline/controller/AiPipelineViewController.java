@@ -81,6 +81,11 @@ public class AiPipelineViewController {
      * <p>与 {@code /api/ai/attachments/{id}/pipeline/runs} 的唯一差别是
      * <b>不校验附件是否存在</b>：这里查的是"任务历史"，而 V15 的边界写明
      * "附件删除后仍可追溯"。要"必须是活附件"的语义就用附件路径那条。
+     *
+     * <p>{@code status} 只认**任务级** 7 状态（{@code QUEUED/RUNNING/DONE/PARTIAL/FAILED/CANCELLED/DEAD}），
+     * 且支持**逗号分隔多值**（{@code QUEUED,RUNNING} = 进行中）；阶段级独有的
+     * {@code PENDING}/{@code SKIPPED} 会被拒绝并提示"这是阶段级状态"（见
+     * {@code AiPipelineQueryService#parseStatuses}）。
      */
     @GetMapping("/runs")
     public R<PipelineRunPageVO> runs(@RequestParam(name = "attachment_id", required = false) Long attachmentId,
