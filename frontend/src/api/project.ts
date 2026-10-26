@@ -1,5 +1,6 @@
 import { api } from './http';
 import {
+  AttachmentAvailabilityResult,
   AttachmentItem,
   ContractItem,
   DictItem,
@@ -137,6 +138,24 @@ export const attachmentApi = {
     return api.get<AttachmentItem[]>(`/projects/${projectId}/attachments`);
   },
   /**
+   * 批量探测附件在**当前存储**里读不读得到（单次 ≤50 个 id，后端上限）。
+   *
+   * 用途：库是共享的，而 `local` 存储的字节只在本机 ⇒ 本地用 local 传的附件到服务器上
+   * "文件缺失"。列表拿到这个结果后只给不可读的附件打标签，并降级预览/下载交互。
+   *
+   * 两个刻意的参数：
+   *  - `timeoutMs: 8000`：OBS 慢时不能把附件列表一起拖住（这是探测，不是主数据）；
+   *  - `silent: true`：失败**静默**（不弹 toast）——探测失败的正确表现是"不显示标签"，
+   *    而不是每次进附件列表都弹一句"请求失败"。
+   */
+  availability(ids: number[]): Promise<AttachmentAvailabilityResult> {
+    return api.get<AttachmentAvailabilityResult>(
+      '/attachments/availability',
+      { ids: ids.join(',') },
+      { timeoutMs: AVAILABILITY_TIMEOUT_MS, silent: true },
+    );
+  },
+  /**
    * 上传附件（后台上传）：返回上传任务，服务端受理后立即返回，
    * 存储写入在后台进行——用 getUploadTask 轮询进度，完成后 attachmentId 即正式附件 id。
    */
@@ -172,6 +191,9 @@ export const attachmentApi = {
     return api.del<void>(`/attachments/${id}`);
   },
 };
+
+/** 附件可用性探测的短超时（毫秒）：OBS 慢/不可达时宁可没有标签，也不拖住附件列表 */
+const AVAILABILITY_TIMEOUT_MS = 8000;
 
 /** 附件访问 URL（带 token 的 query 形式，支持 <a>/<img>） */
 export function attachmentUrl(id: number, disposition: 'download' | 'inline' = 'download'): string {

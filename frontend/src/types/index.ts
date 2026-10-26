@@ -297,6 +297,28 @@ export interface AttachmentItem {
   aiIndexStatus?: string | null;
   /** 解析失败原因（与 aiIndexStatus=FAILED 搭配展示） */
   aiError?: string | null;
+  /**
+   * **客户端标注**（后端附件列表接口不返回这个字段）：该附件在当前存储里读不到。
+   * 只在批量探测（`GET /api/attachments/availability`）明确返回 false 时写；
+   * `undefined` = 未知（还没探测 / 探测失败）⇒ 界面不显示任何标签，不打扰正常用户。
+   */
+  available?: boolean;
+}
+
+/** 附件可用性探测结果的一条（`GET /api/attachments/availability`） */
+export interface AttachmentAvailabilityItem {
+  id: number;
+  /** true = 当前存储里能读到字节（可预览/下载）；false = 文件不在当前存储 */
+  available: boolean;
+  /** 存储侧真实字节数；取不到为 null */
+  size?: number | null;
+  /** 不可用时的通用中文原因（后端只给通用文案，不含端点/凭据/对象 key） */
+  reason?: string | null;
+}
+
+export interface AttachmentAvailabilityResult {
+  /** 与请求的 id 顺序一致（去重后） */
+  items: AttachmentAvailabilityItem[];
 }
 
 /** 后台上传任务（上传记录）：文件已受理，存储写入在后台进行 */

@@ -1,4 +1,5 @@
 import axios, { AxiosError, AxiosResponse } from 'axios';
+import type { InternalAxiosRequestConfig } from 'axios';
 import { message } from 'antd';
 import { R } from '@/types';
 
@@ -25,19 +26,21 @@ function gotoLogin() {
   }
 }
 
-const http = axios.create({
-  baseURL: '/api',
-  timeout: 30000,
-});
-
-http.interceptors.request.use((config) => {
+/** 统一注入 `Authorization`：普通实例与静默实例共用，避免两处漂移 */
+function withAuth(config: InternalAxiosRequestConfig): InternalAxiosRequestConfig {
   const token = getToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
+}
+
+const http = axios.create({
+  baseURL: '/api',
+  timeout: 30000,
 });
 
+http.interceptors.request.use(withAuth);
 http.interceptors.response.use(
   ((resp: AxiosResponse) => {
     const body = resp.data as R<unknown>;
@@ -68,13 +71,54 @@ http.interceptors.response.use(
   },
 );
 
+/**
+ * 静默实例：**失败不弹全局 toast**，只把错误抛给调用方。
+ *
+ * 为什么需要它：全局拦截器对失败一律 `message.error(...)`，这是给"用户主动点的操作"用的；
+ * 但探测类请求（典型是附件可用性批量探测 `GET /api/attachments/availability`）失败时
+ * 正确的行为是**静默降级**（不显示标签），而不是每次进附件列表都弹一句"请求失败"。
+ * 单独一个实例比给每个调用点加开关更不容易被误用：要静默就得显式选它。
+ */
+const silentHttp = axios.create({
+  baseURL: '/api',
+  timeout: 30000,
+});
+
+silentHttp.interceptors.request.use(withAuth);
+silentHttp.interceptors.response.use(
+  ((resp: AxiosResponse) => {
+    const body = resp.data as R<unknown>;
+    if (body && typeof body === 'object' && 'code' in body) {
+      if (body.code === 0) {
+        return body.data;
+      }
+      // 401 仍要回登录页：静默的是"提示"，不是"会话失效"这件事
+      if (body.code === 401) {
+        gotoLogin();
+      }
+      return Promise.reject(new Error(body.message || '请求失败'));
+    }
+    return body;
+  }) as unknown as (resp: AxiosResponse) => AxiosResponse | Promise<AxiosResponse>,
+  (err: AxiosError<{ message?: string }>) => {
+    if (err.response?.status === 401) {
+      gotoLogin();
+    }
+    return Promise.reject(new Error(err.response?.data?.message || err.message || '网络错误'));
+  },
+);
+
 export const api = {
   /**
    * `opts.timeoutMs`：个别接口（如深度自检要真去 ping 平台模型，几秒到十几秒）需要比
    * 全局 30s 更宽的超时。不传就沿用全局默认，不影响其它调用方。
+   *
+   * `opts.silent`：`true` 时失败**不弹全局 toast**（走 {@link silentHttp}），
+   * 由调用方自己决定怎么降级——只给探测类请求用，别拿它掩盖用户主动操作的失败。
    */
-  get<T>(url: string, params?: object, opts?: { timeoutMs?: number }): Promise<T> {
-    return http.get(url, {
+  get<T>(url: string, params?: object, opts?: { timeoutMs?: number; silent?: boolean }): Promise<T> {
+    const client = opts?.silent ? silentHttp : http;
+    return client.get(url, {
       params,
       ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
     }) as Promise<T>;

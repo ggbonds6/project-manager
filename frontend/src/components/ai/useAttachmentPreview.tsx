@@ -15,6 +15,7 @@ import { useCallback, useState } from 'react';
 import type { ReactNode } from 'react';
 import { App } from 'antd';
 import { resolveCitationAttachment } from '@/api/ai';
+import { attachmentApi } from '@/api/project';
 import AttachmentPreviewModal from '@/components/AttachmentPreviewModal';
 import { AttachmentItem } from '@/types';
 
@@ -82,6 +83,21 @@ export function useAttachmentPreview(): AttachmentPreviewState {
         );
         return false;
       }
+      /**
+       * 单条可用性探测（引用/文档库这条链路拿不到附件列表的批量探测结果）。
+       *
+       * 为什么值得多一次请求：AI 引用常常指向"本机用 local 存储传、服务器上其实没有"的附件。
+       * 先探一次（≤8s、失败静默），就能在预览弹窗里直接给出「本地附件·当前存储不可读」的说明，
+       * 而不是让用户对着一次 404「附件文件缺失」猜原因。
+       * 探测失败/超时 ⇒ `available=undefined` ⇒ 与改动前完全一致（照常尝试打开）。
+       */
+      let available: boolean | undefined;
+      try {
+        const probe = await attachmentApi.availability([id]);
+        available = probe.items.find((it) => it.id === id)?.available;
+      } catch {
+        // 静默：探不到就不标注（这是"探测"，不是"校验"）
+      }
       setTarget({
         item: {
           id,
@@ -89,6 +105,7 @@ export function useAttachmentPreview(): AttachmentPreviewState {
           bizId: 0,
           fileName: filename || `附件 #${id}`,
           fileExt: extOf(filename),
+          available,
         },
         pageNo,
       });

@@ -9,12 +9,14 @@ import com.pmgt.common.security.Role;
 import com.pmgt.common.storage.AttachmentCacheSupport;
 import com.pmgt.common.storage.AttachmentStorage;
 import com.pmgt.common.storage.ObjectStat;
+import com.pmgt.module.attach.dto.AttachmentAvailabilityVO;
 import com.pmgt.module.attach.dto.AttachmentUploadTaskVO;
 import com.pmgt.module.attach.dto.AttachmentVO;
 import com.pmgt.module.attach.entity.Attachment;
 import com.pmgt.module.attach.entity.AttachmentUploadTask;
 import com.pmgt.module.attach.mapper.AttachmentMapper;
 import com.pmgt.module.attach.mapper.AttachmentUploadTaskMapper;
+import com.pmgt.module.attach.service.AttachmentAvailabilityService;
 import com.pmgt.module.attach.service.AttachmentUploadService;
 import com.pmgt.module.log.service.OperationLogService;
 import com.pmgt.module.project.entity.Contract;
@@ -83,6 +85,7 @@ public class AttachmentController {
     private final AttachmentStorage attachmentStorage;
     private final AttachmentUploadService uploadService;
     private final AttachmentUploadTaskMapper taskMapper;
+    private final AttachmentAvailabilityService availabilityService;
 
     public AttachmentController(AttachmentMapper attachmentMapper,
                                 ProjectMapper projectMapper,
@@ -94,7 +97,8 @@ public class AttachmentController {
                                 OperationLogService operationLogService,
                                 AttachmentStorage attachmentStorage,
                                 AttachmentUploadService uploadService,
-                                AttachmentUploadTaskMapper taskMapper) {
+                                AttachmentUploadTaskMapper taskMapper,
+                                AttachmentAvailabilityService availabilityService) {
         this.attachmentMapper = attachmentMapper;
         this.projectMapper = projectMapper;
         this.phaseMapper = phaseMapper;
@@ -106,6 +110,28 @@ public class AttachmentController {
         this.attachmentStorage = attachmentStorage;
         this.uploadService = uploadService;
         this.taskMapper = taskMapper;
+        this.availabilityService = availabilityService;
+    }
+
+    /**
+     * 批量探测「附件在当前存储里读不读得到」（用户 JWT 即可）。
+     *
+     * <p>为什么需要它：库是共享的，而 {@code app.storage.type=local} 时附件字节只在本机磁盘上
+     * ——用 local 模式在本地传的附件，到服务器上点预览/下载必然 404「附件文件缺失」。
+     * 前端据此在附件列表上打标识，并把点预览/下载降级为一句说明（不再每次都发注定 404 的请求）。
+     *
+     * <p>参数：{@code ids=1,2,3}（别名 {@code attachmentIds}，两者都传时以 {@code ids} 为准）；
+     * 单次最多 {@link AttachmentAvailabilityService#MAX_IDS} 个，空/非法/超上限 → <b>真实 HTTP 400</b>
+     * （理由见 {@code AttachmentAvailabilityException}）。
+     *
+     * <p>逐条探测、单条失败不影响其它条；这是"探测"不是"校验"，结论最多复用 60 秒
+     * （见 {@code AttachmentAvailabilityService} 的类注释）。
+     */
+    @GetMapping("/attachments/availability")
+    public R<AttachmentAvailabilityVO> availability(@RequestParam(required = false) String ids,
+                                                    @RequestParam(required = false) String attachmentIds) {
+        String raw = ids == null || ids.isBlank() ? attachmentIds : ids;
+        return R.ok(availabilityService.check(availabilityService.parseIds(raw)));
     }
 
     /**

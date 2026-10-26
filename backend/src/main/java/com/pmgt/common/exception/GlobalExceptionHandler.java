@@ -56,6 +56,23 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(e.getStatus()).body(R.fail(e.getStatus(), e.getMessage()));
     }
 
+    /**
+     * 附件可用性探测（{@code GET /api/attachments/availability}）的参数错误——<b>真实 HTTP 400</b>。
+     *
+     * <p>这与主系统"HTTP 200 + 信封 code"的惯例不同，只此一处（理由见
+     * {@code AttachmentAvailabilityException}）：前端要能区分"我参数写错了"与"存储/服务故障"，
+     * 而它在探测失败时是**静默降级**（不弹 toast），所以参数错误必须靠 HTTP 状态暴露出来。
+     * 响应体仍是统一信封 {@code {code,message,data}}。
+     */
+    @ExceptionHandler(com.pmgt.module.attach.AttachmentAvailabilityException.class)
+    public ResponseEntity<R<Void>> handleAttachmentAvailability(
+            com.pmgt.module.attach.AttachmentAvailabilityException e) {
+        log.warn("[attachments/availability] 参数错误 HTTP {}：{}",
+                com.pmgt.module.attach.AttachmentAvailabilityException.BAD_REQUEST, e.getMessage());
+        return ResponseEntity.status(com.pmgt.module.attach.AttachmentAvailabilityException.BAD_REQUEST)
+                .body(R.fail(com.pmgt.module.attach.AttachmentAvailabilityException.BAD_REQUEST, e.getMessage()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public R<Void> handleValid(MethodArgumentNotValidException e) {
         String msg = e.getBindingResult().getFieldErrors().stream()

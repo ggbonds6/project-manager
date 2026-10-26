@@ -170,6 +170,16 @@
   font-size: 11px;
   flex-shrink: 0;
 }
+/* 附件文件不在当前存储（通常是本地用 local 存储上传的）：虚线警告色，
+   与附件中心/预览弹窗里的「本地附件·当前存储不可读」标签同一个语义 */
+.pm-chip-unreadable {
+  border-style: dashed;
+  border-color: #faad14;
+  background: #fffbe6;
+}
+.pm-chip-unreadable .pm-ext {
+  background: #faad14;
+}
 .pm-muted {
   font-size: 12px;
   color: #bfbfbf;

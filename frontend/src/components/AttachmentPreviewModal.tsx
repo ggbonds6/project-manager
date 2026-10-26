@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import { Button, Modal, Space, Spin, Tag, Typography, message } from 'antd';
+import { Button, Modal, Space, Spin, Tag, Tooltip, Typography, message } from 'antd';
 import { DownloadOutlined, FullscreenExitOutlined, FullscreenOutlined } from '@ant-design/icons';
 import ReactMarkdown from 'react-markdown';
 import { attachmentUrl } from '@/api/project';
 import { fmtFileSize } from '@/utils/format';
 import { fileExtTag } from '@/config/tagDict';
+import AttachmentAvailabilityTag, {
+  LOCAL_ATTACHMENT_UNREADABLE_TIP,
+} from '@/components/AttachmentAvailabilityTag';
 import { AttachmentItem } from '@/types';
 
 const IMG_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
@@ -63,6 +66,13 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
 
   const ext = (item?.fileExt || '').toLowerCase();
   const extTag = fileExtTag(ext);
+  /**
+   * 该附件在当前存储里读不到（`available === false` 由列表的批量探测标注）。
+   *
+   * 这时**一个请求都不发**：预览体换成一整块说明，避免用户每点一次就吃一次 404
+   * （服务端会回「附件文件缺失」并弹 toast）。`undefined`（未知）按可读处理，行为与改动前一致。
+   */
+  const unreadable = item?.available === false;
 
   const authToken = () => localStorage.getItem('pm_token') || '';
 
@@ -153,6 +163,12 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
     setText(null);
     setForcePreview(false);
     if (!item) return;
+    if (unreadable) {
+      // 不可读的附件：不发任何取字节的请求（这份文件在当前存储里根本不存在）
+      setBusy(false);
+      if (officeRef.current) officeRef.current.innerHTML = '';
+      return;
+    }
     setBusy(true);
     if (officeRef.current) officeRef.current.innerHTML = '';
 
@@ -213,7 +229,7 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
     } else if (DOC_EXTS.has(ext)) {
       doDocLegacy();
     }
-  }, [item, ext]);
+  }, [item, ext, unreadable]);
 
   // 全屏时 Esc 退出
   useEffect(() => {
@@ -232,6 +248,21 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
 
   const renderViewer = () => {
     if (!item) return null;
+    // 不可读（文件不在当前存储）：不发请求，直接给一整块说明。
+    // 放在所有预览分支之前，图片/PDF/Office 的取字节逻辑就都不会被触发。
+    if (unreadable) {
+      return (
+        <div style={{ textAlign: 'center', padding: '48px 24px' }}>
+          <Typography.Paragraph style={{ marginBottom: 8 }}>
+            {/* 标签与列表里是同一个组件、同一句文案 */}
+            <AttachmentAvailabilityTag available={item.available} />
+          </Typography.Paragraph>
+          <Typography.Paragraph type="secondary" style={{ maxWidth: 620, margin: '0 auto' }}>
+            {LOCAL_ATTACHMENT_UNREADABLE_TIP}
+          </Typography.Paragraph>
+        </div>
+      );
+    }
     // 高度随全屏切换（由调用处传入），但**视图结构不随全屏变化** —— 见文件末尾的说明：
     // 浏览器内置 PDF 阅读器/图片/Office 预览一旦被卸载重挂就会重新发一次请求。
     const maxH = full ? 'calc(100vh - 140px)' : '65vh';
@@ -413,6 +444,7 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
       <Typography.Text type="secondary" style={{ fontWeight: 400, fontSize: 12 }}>
         {fmtFileSize(item.fileSize)}
       </Typography.Text>
+      <AttachmentAvailabilityTag available={item.available} />
     </Space>
   );
 
@@ -423,14 +455,33 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
       </Tag>
       <b style={{ fontSize: 15 }}>{item.fileName}</b>
       <Typography.Text type="secondary">{fmtFileSize(item.fileSize)}</Typography.Text>
+      <AttachmentAvailabilityTag available={item.available} />
     </Space>
+  );
+
+  /**
+   * 下载按钮：不可读时**不发请求**（`<a href>` 一点就是一次注定 404 的下载），
+   * 改成提示同一句话；可读时与改动前完全一致。
+   */
+  const downloadButton = unreadable ? (
+    <Tooltip title={LOCAL_ATTACHMENT_UNREADABLE_TIP}>
+      <Button
+        type="primary"
+        icon={<DownloadOutlined />}
+        onClick={() => message.warning(LOCAL_ATTACHMENT_UNREADABLE_TIP)}
+      >
+        下载
+      </Button>
+    </Tooltip>
+  ) : (
+    <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
+      下载
+    </Button>
   );
 
   const footer = (
     <Space>
-      <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
-        下载
-      </Button>
+      {downloadButton}
       {/* 全屏/退出全屏只切 `full` 这一个 state，预览元素本身保持挂载（不重新下载） */}
       {full ? (
         <Button icon={<FullscreenExitOutlined />} onClick={() => setFull(false)}>
@@ -500,9 +551,8 @@ export default function AttachmentPreviewModal({ item, onClose, pageNo }: Props)
           >
             {fullHeader}
             <Space>
-              <Button type="primary" icon={<DownloadOutlined />} href={attachmentUrl(item.id)} download={item.fileName}>
-                下载
-              </Button>
+              {/* 与弹窗态共用同一个按钮：不可读时同样不发请求 */}
+              {downloadButton}
               <Button icon={<FullscreenExitOutlined />} onClick={() => setFull(false)}>
                 退出全屏 (Esc)
               </Button>

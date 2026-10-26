@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MouseEvent } from 'react';
 import {
   Alert,
   Button,
@@ -52,10 +53,14 @@ import {
   useAttachmentPreview,
 } from '@/components/ai/useAttachmentPreview';
 import { useAiAttachmentStatus } from '@/hooks/useAiAttachmentStatus';
+import { useAttachmentAvailability } from '@/hooks/useAttachmentAvailability';
 import ProjectFormModal from '@/components/ProjectFormModal';
 import PhaseEditModal from '@/components/PhaseEditModal';
 import AttachmentUploadModal from '@/components/AttachmentUploadModal';
 import AttachmentPreviewModal from '@/components/AttachmentPreviewModal';
+import AttachmentAvailabilityTag, {
+  LOCAL_ATTACHMENT_UNREADABLE_TIP,
+} from '@/components/AttachmentAvailabilityTag';
 import ProjectOverviewPanel from '@/components/ProjectOverviewPanel';
 import UploadTaskCenter from '@/components/UploadTaskCenter';
 import { useFormModal } from '@/components/useFormModal';
@@ -555,6 +560,14 @@ export default function ProjectDetailPage() {
   const [activeTab, setActiveTab] = useState(initialTab);
   const attachmentIds = useMemo(() => attachments.map((a) => a.id), [attachments]);
   const aiStatus = useAiAttachmentStatus(attachmentIds, activeTab === 'attach');
+  /**
+   * 附件在当前存储里读不读得到（批量探测，按 50 个一批，失败静默降级为"不显示标签"）。
+   *
+   * 为什么在附件列表一加载就探：本项目四处都在展示附件（阶段卡片 / 付款凭证 / 合同附件 /
+   * 附件中心），用户很可能直接落在其中任意一处；只探一次、四处共用同一份结论，
+   * 比"每处各探一次"或"每行一个请求"便宜得多（服务端对该接口另有 60 秒内存缓存）。
+   */
+  const availability = useAttachmentAvailability(attachmentIds);
 
   /**
    * 需要（重新）解析的附件：状态为"未解析"或"解析失败"的。
@@ -579,6 +592,31 @@ export default function ProjectDetailPage() {
 
   // 附件在线预览 / 操作日志分页
   const [previewAtt, setPreviewAtt] = useState<AttachmentItem | null>(null);
+
+  /**
+   * 打开附件预览（四处列表共用）。
+   *
+   * 不可读的附件**照样打开弹窗**，但把 `available=false` 一并带过去——弹窗自己知道这一点后
+   * 一个请求都不发，直接显示「本地附件·当前存储不可读」+ 同一句说明。
+   * 这样既没有 404 噪音，又比一句 toast 多给了一层上下文（哪个文件、为什么、该怎么办）。
+   */
+  const openAttachmentPreview = (a: AttachmentItem) => {
+    setPreviewAtt({ ...a, available: availability[a.id] });
+  };
+
+  /**
+   * 下载链接的点击守卫：不可读就不导航。
+   *
+   * `attachmentUrl()` 是 `<a href>`，点一下浏览器就会发一次注定 404 的请求（服务端回
+   * 「附件文件缺失」）。这类附件在服务器上永远读不到，所以直接拦下并提示同一句文案。
+   */
+  const guardDownload = (a: AttachmentItem) => (e: MouseEvent<HTMLElement>) => {
+    if (availability[a.id] === false) {
+      e.preventDefault();
+      message.warning(LOCAL_ATTACHMENT_UNREADABLE_TIP);
+    }
+  };
+
   const [logPage, setLogPage] = useState(1);
   const [logSize, setLogSize] = useState(8);
   // 子项目（总项目容器视图）
@@ -986,9 +1024,19 @@ export default function ProjectDetailPage() {
                     {pAtts.map((a) => (
                       <Tooltip
                         key={a.id}
-                        title={`${a.fileName} · ${fmtFileSize(a.fileSize)} · ${a.uploadUserName || '系统'} · 点击预览`}
+                        title={
+                          availability[a.id] === false
+                            ? `${a.fileName} · 点击看说明：${LOCAL_ATTACHMENT_UNREADABLE_TIP}`
+                            : `${a.fileName} · ${fmtFileSize(a.fileSize)} · ${a.uploadUserName || '系统'} · 点击预览`
+                        }
                       >
-                        <span className="pm-chip" style={{ cursor: 'pointer' }} onClick={() => setPreviewAtt(a)}>
+                        <span
+                          className={
+                            availability[a.id] === false ? 'pm-chip pm-chip-unreadable' : 'pm-chip'
+                          }
+                          style={{ cursor: 'pointer' }}
+                          onClick={() => openAttachmentPreview(a)}
+                        >
                           <span className="pm-ext">{(a.fileExt || 'file').toUpperCase()}</span>
                           <span className="pm-name">{a.fileName}</span>
                           <span className="pm-sz">{fmtFileSize(a.fileSize)}</span>
@@ -1485,14 +1533,15 @@ export default function ProjectDetailPage() {
                     size="small"
                     type="link"
                     icon={<FileTextOutlined />}
-                    onClick={() => setPreviewAtt(a)}
+                    onClick={() => openAttachmentPreview(a)}
                     style={{ paddingLeft: 0 }}
                   >
                     {a.fileName.length > 24 ? a.fileName.slice(0, 24) + '…' : a.fileName}
                   </Button>
                   {a.attachType ? <Tag>{attachTypeName(a.attachType)}</Tag> : null}
+                  <AttachmentAvailabilityTag available={availability[a.id]} />
                   <span style={{ fontSize: 12, color: '#bfbfbf' }}>{fmtFileSize(a.fileSize)}</span>
-                  <a href={attachmentUrl(a.id)} download={a.fileName}>
+                  <a href={attachmentUrl(a.id)} download={a.fileName} onClick={guardDownload(a)}>
                     <DownloadOutlined style={{ color: '#8c8c8c' }} />
                   </a>
                 </Space>
@@ -1864,13 +1913,14 @@ export default function ProjectDetailPage() {
                                       size="small"
                                       type="link"
                                       icon={<FileTextOutlined />}
-                                      onClick={() => setPreviewAtt(a)}
+                                      onClick={() => openAttachmentPreview(a)}
                                       style={{ paddingLeft: 0 }}
                                     >
                                       {a.fileName.length > 24 ? a.fileName.slice(0, 24) + '…' : a.fileName}
                                     </Button>
                                     {a.attachType ? <Tag>{attachTypeName(a.attachType)}</Tag> : null}
-                                    <a href={attachmentUrl(a.id)} download={a.fileName}>
+                                    <AttachmentAvailabilityTag available={availability[a.id]} />
+                                    <a href={attachmentUrl(a.id)} download={a.fileName} onClick={guardDownload(a)}>
                                       <DownloadOutlined style={{ color: '#8c8c8c' }} />
                                     </a>
                                   </Space>
@@ -2173,17 +2223,23 @@ export default function ProjectDetailPage() {
                     <List.Item
                       actions={[
                         <Tooltip key="pv" title="在线预览">
-                          <Button size="small" type="link" icon={<EyeOutlined />} onClick={() => setPreviewAtt(a)}>
+                          <Button
+                            size="small"
+                            type="link"
+                            icon={<EyeOutlined />}
+                            onClick={() => openAttachmentPreview(a)}
+                          >
                             预览
                           </Button>
                         </Tooltip>,
-                        <Tooltip key="dl" title="下载">
+                        <Tooltip key="dl" title={availability[a.id] === false ? LOCAL_ATTACHMENT_UNREADABLE_TIP : '下载'}>
                           <Button
                             size="small"
                             type="link"
                             icon={<DownloadOutlined />}
-                            href={attachmentUrl(a.id)}
+                            href={availability[a.id] === false ? undefined : attachmentUrl(a.id)}
                             download={a.fileName}
+                            onClick={guardDownload(a)}
                           >
                             下载
                           </Button>
@@ -2216,6 +2272,8 @@ export default function ProjectDetailPage() {
                       <Space wrap>
                         <FileTextOutlined />
                         <span>{a.fileName}</span>
+                        {/* 当前存储里读不到（通常是本地用 local 存储传的）：只在这时打标签 */}
+                        <AttachmentAvailabilityTag available={availability[a.id]} compact />
                         {a.attachType ? <Tag>{attachTypeName(a.attachType)}</Tag> : null}
                         {/* AI 索引状态：让用户一眼看出"这个附件能不能被问答检索到" */}
                         <AttachmentAiStatusTag
