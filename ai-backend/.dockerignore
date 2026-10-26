@@ -1,5 +1,15 @@
-target/
+# Docker 构建上下文排除（仅当构建上下文 = ai-backend/ 时生效）
+#
+# ★ work/ 是【运行期数据】，绝不能进镜像：
+#   work/ 里放的是上传的原始文件、切片、向量缓存、tasks.json —— 它在容器里由 WORK_DIR
+#   （compose 默认 ./work，容器内 /app/work）挂载出来，属于「可重建物」。
+#   一旦被打进镜像，新部署的 AI 服务一启动就"自带"别人环境里的陌生文档
+#   （v1.2.1 上就因此出现了孤儿文档，进而触发主系统文档库 500）。
+#   即便某次构建忘了这么写，最外层的仓库根 .dockerignore 也兜着 ai-backend/work —— 见那里的注释。
 work/
+# Maven 产物：镜像里由 Dockerfile 的 mvn package 重新产出（且 JAR 已被 COPY 进最终镜像），不需要进上下文
+target/
+# 本地配置与凭据：只允许运行时通过 env_file 注入，永不进镜像
 .env
 *.log
 .idea/

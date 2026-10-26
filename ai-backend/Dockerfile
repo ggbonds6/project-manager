@@ -24,6 +24,8 @@ ENV LANG=C.UTF-8 \
     JAVA_TOOL_OPTIONS="-Dfile.encoding=UTF-8 -XX:MaxRAMPercentage=75"
 COPY --from=build /app/target/pm-ai-backend-*.jar app.jar
 # work/ 里放临时上传文件、文档库、向量缓存：挂卷持久化（都是**可重建物**，丢了不影响正确性）
+# ★刻意不 COPY work/：它是运行期数据（ai-backend/work 只属于开发机），进镜像会让新部署的
+#   AI 服务一启动就自带陌生文档。构建上下文排除见仓库根 .dockerignore（以及 ai-backend/.dockerignore）。
 VOLUME ["/app/work"]
 EXPOSE 8100
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

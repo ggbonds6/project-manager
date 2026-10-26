@@ -119,6 +119,7 @@ public class AiDocumentService {
         for (Map<String, Object> doc : docs) {
             String docId = AiJson.text(doc, "doc_id");
             Attachment att = byDocId.get(docId);
+            // 孤儿文档（AI 侧有、主系统没有任何附件引用它）这里就是 null
             Long pid = projectIdByDoc.get(docId);
             // 项目过滤：关联不到项目的文档在「按项目筛」时不展示（无法证明它属于该项目）
             if (projectId != null && !projectId.equals(pid)) {
@@ -127,7 +128,12 @@ public class AiDocumentService {
             if (!matchesKeyword(keyword, docId, AiJson.text(doc, "filename"))) {
                 continue;
             }
-            records.add(toVO(doc, att, pid, projectNames.get(pid), latestTask));
+            // ★pid 可能为 null（孤儿文档）：projectNames 在「一个项目都没查到」时是
+            //   scopeResolver.projectNames() 返回的 Map.of()（不可变 Map），而不可变 Map 的 get(null)
+            //   会抛 NPE（MapN.get → Objects.requireNonNull），真机上整页 500 就是这么来的。
+            //   所以守卫必须写在这里，而不是指望 projectNames 永不为空：null 键的语义是"未关联项目"。
+            String projectName = pid == null ? null : projectNames.get(pid);
+            records.add(toVO(doc, att, pid, projectName, latestTask));
         }
         // total 必须是「过滤后的总数」，不是当前页条数：前端分页组件要靠它算总页数
         return AiPageVO.of(records.size(), slice(records, page, size));
@@ -181,8 +187,9 @@ public class AiDocumentService {
         vo.setFilename(AiJson.nullableText(doc, "filename"));
         vo.setAttachmentId(att == null ? null : att.getId());
         vo.setProjectId(projectId);
-        // 项目名找不到（项目已删）时退回"未归属"，不要让前端显示 null 字符串
-        vo.setProjectName(projectName == null && projectId != null ? "未知项目" : projectName);
+        // 不伪造项目名：算不出项目（孤儿文档）或项目已删时一律 null，
+        // 由前端显示"未关联项目"这类空态；编一个"未知项目"只会让人误以为归属其实存在。
+        vo.setProjectName(projectName);
         vo.setPageCount(AiJson.intValue(doc, "pages", 0));
         vo.setSizeBytes(AiJson.longValue(doc, "size_bytes", 0L));
         vo.setIndexedAt(formatUploadedAt(AiJson.text(doc, "uploaded_at")));

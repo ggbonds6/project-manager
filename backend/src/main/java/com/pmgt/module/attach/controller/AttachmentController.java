@@ -423,9 +423,11 @@ public class AttachmentController {
         vo.setBizId(t.getBizId());
         vo.setAttachType(t.getAttachType());
         if ("PROJECT_PHASE".equals(t.getBizType())) {
-            vo.setPhaseName(phaseNames.get(t.getBizId()));
+            // biz_id 可能为 null（阶段还没挂上就建了上传任务），而 phaseNameOf 在拿不到阶段时
+            // 返回的是 Map.of()——不可变 Map 的 get(null) 抛 NPE，所以 null 键先短路。
+            vo.setPhaseName(t.getBizId() == null ? null : phaseNames.get(t.getBizId()));
         } else if ("CONTRACT".equals(t.getBizType())) {
-            vo.setBizName(contractNames.get(t.getBizId()));
+            vo.setBizName(t.getBizId() == null ? null : contractNames.get(t.getBizId()));
         }
         vo.setFileName(t.getFileName());
         vo.setFileSize(t.getFileSize());

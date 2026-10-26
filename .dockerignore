@@ -7,5 +7,15 @@ backend/uploads
 deploy/docker/.env
 *.log
 
+# AI 服务镜像的构建上下文是【仓库根】（Dockerfile 里写的是 COPY ai-backend/...），
+# 所以真正生效的是本文件，而不是 ai-backend/.dockerignore。下面三行必须留在这里：
+#   · ai-backend/work  = 运行期数据（上传原件/切片/向量缓存/tasks.json）：进了镜像就等于
+#     新部署的 AI 服务一启动自带别人的文档（v1.2.1 上出现孤儿文档，触发主系统文档库 500）。
+#   · ai-backend/target = Maven 产物，镜像内另行 mvn package 产出。
+#   · ai-backend/.env   = 本地配置与凭据，只许运行时 env_file 注入。
+ai-backend/work
+ai-backend/target
+ai-backend/.env
+
 # 本地运行配置（含凭证）
 .env

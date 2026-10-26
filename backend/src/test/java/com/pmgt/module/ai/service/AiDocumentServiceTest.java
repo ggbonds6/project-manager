@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -177,5 +178,101 @@ class AiDocumentServiceTest {
 
         assertTrue(page.getRecords().isEmpty());
         assertEquals(0, page.getTotal());
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 孤儿文档（AI 侧有、attachment.ai_doc_id 无匹配）——真机 500 的复现用例
+    //
+    // 关键差别：只有【一个带项目的附件都没有】时 projectIds 才是空集，
+    // scopeResolver.projectNames() 此时返回 Map.of()（不可变 Map），而 Map.of().get(null)
+    // 抛 NPE（java.util.ImmutableCollections$MapN.get → Objects.requireNonNull）。
+    // 所以下面第一个用例必须「一个附件都不给」，否则 projectNames 是 LinkedHashMap，
+    // get(null) 只是返回 null，缺陷不会暴露——这正是它逃过既有用例的原因。
+    // ══════════════════════════════════════════════════════════════════
+
+    /** 打桩：AI 侧只有一份文档，主系统侧没有任何附件引用它。 */
+    private void givenOnlyOrphanDoc() {
+        when(ai.listDocuments()).thenReturn(List.of(doc("ccc333", "运维手册.pdf", 2, 900)));
+        when(attachmentMapper.selectList(any())).thenReturn(List.of());
+    }
+
+    @Test
+    void 孤儿文档无关联附件时列表不抛NPE且项目名为null() {
+        givenOnlyOrphanDoc();
+
+        AiPageVO<AiDocumentVO> page = documentService.list(null, null, 1, 20);
+
+        assertEquals(1, page.getTotal());
+        AiDocumentVO vo = page.getRecords().get(0);
+        assertEquals("ccc333", vo.getDocId());
+        // 关联信息缺失就输出 null（"未关联项目"），不伪造项目名/项目 id
+        assertNull(vo.getAttachmentId());
+        assertNull(vo.getProjectId());
+        assertNull(vo.getProjectName());
+        // 状态口径不变：没有关联附件时按 AI 服务"能列出即已入库"记 READY
+        assertEquals(AiScopeResolver.STATUS_READY, vo.getIndexStatus());
+        assertEquals(2, vo.getPageCount());
+        // 900 字 / 2 页 = 每页 450 字 → 每页 1 片 → 2 片
+        assertEquals(2, vo.getChunkCount());
+    }
+
+    @Test
+    void 按项目过滤时孤儿文档被排除() {
+        givenOnlyOrphanDoc();
+
+        AiPageVO<AiDocumentVO> page = documentService.list(null, 1L, 1, 20);
+
+        // 算不出归属的文档在「按项目筛」时不展示（无法证明它属于该项目）
+        assertEquals(0, page.getTotal());
+        assertTrue(page.getRecords().isEmpty());
+    }
+
+    @Test
+    void 有匹配附件时项目名与索引状态保持不变() {
+        givenDocs();
+        // 主系统侧的状态不是 READY：列表必须以附件表为准，而不是无条件给 READY
+        Attachment parsing = new Attachment();
+        parsing.setId(11L);
+        parsing.setFileName("中标通知书.pdf");
+        parsing.setAiDocId("aaa111");
+        parsing.setBizType("PROJECT");
+        parsing.setBizId(1L);
+        parsing.setAiIndexStatus(AiScopeResolver.STATUS_PARSING);
+        when(attachmentMapper.selectList(any())).thenReturn(List.of(parsing));
+
+        AiDocumentVO vo = documentService.list(null, 1L, 1, 20).getRecords().get(0);
+
+        assertEquals(11L, vo.getAttachmentId());
+        assertEquals(1L, vo.getProjectId());
+        assertEquals("项目一", vo.getProjectName());
+        assertEquals(AiScopeResolver.STATUS_PARSING, vo.getIndexStatus());
+    }
+
+    @Test
+    void keyword过滤对孤儿文档同样生效() {
+        givenOnlyOrphanDoc();
+
+        // 文件名子串
+        assertEquals(1, documentService.list("运维", null, 1, 20).getTotal());
+        // doc_id 子串（前端兜底路径），并确认命中后项目名仍是 null 而不是被过滤流程改写
+        AiPageVO<AiDocumentVO> byDocId = documentService.list("ccc333", null, 1, 20);
+        assertEquals(1, byDocId.getTotal());
+        assertNull(byDocId.getRecords().get(0).getProjectName());
+        // 匹配不到就是空
+        assertEquals(0, documentService.list("不存在的东西", null, 1, 20).getTotal());
+    }
+
+    @Test
+    void 页码越界返回空页但total仍是过滤后总数() {
+        givenDocs();
+
+        // page 越界：records 空、total 不变（前端分页组件靠 total 算总页数）
+        AiPageVO<AiDocumentVO> outOfRange = documentService.list(null, null, 99, 20);
+        assertEquals(2, outOfRange.getTotal());
+        assertTrue(outOfRange.getRecords().isEmpty());
+        // size 上限 500（前端引用兜底会一次拉 500 条）：超上限按 500 处理，不抛错
+        assertEquals(2, documentService.list(null, null, 1, 100000).getRecords().size());
+        // page<1 / size<1 夹到 1
+        assertEquals(1, documentService.list(null, null, 0, 0).getRecords().size());
     }
 }

@@ -343,7 +343,10 @@ public class AiQueryService {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("paymentId", p.getId());
             row.put("projectId", p.getProjectId());
-            row.put("projectName", projectNames.get(p.getProjectId()));
+            // project_id 可能为 null（本合同维度登记的付款走的是 contractId 那条 OR 分支），
+            // 而 projectNames 在"一个项目名都没查到"时是 Map.of()——不可变 Map 的 get(null) 抛 NPE，
+            // 所以 null 键必须在这里短路（与 AiTaskService/AiPipelineQueryService 同一写法）。
+            row.put("projectName", p.getProjectId() == null ? null : projectNames.get(p.getProjectId()));
             row.put("nodeCode", p.getNodeCode());
             row.put("nodeName", p.getNodeName());
             row.put("planAmount", zero(p.getPlanAmount()));
