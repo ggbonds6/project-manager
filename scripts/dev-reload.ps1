@@ -172,7 +172,7 @@ $serviceList = $services -split ' '
 
 Set-Location $composeDir
 
-# 端口取 .env 的第一条 WEB_PORT=（取不到则回落 8080，与原 .sh 一致）
+# 端口取 .env 的第一条 WEB_PORT=（取不到则回落 8180，与 deploy/docker/.env.example 一致）
 $port = ''
 foreach ($line in [System.IO.File]::ReadAllLines((Join-Path $composeDir '.env'))) {
     if ($line -cmatch '^WEB_PORT=') {
@@ -180,7 +180,7 @@ foreach ($line in [System.IO.File]::ReadAllLines((Join-Path $composeDir '.env'))
         break
     }
 }
-if ([string]::IsNullOrEmpty($port)) { $port = '8080' }
+if ([string]::IsNullOrEmpty($port)) { $port = '8180' }
 
 Write-Host '──────────────────────────────────────────────'
 Write-Host " 目标：$services    端口：$port"

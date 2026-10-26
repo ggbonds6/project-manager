@@ -82,7 +82,7 @@ env_file()    { printf '%s/.env' "$(proj_dir "$1")"; }
 proj_image()  { case "$1" in main) printf 'pm-backend' ;; ai) printf 'pm-ai-backend' ;; esac; }
 proj_tagkey() { case "$1" in main) printf 'IMAGE_TAG' ;; ai) printf 'AI_IMAGE_TAG' ;; esac; }
 proj_portkey(){ case "$1" in main) printf 'WEB_PORT' ;; ai) printf 'AI_PORT' ;; esac; }
-proj_portdef(){ case "$1" in main) printf '8080' ;; ai) printf '8100' ;; esac; }
+proj_portdef(){ case "$1" in main) printf '8180' ;; ai) printf '8100' ;; esac; }
 proj_label()  { case "$1" in main) printf '主系统(main)' ;; ai) printf 'AI 能力服务(ai)' ;; esac; }
 expected_tar(){ case "$1" in main) printf 'pm-images-<arch>-<版本>.tar.gz' ;; ai) printf 'pm-ai-images-<arch>-<版本>.tar.gz' ;; esac; }
 upgrade_eg()  { case "$1" in
@@ -683,7 +683,7 @@ usage() {
   VER=vX.Y.Z   升级时显式指定版本，覆盖"从镜像包名解析"的结果
 
 健康检查与端口:
-  main → http://127.0.0.1:$(main/.env 的 WEB_PORT，默认 8080)/api/health
+  main → http://127.0.0.1:$(main/.env 的 WEB_PORT，默认 8180)/api/health
   ai   → http://127.0.0.1:$(ai/.env 的 AI_PORT，默认 8100)/health?with_ocr=false
   轮询约 3s × 20 次（≈60s），失败会打印排查建议，不会静默通过。
 

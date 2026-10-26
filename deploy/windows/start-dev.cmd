@@ -6,6 +6,8 @@ rem                Node 18+ / npm on PATH,
 rem                崖山 YashanDB 主库端口 1688 可达；
 rem                后端连接环境变量 YASHAN_MASTER_IP / YASHAN_STANDBY_IP /
 rem                YASHAN_DB / YASHAN_USER / YASHAN_PASSWORD 需提前设置。
+rem  Ports: backend 8180 (host/dev port; the container-internal port is still 8080,
+rem         see deploy/docker) / frontend 5173 / AI service 8100.
 rem  Usage: deploy\windows\start-dev.cmd
 rem ============================================================
 chcp 65001 >nul
@@ -18,7 +20,10 @@ if not exist "%ROOT%\backend\pom.xml" (
   exit /b 1
 )
 
-set "B_PORT=8080"
+rem 本机开发口 = 8180（与部署态的宿主机发布口 WEB_PORT 默认值一致）。
+rem 容器内部的 server.port 仍是 8080（deploy/docker 的 nginx 反代到 backend:8080），
+rem 所以这里必须用 SERVER_PORT 显式覆盖，不能去改 application.yml 的 server.port。
+set "B_PORT=8180"
 set "F_PORT=5173"
 set "Y_PORT=1688"
 
@@ -46,7 +51,7 @@ if not errorlevel 1 (
     exit /b 1
   )
   echo starting Spring Boot ...
-  start "pm-backend" cmd /k "cd /d %ROOT%\backend && mvn spring-boot:run"
+  start "pm-backend" cmd /k "set SERVER_PORT=%B_PORT% && cd /d %ROOT%\backend && mvn spring-boot:run"
   call :waitPort %B_PORT% 180
   if errorlevel 1 (
     echo [FAIL] Backend start timeout. Check window "pm-backend".

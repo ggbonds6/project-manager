@@ -292,7 +292,7 @@ OpenSearch 解决的是**十万级以上 + 并发 + 元数据过滤**，那是**
 ```
 主系统的 `pm-backend` **只在 compose 内网 expose 8080**（对外只有 nginx 的 `WEB_PORT`），所以 AI 服务必须通过
 **主系统自己给出的、它可达的地址**回调；地址由主系统配置 `PM_AI_QUERY_CALLBACK_URL`
-（例：`http://10.254.212.106:8080/api/ai/query`，即走 nginx 的 `/api/` 反代）。
+（例：`http://10.254.212.106:8180/api/ai/query`，即走 nginx 的 `/api/` 反代；8180 是宿主机发布口 `WEB_PORT`，容器内部的 pm-backend 仍是 8080）。
 
 ### 11.2 主系统 → AI 的 `/chat` 请求新增字段（可选）
 

@@ -108,7 +108,8 @@ class AiSettingsBindingTest {
         assertEquals("", clean.getWatermarkPatterns());
 
         AiSettings.Chunk chunk = settings.getChunk();
-        assertTrue(chunk.isImproved(), "改进切分默认开");
+        assertFalse(chunk.isImproved(),
+                "改进切分默认关（与接入前切法逐字一致；开启需先有 citation_pages 标注与 recall@5 基线）");
         assertEquals(500, chunk.getChunkChars());
         assertEquals(2000, chunk.getMaxCharLen(), "硬上限 2000（验收：不存在 >2000 字符的切片）");
         assertEquals(0.12, chunk.getOverlapRatio(), "重叠比例默认 0.12（设计给的 10%~15% 区间内）");

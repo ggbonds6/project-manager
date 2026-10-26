@@ -122,6 +122,15 @@ public class AiPipelineClaimService {
      * 不需要额外的定时任务（少一个只跑在某个节点上的调度器）。
      * 两步拆成两个方法是为了各自可测：回收只做一件事，领取只做一件事。
      *
+     * <p>⚠️ <b>不要给回收加定时任务/线程</b>（grep 可证：全仓 {@code reclaimStaleClaims}
+     * 只有这里一个调用点，且没有任何 {@code @Scheduled}/{@code TaskScheduler}）。
+     * 原因不是"省事"，而是语义：回收把 RUNNING 改回 QUEUED，随后任何一次 claim 都可能重新领到它。
+     * 一旦有定时扫描，就会出现"提交后已 RUNNING、解析其实还在跑（只是还没到租约截止）⇒ 被定时器
+     * 放回 QUEUED ⇒ 同一份文件被第二次领取/二次解析"——重复花钱、产物写两版（{@code artifact_rev}
+     * 会涨、{@code attempts} 也涨），而且不会报错。若将来确实需要主动扫描，必须同时满足：
+     * ① 用独立的开关且默认关闭；② 只扫"心跳也停了"的行（{@code claim_expires_at} 之外再判
+     * 最后心跳时间）；③ 与 {@code claim} 走同一把条件 UPDATE。否则宁可没有它。
+     *
      * @throws AiPipelineException 400 报文非法；404 当前没有可领取的任务
      */
     @Transactional
@@ -356,6 +365,10 @@ public class AiPipelineClaimService {
      *
      * <p>为什么需要它：进程被 kill、容器被重启时没人会来 release，那些行如果一直挂在 RUNNING，
      * 既不会被再次领取，也不会失败——正是设计文档反复要消灭的"永久 QUEUED/RUNNING"。
+     *
+     * <p><b>它由谁驱动：只由 {@link #claim} 调用</b>（HTTP 领取路径），没有定时任务。
+     * 这点必须保持：见 {@link #claim} 的注释——加定时器会把"仍在解析但租约到期"的行提前放回，
+     * 导致同一份文件被二次解析。grep 证据：{@code reclaimStaleClaims} 在产品代码里只有一个调用点。
      *
      * @return 实际回收的行数（0 是常态）
      */

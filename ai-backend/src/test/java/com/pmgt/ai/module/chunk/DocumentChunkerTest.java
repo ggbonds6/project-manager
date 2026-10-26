@@ -301,6 +301,9 @@ class DocumentChunkerTest {
         AiSettings settings = new AiSettings();
         settings.getPipeline().setCleanRev(cleanRev);
         settings.getClean().setEnabled(cleanEnabled);
+        // 本类验证的是「改进切分」的口径；产品默认已改为 false（与接入前逐字一致），
+        // 所以这里显式打开，而不是依赖默认值——否则本类会静默退化成"回退口径"的用例。
+        settings.getChunk().setImproved(true);
         return settings;
     }
 

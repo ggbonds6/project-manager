@@ -264,7 +264,7 @@ class AiChatServiceTest {
         verify(ai).chat(eq("这个项目有几个阶段附件？"), eq(List.of("docA")), eq(null), eq(null), captor.capture());
         Map<String, Object> bizQuery = captor.getValue();
         assertNotNull(bizQuery, "配置了回调地址就必须下发 biz_query");
-        assertEquals("http://host.docker.internal:8080/api/ai/query", bizQuery.get("url"));
+        assertEquals("http://host.docker.internal:8180/api/ai/query", bizQuery.get("url"));
         assertEquals(List.of("projects", "contracts", "payments", "stats"), bizQuery.get("entities"));
         // scope_token 必须是主系统签发、可被自己解析回来的短时效令牌，且范围收窄到提问的项目
         String token = (String) bizQuery.get("scope_token");

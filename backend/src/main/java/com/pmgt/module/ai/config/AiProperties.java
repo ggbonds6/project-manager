@@ -60,15 +60,19 @@ public class AiProperties {
      *   <li>主系统的 {@code pm-backend} 只在 compose 内网 expose 8080，对外只有 nginx 的
      *       {@code WEB_PORT}，因此通常走 nginx 的 {@code /api/} 反代：
      *       同宿主机 {@code http://host.docker.internal:<WEB_PORT>/api/ai/query}；</li>
-     *   <li>AI 在另一台机器时填那台能访问到的主系统入口（如 {@code http://10.254.212.106:8080/api/ai/query}）；</li>
+     *   <li>AI 在另一台机器时填那台能访问到的主系统入口（如 {@code http://10.254.212.106:8180/api/ai/query}）；</li>
      *   <li><b>留空 = 不带 {@code biz_query}</b>：AI 侧据此不注册
      *       {@code query_business_data} 工具，行为与引入 P2 前完全一致（可安全分批发版）。</li>
      * </ul>
      *
-     * <p>默认值给 {@code host.docker.internal:8080}（与部署编排里 {@code WEB_PORT} 的默认一致），
+     * <p>默认值给 {@code host.docker.internal:8180}（与部署编排里 {@code WEB_PORT} 的默认一致），
      * 这样本机/单机 compose 场景开箱可用；生产按实际入口覆盖。
+     * <b>端口是「宿主机发布口」而不是容器内部的 8080</b>：后者只在 compose 内网可见，
+     * AI 容器直接连 {@code backend:8080} 通常不通，所以必须走 nginx 的 {@code WEB_PORT}。
+     * 改 {@code WEB_PORT} 时这里要同步（含 {@code deploy/docker/.env.example} 与两个 compose 的兜底值），
+     * 否则切 OpenSearch 后受控查询会连不上（表现为问答里"系统里没有数据"而不是明确报错）。
      */
-    private String queryCallbackUrl = "http://host.docker.internal:8080/api/ai/query";
+    private String queryCallbackUrl = "http://host.docker.internal:8180/api/ai/query";
 
     /**
      * 附件上传成功后是否<b>自动触发</b>解析入库（默认开，方案 §3.3）。

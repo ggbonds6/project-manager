@@ -393,7 +393,8 @@ public class AiSettings {
     @Setter
     public static class Pipeline {
         /**
-         * 主系统基地址，例如 {@code http://10.254.208.36:8080}
+         * 主系统基地址，例如 {@code http://10.254.208.36:8180}（8180 = 宿主机发布口 `WEB_PORT`；
+         * 容器内部的 pm-backend 仍是 8080，不要填那个，AI 容器直连 backend:8080 通常不通）。
          * （AI 服务是**回调方**，所以这里配主系统的地址，与 {@code gateway.base-url} 不是一回事）。
          */
         private String baseUrl = "";
@@ -521,12 +522,16 @@ public class AiSettings {
         /**
          * 是否启用改进切分（结构感知 + 表格整块 + 重叠 + 父子块）。
          *
-         * <p>默认 <b>true</b>：这是本轮 P1-α 的交付物。置为 {@code false} 是
-         * <b>回退到接入前的切法</b>（段落累积到 {@code chunk-chars} 就断、无重叠、无结构感知）
-         * ——保留它的唯一目的是"口味回归时能一键对照"，长度上限与表格整块也会一起失效
-         * （即允许出现 &gt; max-char-len 的切片）。
+         * <p>默认 <b>false</b>（保守默认，`code-1.6` 起）：{@code false} 即
+         * <b>接入前的切法</b>（段落累积到 {@code chunk-chars} 就断、无重叠、无结构感知、
+         * 无长度上限），所以上线本身不改变任何既有文档的切片/索引口径。
+         *
+         * <p>开启条件（缺一不可）：① {@code eval/smoke-30.json} 的 {@code citation_pages}
+         * 已人工标注；② 已有 recall@5 基线；③ 改 {@code true} 后跑一次
+         * {@code POST /admin/reindex?force=true}——否则新切法只作用于之后的文档，
+         * 新旧切片混在同一套索引里，recall 数字不可比。
          */
-        private boolean improved = true;
+        private boolean improved = false;
 
         /** 单个切片的<b>目标</b>字数（打包目标，不是硬上限）。默认 500，与接入前一致。 */
         private int chunkChars = 500;

@@ -46,9 +46,10 @@ services:
       AI_CHAT_TIMEOUT: ${AI_CHAT_TIMEOUT:-180}
       AI_TIMEOUT: ${AI_TIMEOUT:-10}
       # ★P2 受控查询回调地址（§11.2 biz_query.url）：必须是从【AI 容器】可达的主系统地址。
-      #   本机/单机用 host.docker.internal + WEB_PORT（走 nginx 的 /api/ 反代到 backend:8080）；
+      #   本机/单机用 host.docker.internal + WEB_PORT（走 nginx 的 /api/ 反代到 backend:8080，
+      #   8080 是容器内部端口；宿主机发布口由 WEB_PORT 决定，默认 8180）；
       #   AI 在另一台机器则填主系统宿主机内网 IP:WEB_PORT。留空 = 不下发 biz_query（停用受控查询）。
-      PM_AI_QUERY_CALLBACK_URL: ${PM_AI_QUERY_CALLBACK_URL:-http://host.docker.internal:8080/api/ai/query}
+      PM_AI_QUERY_CALLBACK_URL: ${PM_AI_QUERY_CALLBACK_URL:-http://host.docker.internal:8180/api/ai/query}
       # 作用域令牌有效期（秒）：必须 > 一轮问答最长耗时，否则问答后段的回调 401，模型会把
       # "授权过期"说成"无权查看/系统里没有"——答案直接错。同一套链（上面前端/nginx/AI 超时）
       # ⇒ 取 300s（= nginx 上限）。上限写死在代码里（配大了夹回 300，只能配小）。
@@ -90,7 +91,7 @@ services:
         # 后端健康后再起前端，避免启动瞬间 502
         condition: service_healthy
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-8180}:80"
     logging:
       driver: json-file
       options:

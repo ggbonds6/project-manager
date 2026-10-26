@@ -164,11 +164,11 @@ node scripts/eval-ai.mjs --set eval/smoke-30.json --dry
 
 # ② 真值核对（**不需要 AI 服务**，只连主系统页面接口）——同时是"真值 == 页面所见"的自证
 $env:PM_TOKEN = "<粘贴 JWT>"
-node scripts/eval-ai.mjs --set eval/smoke-30.json --base http://127.0.0.1:8080 --list-truth
-node scripts/eval-ai.mjs --set eval/smoke-30.json --base http://127.0.0.1:8080 --write-truth  # 另写快照
+node scripts/eval-ai.mjs --set eval/smoke-30.json --base http://127.0.0.1:8180 --list-truth
+node scripts/eval-ai.mjs --set eval/smoke-30.json --base http://127.0.0.1:8180 --write-truth  # 另写快照
 
 # ③ 真实问答（需要主系统在跑 + 一个登录 JWT + AI 服务可用）
-node scripts/eval-ai.mjs --set eval/smoke-30.json --base http://127.0.0.1:8080
+node scripts/eval-ai.mjs --set eval/smoke-30.json --base http://127.0.0.1:8180
 ```
 
 **token 从哪来**（二选一）：

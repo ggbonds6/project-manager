@@ -49,7 +49,7 @@ bash pm.sh upgrade main main/releases/pm-images-aarch64-v3.6.3.tar.gz
 # 第 5 步 · 验收（期望 db:"up"）
 cd /home/lhim/pm
 bash pm.sh status
-curl -s http://127.0.0.1:8080/api/health
+curl -s http://127.0.0.1:8180/api/health
 ```
 
 **AI 能力服务**（要 AI 功能才做；不做则跳过，主系统照常跑）
@@ -82,7 +82,7 @@ vi /home/lhim/pm/main/.env      # AI_SERVICE_BASE_URL=http://<AI服务器内网I
 cd /home/lhim/pm && bash pm.sh restart main
 ```
 
-启动后：浏览器打开 `http://<服务器IP>:8080`（默认端口，可改 `WEB_PORT`）；`/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露）。
+启动后：浏览器打开 `http://<服务器IP>:8180`（宿主机发布口默认 8180，可改 `WEB_PORT`；容器内 nginx 仍是 80）；`/api`、`/uploads` 由 nginx 反代到后端容器（后端不对外暴露）。
 **首次建库**由后端启动时的迁移 Runner 自动执行 `db/migration-yashan/V1~V15`（幂等，已执行版本记入 `schema_version`），无需手工导库；迁移**逐条执行、隐式提交、没有回滚** → 升级到含新迁移的版本前先备份库（失败处置见手册 §6）。
 内置账号：admin / jingban01 / lingdao01（密码均 123456）；生产务必先改密并覆盖 `JWT_SECRET`。
 
@@ -138,7 +138,7 @@ deploy\windows\start-dev.cmd
 deploy\windows\stop-dev.cmd
 ```
 
-或直接双击仓库根目录的 `start-dev.cmd`。后端 8080、前端 Vite 5173。
+或直接双击仓库根目录的 `start-dev.cmd`。后端 8180（`SERVER_PORT` 覆盖）、前端 Vite 5173。
 
 ---
 
@@ -154,7 +154,7 @@ deploy\windows\stop-dev.cmd
 | `JWT_SECRET` | JWT 密钥（生产必改；两机必须相同） | 示例值 |
 | `UPLOAD_DIR` | 附件目录（Docker 内固定 /uploads） | ./uploads |
 | `APP_STORAGE_TYPE` | 附件存储：`local`（本地卷/共享盘）\| `obs`（华为 OBS） | local |
-| `WEB_PORT` | 前端对外端口（Docker） | 8080 |
+| `WEB_PORT` | 前端对外端口（Docker，宿主机发布口） | 8180 |
 
 > 连接使用驱动级高可用：`jdbc:yasdb:primary://主,备/库?poolTimeout=60&failover=on&failoverType=session&failoverMethod=basic&failoverRetries=5&failoverDelay=2`
 > ——驱动自动识别主节点并支持故障自动重连（TAF）；主备切换对"进行中的事务"不透明，事务会失败回滚，关键写操作请重试。

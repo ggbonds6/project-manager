@@ -78,8 +78,8 @@
 
 | 我要做什么 | 命令 | Shell | 说明 |
 | --- | --- | --- | --- |
-| 起本地开发环境（前后端源码模式） | `start-dev.cmd`（或 `deploy\windows\start-dev.cmd`） | cmd | 后端 :8080、前端 :5173（`--host` 支持局域网） |
-| 停本地开发环境 | `stop-dev.cmd` | cmd | 按端口停 8080/5173；**不碰外部崖山库** |
+| 起本地开发环境（前后端源码模式） | `start-dev.cmd`（或 `deploy\windows\start-dev.cmd`） | cmd | 后端 :8180（脚本用 `SERVER_PORT` 覆盖；容器内部仍是 8080）、前端 :5173（`--host` 支持局域网） |
+| 停本地开发环境 | `stop-dev.cmd` | cmd | 按端口停 8180/5173；**不碰外部崖山库** |
 | 起 AI 能力服务（本地） | `cd ai-backend && mvn -B -DskipTests package`<br>`java -jar target/pm-ai-backend-1.0.0-SNAPSHOT.jar` | cmd | 默认 :8100；本地调试常用 `--server.port=8101` 避开占用；凭据放 `ai-backend/.env` |
 | AI 服务质量门（编译 + 单测） | `cd ai-backend && scripts\check.cmd`（或 `mvn -B test`） | cmd | 当前基线 **129 用例**（v1.1.0 起） |
 | AI 服务端到端验收（真实平台网关） | `pwsh -File ai-backend\scripts\verify-e2e.ps1` | pwsh 7 | 自动起服务→自检→平台 OCR→抽取→上传任务→问答，并打印 Python 基线对比 |
@@ -260,7 +260,7 @@ AI 分支的前置条件与主系统不同：`dev-reload.ps1 -Project ai` 要求
   `docker load` 之后还会用 `docker image inspect` 确认 `pm-backend:<版本>` / `pm-ai-backend:<版本>` **真的在**，不在同样不改 tag。
 - **改 `.env` 的手法**与旧脚本一致：读旧值（`grep '^KEY=' | head -1 | cut -d= -f2-`）→ `cp .env .env.bak` → `sed -i.bak` 替换（没有该行则追加）→ 打印 `旧 → 新`。
 - **健康检查**用 `curl` 轮询（约 `3s × 20` ≈ 60s），失败会打印排查建议，不静默通过：
-  main 探 `main/.env` 的 `WEB_PORT`（默认 8080）→ `http://127.0.0.1:<port>/api/health`
+  main 探 `main/.env` 的 `WEB_PORT`（默认 8180）→ `http://127.0.0.1:<port>/api/health`
   （**只看 HTTP 码不够**：数据库不通时它也返回 200，body 里是 `db:"down: ..."`，脚本会连 body 一起看）；
   ai 探 `ai/.env` 的 `AI_PORT`（默认 8100）→ `http://127.0.0.1:<port>/health?with_ocr=false`。
 - **.env 缺失**不会猜：直接给出 `cp .env.example .env && vi .env` 与必填项清单

@@ -28,12 +28,24 @@ public class AiPipelineProperties {
     private String serviceToken = "";
 
     /**
-     * 领取租约（秒），默认 90：AI 侧每 30s 心跳续约，过期即视为"可重新领取"
+     * 领取租约（秒），默认 1800（30 分钟）：AI 侧每 30s 心跳续约，过期即视为"可重新领取"
      * （§4.4.1 的 T7 stale claim recovery）。夹在 [{@value #MIN_LEASE_SECONDS},
      * {@value #MAX_LEASE_SECONDS}] 内——租约过短会让长解析被别的节点抢走，
      * 过长会让中断的任务迟迟回不到队列。
+     *
+     * <p><b>为什么默认从 90 改成 1800</b>：回收（{@link
+     * com.pmgt.module.ai.pipeline.service.AiPipelineClaimService#reclaimStaleClaims()}）
+     * 只在有人调用 {@code claim} 时发生，而不是"90 秒后自动放回"。真实现场是"提交后已 RUNNING、
+     * 解析还没超时结束"——90 秒租约会让同一份大文件在解析途中被下一次 claim 放回队列并被重新领取，
+     * 变成两份并发解析（重复花钱、重复写产物）。代价是：进程被 kill 后，僵死行最多要等 30 分钟
+     * 才回到队列；要更快发现僵死，请调 AI 侧心跳间隔，不要靠调小租约。
+     *
+     * <p><b>另一个覆盖点</b>：调用方可以在 claim 报文里显式给 {@code lease_seconds}
+     * （AI 侧默认会带，见 {@code AI_PIPELINE_LEASE_SECONDS}），那时以调用方的值为准
+     * （仍被上面的区间夹住）。因此"AI 主动领取"打开后，AI 侧那个默认值才是生效值；
+     * 当前生产走推送模式（{@code registerPushedClaim} 用本配置），本默认值直接生效。
      */
-    private int leaseSeconds = 90;
+    private int leaseSeconds = 1800;
 
     /**
      * 投影兜底阈值（秒），默认 300：详情读接口发现某阶段仍是 {@code RUNNING}

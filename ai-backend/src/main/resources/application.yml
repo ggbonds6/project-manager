@@ -222,9 +222,12 @@ ai:
   # 结构感知 + 表格整块 + 重叠窗口 + 超长段落二次切 + 长度硬上限 + 父子块（同页邻块）。
   # 任何一项变化都要把 ai.pipeline.chunk-rev +1（否则"参数改了但切片键没变"）。
   chunk:
-    # 默认 true（本轮 P1-α 的交付物）。false = 回退到接入前的切法（段落累积到 chunk-chars 就断、
-    # 无重叠、无结构感知、无长度上限）——只用于口味回归对照。
-    improved: ${AI_CHUNK_IMPROVED:true}
+    # 默认 **false**（保守默认）：切片与"接入前的切法"逐字一致（段落累积到 chunk-chars 就断、
+    # 无重叠、无结构感知、无长度上限）——这样本批代码上线**不改变**任何既有文档的切片/索引口径。
+    # 开启条件（缺一不可）：① eval/smoke-30.json 的 citation_pages 已人工标注；
+    # ② 已有 recall@5 基线（ai-backend 的 RetrievalEvalTool 能算出数）；③ 改 true 后跑一次
+    # POST /admin/reindex?force=true（否则老文档仍是旧切法，新旧混在一套索引里，指标不可比）。
+    improved: ${AI_CHUNK_IMPROVED:false}
     # 单个切片的**目标**字数（打包目标，不是硬上限）。默认 500，与接入前一致。
     chunk-chars: ${AI_CHUNK_CHARS:500}
     # 单个切片的**硬上限**（字符）。验收口径：不存在 > 该值的切片；超长段落按句末标点二次切。

@@ -648,7 +648,7 @@ PM $Version 服务器部署步骤（$arch，离线：只 load 不 build）
      保证变量插值只认 main/.env、工程名固定为目录名 main；手工 cd 进去执行会多出一套同名不同工程的容器。
 
 4) 验收
-   curl http://127.0.0.1:`${WEB_PORT:-8080}/api/health      # 期望 db:"up"
+   curl http://127.0.0.1:`${WEB_PORT:-8180}/api/health      # 期望 db:"up"
    浏览器登录 admin/123456 → 下载一个存量附件（应成功，读 OBS 桶 uploads/ 前缀）
    （pm.sh start 结束时也会打印一次「访问地址与状态」，以那里的结论为准）
 

@@ -6,7 +6,7 @@
  * 用法（仓库根，Node 18+，**不新增任何 npm 依赖**）：
  *   node scripts/eval-ai.mjs --set eval/smoke-30.json --dry
  *   node scripts/eval-ai.mjs --set eval/smoke-30.json --list-truth --token <JWT>
- *   node scripts/eval-ai.mjs --set eval/smoke-30.json --base http://127.0.0.1:8080 --token <JWT>
+ *   node scripts/eval-ai.mjs --set eval/smoke-30.json --base http://127.0.0.1:8180 --token <JWT>
  *   set PM_TOKEN=<JWT> && node scripts/eval-ai.mjs --set eval/smoke-30.json
  *
  * 三种模式：
@@ -96,7 +96,7 @@ function usage() {
     '  --dry                只做数据集体检，不发任何请求（无服务时用这个）',
     '  --list-truth         只连主系统页面接口算并打印每题真值（不需要 AI 服务）',
     '  --write-truth        同 --list-truth，并把真值快照写回 eval/truth-snapshot.json',
-    '  --base <url>         主系统基址（默认 http://127.0.0.1:8080）',
+    '  --base <url>         主系统基址（默认 http://127.0.0.1:8180）',
     '  --token <jwt>        登录 JWT（缺省读环境变量 PM_TOKEN）',
     '  --scope-token <jwt>  §11.2 的 scope_token（缺省读 PM_SCOPE_TOKEN）：给了就多跑一条',
     '                       §11 受控查询交叉校验，额外报"两条路径口径一致率"；不给就只走页面 API',
@@ -117,7 +117,7 @@ function parseArgs(argv) {
     dry: false,
     listTruth: false,
     writeTruth: false,
-    base: 'http://127.0.0.1:8080',
+    base: 'http://127.0.0.1:8180',
     token: '',
     scopeToken: '',
     timeout: 120000,
@@ -1451,7 +1451,7 @@ async function main() {
     console.log(`→ 主系统探活：GET /api/health → HTTP ${health.status}`);
   } catch (e) {
     console.error(`❌ 连不上主系统 ${opts.base}：${(e && e.message) || e}`);
-    console.error('   服务没起就别硬跑：先 start-dev.cmd（后端 :8080）或部署镜像模式。');
+    console.error('   服务没起就别硬跑：先 start-dev.cmd（后端 :8180）或部署镜像模式。');
     return 2;
   }
 

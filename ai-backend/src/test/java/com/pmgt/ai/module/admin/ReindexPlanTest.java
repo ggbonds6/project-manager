@@ -135,6 +135,9 @@ class ReindexPlanTest {
     private static AiSettings settings(int cleanRev) {
         AiSettings settings = new AiSettings();
         settings.getPipeline().setCleanRev(cleanRev);
+        // 本用例验的是"任务行带版本快照"，与产品默认值无关：显式打开改进切分，
+        // 让 chunk_improved 的断言有两个取值可辨（不是恒 false 的假通过）。
+        settings.getChunk().setImproved(true);
         return settings;
     }
 

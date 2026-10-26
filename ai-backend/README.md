@@ -95,7 +95,7 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 | --- | --- | --- |
 | `AI_SERVICE_TOKEN` | — | 上报令牌（`X-AI-Service-Token`）。**不配 = 不上报**（解析照常，只是任务流视图没有阶段行）。与 `AI_PIPELINE_BASE_URL` 一起才是"启用" |
 | `AI_PIPELINE_ENABLED` | false | 上报总开关（默认 false：没配地址/令牌时不做任何外呼，行为与接入前一致） |
-| `AI_PIPELINE_BASE_URL` | — | **主系统**基地址（如 `http://10.254.208.36:8080`）。注意这是"AI 回调主系统"，与 `LLM_BASE_URL`（平台网关）不是一回事 |
+| `AI_PIPELINE_BASE_URL` | — | **主系统**基地址（如 `http://10.254.208.36:8180`，8180 = 宿主机发布口 `WEB_PORT`；容器内部是 8080，不要填那个）。注意这是"AI 回调主系统"，与 `LLM_BASE_URL`（平台网关）不是一回事 |
 | `AI_PIPELINE_TIMEOUT` | 3 | 单次上报超时（秒）。取小值：上报是 best-effort，**不能拖慢主流程** |
 | `AI_PIPELINE_FINISH_RETRIES` | 2 | **终态**上报的额外重试次数（共 3 次尝试）。终态丢失会让任务永远停在 `RUNNING`（终态以主系统为准） |
 | `AI_PIPELINE_HEARTBEAT_SECONDS` / `AI_PIPELINE_LEASE_SECONDS` | 30 / 90 | 领取租约与心跳间隔（契约里的 `lease_seconds`；**409 表示租约被抢 ⇒ 立即停止该任务并放回**） |
@@ -150,7 +150,7 @@ curl "http://127.0.0.1:8101/health?with_ocr=true&with_vec=true"
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `AI_CHUNK_IMPROVED` | **true** | 改进切分（结构感知 + 表格整块 + 重叠 + 父子块）。false = **回退到接入前的切法**（段落累积到 `chunk-chars` 就断、无重叠、无结构感知、**无长度上限**），仅用于口味回归对照 |
+| `AI_CHUNK_IMPROVED` | **false** | 切片改进（结构感知 + 表格整块 + 重叠 + 父子块）。**默认 false = 与接入前切法逐字一致**（段落累积到 `chunk-chars` 就断、无重叠、无结构感知、**无长度上限**）。开启条件：① `eval/smoke-30.json` 的 `citation_pages` 已标注；② 已有 recall@5 基线；③ 改 `true` 后跑 `POST /admin/reindex?force=true`。`false` 也是口味回归的对照口径 |
 | `AI_CHUNK_CHARS` | 500 | 单切片的**目标**字数（打包目标，不是硬上限），与接入前一致 |
 | `AI_CHUNK_MAX_CHAR_LEN` | 2000 | 单切片的**硬上限**。验收口径：**不存在 > 该值的切片**；超长段落按句末标点二次切 |
 | `AI_CHUNK_OVERLAP_RATIO` | 0.12 | 相邻切片重叠比例（上限 0.15）。默认 ≈ 500×12% = 60 字；**按句回退**、**只在本页内**；表格片与结构边界处不加重叠前缀 |

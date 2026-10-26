@@ -158,7 +158,7 @@ class AiServiceClientTest {
                 .andExpect(request -> {
                     String body = ((org.springframework.mock.http.client.MockClientHttpRequest) request).getBodyAsString();
                     assertTrue(body.contains("\"biz_query\""), "配置了回调地址就必须带 biz_query：" + body);
-                    assertTrue(body.contains("\"url\":\"http://host.docker.internal:8080/api/ai/query\""),
+                    assertTrue(body.contains("\"url\":\"http://host.docker.internal:8180/api/ai/query\""),
                             "url 必须原样下发：" + body);
                     assertTrue(body.contains("\"scope_token\":\"scope-jwt\""), "短时效令牌必须下发：" + body);
                     assertTrue(body.contains("\"entities\":[\"projects\",\"contracts\",\"payments\",\"stats\"]"),
@@ -168,7 +168,7 @@ class AiServiceClientTest {
                         MediaType.APPLICATION_JSON));
 
         Map<String, Object> data = client.chat("这个项目有几个附件？", List.of("abc123"), null, null,
-                Map.of("url", "http://host.docker.internal:8080/api/ai/query",
+                Map.of("url", "http://host.docker.internal:8180/api/ai/query",
                         "scope_token", "scope-jwt",
                         "entities", List.of("projects", "contracts", "payments", "stats")));
 

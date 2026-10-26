@@ -17,6 +17,7 @@ import com.pmgt.module.ai.pipeline.mapper.AiPipelineEventMapper;
 import com.pmgt.module.ai.service.AiAttachmentIndexWriter;
 import com.pmgt.module.attach.mapper.AttachmentMapper;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
@@ -73,6 +74,14 @@ class AiPipelineClaimServiceTest {
         // 提交路径会写 attachment 索引状态，用真实现 + mock mapper，保证与生产同一份代码
         indexWriter = new AiAttachmentIndexWriter(mock(AttachmentMapper.class));
         service = newService(taskMapper, eventMapper, indexWriter);
+    }
+
+    @Test
+    @DisplayName("默认租约 1800 秒：回收只在 claim 里跑，长解析不会被下一次 claim 提前放回（避免二次解析）")
+    void defaultLeaseSecondsIsConservative() {
+        AiPipelineProperties defaults = new AiPipelineProperties();
+        assertEquals(1800, defaults.getLeaseSeconds(), "默认租约必须是 1800（30 分钟）");
+        assertEquals(1800, defaults.effectiveLeaseSeconds(), "生效值 = 默认值（在 [15, 3600] 内）");
     }
 
     private AiPipelineClaimService newService(AttachmentAiTaskMapper tasks,
